@@ -1,0 +1,30 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Secrets and runtime state (these normally live in %LOCALAPPDATA%\NetworkConnector anyway)
+.env
+*.db
+*.db-wal
+*.db-shm
+*.key
+*.pem
+*.crt
+*.token
+worker.json
+controller.json
+status.json
+secrets/
+certs/
+logs/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db

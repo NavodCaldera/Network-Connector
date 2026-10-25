@@ -1,0 +1,10 @@
+{
+  "bind_host": "192.168.1.4",
+  "port": 8765,
+  "lease_seconds": 60,
+  "default_timeout_s": 600,
+  "default_max_attempts": 2,
+  "worker_offline_after_s": 20,
+  "pairing_ttl_s": 600,
+  "max_request_bytes": 25165824
+}
