@@ -196,12 +196,30 @@ def test_nearby_list_expires_and_bounds():
     assert len(nearby.entries()) == discovery.MAX_ENTRIES
 
 
+def test_interface_addresses_skip_virtual_down_and_public(monkeypatch):
+    from types import SimpleNamespace
+
+    from conftest import REAL_INTERFACE_ADDRESSES
+
+    def addr(ip, mask="255.255.255.0"):
+        return SimpleNamespace(family=socket.AF_INET, address=ip, netmask=mask)
+
+    monkeypatch.setattr(discovery.psutil, "net_if_addrs", lambda: {
+        "Wi-Fi": [addr("192.168.1.20")], "vEthernet (WSL)": [addr("172.21.224.1")], "Down": [addr("10.0.0.5")],
+        "Public": [addr("8.8.4.4")], "Loopback Pseudo-Interface 1": [addr("127.0.0.1", "255.0.0.0")],
+        "Local Area Connection* 3": [addr("192.168.137.1")]})
+    monkeypatch.setattr(discovery.psutil, "net_if_stats", lambda: {"Down": SimpleNamespace(isup=False)})
+    assert REAL_INTERFACE_ADDRESSES() == [("Wi-Fi", "192.168.1.20", 24), ("Local Area Connection* 3", "192.168.137.1", 24)]
+    assert ("Loopback Pseudo-Interface 1", "127.0.0.1", 8) in REAL_INTERFACE_ADDRESSES(include_loopback=True)
+    assert discovery.link_label("Local Area Connection* 3", "192.168.137.1") == "wifi-direct"
+    assert discovery.link_label("Wi-Fi", "192.168.1.20") == "lan"
+
+
 def test_cli_nearby_lists_probe_results_and_hint(monkeypatch, tmp_path, capsys):
     from network_connector import cli
 
     monkeypatch.setenv("NC_HOME", str(tmp_path))
     identity._cache.clear()
-    monkeypatch.setattr(discovery, "interface_addresses", lambda include_loopback=False: [])  # no real sockets in tests
     monkeypatch.setattr(discovery, "probe_requesters", lambda hosts, port, own_device_id="": [
         NearbyEntry("cd" * 32, "i7", "192.168.137.1", port, link="wifi-direct", source="probe")])
     identity.PeerBook().set("cd" * 32, trusted=True)

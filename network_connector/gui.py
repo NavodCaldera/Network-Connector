@@ -13,7 +13,7 @@ from typing import Any
 from . import __version__, jobs
 from .client import AdminClient, admin_client_from_disk
 from .benchmark_gui import BenchmarkControls
-from .link_gui import ControllerDirectControls
+from .link_gui import ControllerDirectControls, ControllerJoinControls
 from .config import (
     ConfigError,
     ControllerConfig,
@@ -43,7 +43,7 @@ def _short(value: Any) -> Any:
     return value
 
 
-class ControllerApp(BenchmarkControls, ControllerDirectControls):
+class ControllerApp(BenchmarkControls, ControllerDirectControls, ControllerJoinControls):
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.bg = Background(root)
@@ -71,6 +71,7 @@ class ControllerApp(BenchmarkControls, ControllerDirectControls):
         self._build_jobs(nb)
         self._build_submit(nb)
         self._build_pairing(nb)
+        self._build_devices(nb)
         self._build_direct(nb)
         self._build_demo(nb)
         self._build_benchmark(nb)
