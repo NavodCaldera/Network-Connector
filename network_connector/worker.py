@@ -511,8 +511,14 @@ class WorkerAgent:
                 psutil.Process(proc.pid).nice(10)
             except psutil.Error:
                 pass
-        rj = RunningJob(job["id"], job["kind"], job["attempt"], job["timeout_s"], proc,
-                        limit_memory(proc.pid, self.cfg.max_memory_mb, self._cpu_rate_per_job()),
+        rate = self._cpu_rate_per_job()
+        handle = limit_memory(proc.pid, self.cfg.max_memory_mb, rate)
+        if rate and handle is None:
+            proc.kill()
+            proc.wait(timeout=10)
+            self._refuse(job, "the owner's CPU-rate limit could not be enforced", True)
+            return
+        rj = RunningJob(job["id"], job["kind"], job["attempt"], job["timeout_s"], proc, handle,
                         label=str(job.get("label") or "")[:120])
         payload = json.dumps({"kind": job["kind"], "params": job["params"]}).encode()
 

@@ -144,11 +144,16 @@ def test_wasm_and_native_engines_with_top_n_give_identical_answers(tmp_path, mon
         cluster.close()
 
 
-def test_wasm_engine_needs_helpers_with_a_sandbox(cluster):
+def test_wasm_engine_needs_helpers_with_a_sandbox(cluster, monkeypatch):
+    from network_connector import sandbox
     from network_connector.client import ControllerError
 
+    # Every heartbeat re-reads sandbox.available(), so make the sandbox unavailable at its source. (Setting
+    # worker._info by hand only worked where there is no sandbox at all, e.g. Linux; on a Windows PC with a
+    # working sandbox the next heartbeat put True back.)
+    monkeypatch.setattr(sandbox, "available", lambda refresh=False: (False, "The sandbox is not set up yet."))
     worker = cluster.add_worker("plain")
     wait_for(lambda: worker.state == "online")
-    worker._info["sandbox"] = False
+    wait_for(lambda: any(w["name"] == "plain" and w["info"].get("sandbox") is False for w in cluster.admin.workers()))
     with pytest.raises(ControllerError, match="sandbox"):
         cluster.admin.start_benchmark({"units": 1, "engines": ["wasm"]})

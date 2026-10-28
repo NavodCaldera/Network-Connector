@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,9 @@ def _isolated_home(tmp_path_factory, monkeypatch):
     """No test may touch the real %LOCALAPPDATA%\\NetworkConnector or bind discovery sockets on real networks."""
     monkeypatch.setenv("NC_HOME", str(tmp_path_factory.mktemp("nc-home")))
     monkeypatch.setattr(discovery, "interface_addresses", lambda include_loopback=False: [])
+    # Integration workers must not depend on whether the test laptop is charging.
+    # Power-policy tests replace this measurement with their own battery states.
+    monkeypatch.setattr("psutil.sensors_battery", lambda: SimpleNamespace(power_plugged=True, percent=100))
 
 
 def free_port() -> int:

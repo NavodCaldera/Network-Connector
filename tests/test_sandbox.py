@@ -49,6 +49,39 @@ def test_echo_runs_and_profile_is_deleted(box):
     assert r.profile.lower() not in sandbox.leftovers()
 
 
+def test_cpu_rate_hard_cap_is_installed_on_real_sandbox(box):
+    import ctypes
+    from network_connector import winlimits
+
+    instance = sandbox.Sandbox(wasm(LOOP), memory_mb=16, seconds=30, cpu_rate_percent=25)
+    results = []
+    thread = threading.Thread(target=lambda: results.append(instance.run()))
+    thread.start()
+    try:
+        deadline = time.monotonic() + 20
+        while not instance._running_at and thread.is_alive() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert instance._running_at, results
+        info = winlimits._CpuRate()
+        assert winlimits._k32.QueryInformationJobObject(instance._job, 15, ctypes.byref(info), ctypes.sizeof(info), None)
+        assert info.ControlFlags == 0x1 | 0x4
+        assert info.CpuRate == 2500
+    finally:
+        instance.kill("stopped")
+        thread.join(10)
+    assert not thread.is_alive()
+    assert results[0].outcome == "stopped"
+
+
+def test_sandbox_refuses_job_when_cpu_cap_cannot_be_installed(box, monkeypatch):
+    monkeypatch.setattr(sandbox, "set_cpu_rate", lambda *args: False)
+    instance = sandbox.Sandbox(wasm(ECHO), memory_mb=16, seconds=10, cpu_rate_percent=25)
+    with pytest.raises(sandbox.SandboxUnavailable, match="CPU-rate limit"):
+        instance.run()
+    assert instance.pid == 0 and instance._job is None
+    assert instance.name.lower() not in sandbox.leftovers()
+
+
 def test_exit_code_and_args_are_passed(box):
     r = sandbox.run(wasm(EXIT_7), memory_mb=16, seconds=10)
     assert r.outcome == "exit" and r.exit_code == 7 and r.ok

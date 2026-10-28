@@ -7,7 +7,8 @@ __pycache__/
 build/
 dist/
 .pytest_cache/
-.test-tmp*/
+.test-*/
+.windows-validation/
 
 # Secrets and runtime state (these normally live in %LOCALAPPDATA%\NetworkConnector anyway)
 .env

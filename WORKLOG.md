@@ -15,6 +15,76 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-10-29 · Claude Code (local, Windows) · `claude/great-davinci-bch39n`
+
+### Windows validation, i7 checks and acceptance preparation (finishes Codex's interrupted work)
+
+- **Asked:** run the full suite on Windows (never done before), check the i7, fix real failures without weakening
+  security, prepare the i3 acceptance steps, commit and push. No merge to `main`, no tags. The owner confirmed Codex had
+  stopped (token limit) and asked me to finish.
+- **Done:**
+  - Reviewed and kept Codex's uncommitted work: `winlimits.limit_memory` now closes the job and returns `None` when the
+    CPU-rate cap can't be set, and `worker._start_job` kills and refuses the job in that case (the owner's cap is never
+    silently skipped); two new tests for it (`test_helper_policy.py`, `test_sandbox.py` real Job Object check of the
+    25 % cap and sandbox refusal); `conftest.py` pins `psutil.sensors_battery` so integration tests don't depend on
+    charging; `docs/ACCEPTANCE_0.3.0.md`; `spikes/0.3-windows/collect-local.ps1`.
+  - Fixed `tests/test_wasm_bench.py::test_wasm_engine_needs_helpers_with_a_sandbox`: it set `worker._info["sandbox"] = False`
+    by hand, but every heartbeat re-reads `sandbox.available()`. It only passed where no sandbox exists (Linux). Now the
+    test makes `sandbox.available` return False and waits until the controller has seen it. Product code unchanged.
+  - Fixed `collect-local.ps1`: with `$ErrorActionPreference='Stop'` and `2>&1`, Windows PowerShell 5.1 turns the first
+    line `nc` prints to stderr (`[ok] exit code ...`) into a terminating error, so the script died after the primes run.
+    Native commands now run through `Invoke-Logged` (`Continue`, stderr logged as plain text).
+  - `.gitignore`: `.test-tmp*/` widened to `.test-*/` (Codex's `.test-app*`, `.test-policy*`, `.test-stop` folders are
+    Windows-ACL-locked and must not be committed).
+  - Checked that the environment variables used by the acceptance steps exist (`NC_PORT`, `NC_CONTROLLER_PORT`,
+    `NC_DISCOVERY_PORT` come from config's generic `NC_<FIELD>` override; the discovery code uses `cfg.discovery_port`).
+- **Decisions:** the stricter behaviour (refuse the job if the owner's CPU cap can't be set) stays; nothing in the
+  security invariants was loosened.
+- **Verified (real results, this i7, Windows 11, Python 3.12.9, commit `7c1c178` + the uncommitted changes above):**
+  - Baseline full suite with Codex's changes: **341 passed, 1 failed** (the test fixed above), 11 min 38 s. This was the
+    first run of the Windows-only escape suite, wasm job tests, firewall harness and CPU-cap tests: all passed.
+  - Re-run of `test_wasm_bench.py` + `test_helper_policy.py`: 13 passed.
+  - Final full suite: **342 passed, 0 failed, 0 skipped, 1 warning (Starlette deprecation)**, 7 min 18 s.
+    `sandbox.leftovers()` afterwards: `[]`.
+  - `collect-local.ps1 -PC i7` (isolated `NC_HOME`/`NC_RUNTIME_HOME` under `spikes\0.3-windows\out`): `nc sandbox setup` ok;
+    `status --check` available, self-check ok (2625 ms, profile deleted); primes printed `78498` (0.39 s, peak 36 MB);
+    bench digest `f21b6b5f35b38489a4d9e714089c3df49b59b43de6c0efb2f9d37b43f43cab6a` (matches), 1 unit; leftover profiles
+    `[]`; 0 failed commands. (The first run of this script crashed on stderr; see the fix above.)
+  - App launch (`network-connector.exe`, isolated home, ports 18765/18766): process alive after 10 s, no output/errors,
+    the process owned a visible `TkTopLevel` window titled "Network Connector" (the role chooser, as no role was saved)
+    and a `...SystemTrayIcon` window (pystray created its tray window). Probe process was terminated afterwards;
+    no sandbox profiles left.
+- **Not done / could not be checked (be clear: these are NOT verified):**
+  - What the app looks like: tray icon image and right-click menu, a real toast/notification, the "Start at login"
+    switch (HKCU Run value), close-to-tray, Both/Give/Ask role screens. I cannot see the screen; the owner must check
+    these (acceptance doc §3).
+  - Everything that needs the i3: join/consent, Stop <= 1 s on hardware, Wi-Fi Direct group and hotspot, auto-join, the
+    discovery firewall rule on a Public link, `Get-NetTCPConnection` listener check on the i3, two-PC benchmark, quotas
+    with real unplugging. Hardware acceptance is **pending**; nothing was merged to `main` or tagged.
+  - Optional `python.wasm` (PLAN §17.6) was not built.
+  - The Windows-locked folders `.test-app*`, `.test-policy*`, `.test-stop`, `.test-tmp-*`, `.pytest_cache` could not be
+    deleted by this session (access denied); they are git-ignored.
+
+## 2026-10-28 · Codex · `claude/great-davinci-bch39n`
+
+### Windows validation and acceptance preparation (interrupted: Codex ran out of tokens; finished by Claude Code in the entry above)
+
+- **Asked:** run the complete Windows suite and isolated i7 checks, fix real
+  failures without weakening isolation, prepare exact i3 acceptance steps, and
+  push this branch only after tests pass. No main merge or tags.
+- **Done:** fetched and checked out the requested branch; read CLAUDE, WORKLOG,
+  HANDOFF, AGENT §1, PLAN and the security review. Added
+  `docs/ACCEPTANCE_0.3.0.md` and `spikes/0.3-windows/collect-local.ps1` for isolated
+  per-PC evidence; ignored validation artifacts.
+- **Decisions:** keep all application state/runtime copies separate from the
+  owner's real data. Two-laptop outcomes stay pending until observed/reported.
+- **Verified:** Python 3.12.9 venv initialized from
+  `C:\Program Files\Python312\python.exe`; `pip install -e .[test,app]` succeeded;
+  import resolves to this checkout. Full baseline Windows suite is running.
+- **Not done / open:** baseline/final summaries, actual i7 UI and sandbox results,
+  and fixes will be recorded here before the corresponding commit. Hardware
+  acceptance and actual login persistence remain owner-run checks.
+
 ## 2026-10-28 · Claude Code (cloud session) · `claude/great-davinci-bch39n`
 
 ### Session 2: work-log rule

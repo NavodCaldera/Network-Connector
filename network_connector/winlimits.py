@@ -107,6 +107,8 @@ def limit_memory(pid: int, megabytes: int, cpu_rate_percent: int = 0) -> object 
     ok = _k32.SetInformationJobObject(job, _EXTENDED_LIMIT_INFO, ctypes.byref(info), ctypes.sizeof(info))
     if ok and cpu_rate_percent and not set_cpu_rate(job, cpu_rate_percent):
         log.warning("CPU-rate cap unavailable for pid %s", pid)
+        _k32.CloseHandle(job)
+        return None
     process = _k32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
     assigned = bool(ok and process and _k32.AssignProcessToJobObject(job, process))
     if process:
