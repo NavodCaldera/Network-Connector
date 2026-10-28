@@ -1,5 +1,16 @@
 # Handoff: what is left to do
 
+## 2026-10-29 Claude Code update: Windows validation done on the i7 (branch `claude/great-davinci-bch39n`)
+
+- **Full suite on Windows: 342 passed, 0 failed, 0 skipped** (first time the sandbox escape suite, wasm job tests, firewall
+  harness and CPU-cap tests ran on Windows). Details and the two fixes (a test that only passed on Linux, and a stderr crash
+  in `spikes/0.3-windows/collect-local.ps1`) are in [WORKLOG.md](WORKLOG.md).
+- **i7 sandbox checks pass:** primes -> `78498`, bench digest `f21b6b5f...cab6a`, 0 leftover profiles. The app starts and creates its window and tray window.
+- **Still pending (owner):** the checklist in [docs/ACCEPTANCE_0.3.0.md](docs/ACCEPTANCE_0.3.0.md) on the i7 **and** the i3:
+  on-screen app checks (tray menu, notification, Start at login, close to tray), join/consent, Stop <= 1 s, direct link and
+  hotspot, quotas, two-PC benchmark. Run `spikes\0.3-windows\collect-local.ps1 -PC i3 -FullTests` first on the i3.
+  Then merge to `main` and tag `v0.3.0` (owner only).
+
 ## 2026-10-28 Claude Code update: phases 9–11 code complete (branch `claude/great-davinci-bch39n`)
 
 All remaining **code** items in this file are done, on top of `integrate/0.3.0` (merged as `b1a4943`). What is left
@@ -66,6 +77,8 @@ The owner asked to stop work and update GitHub. The following changes are on
   included in commits. Other pending work and hardware tests below remain pending.
 
 ---
+
+**Project rule:** every change is recorded in [WORKLOG.md](WORKLOG.md) in the same commit (AGENT.md §1 "Work log").
 
 Written 2026-10-28 (updated after the Phase 7 + 8 merge) for the next coding agent (for example Codex) or developer who continues this project. Read
 this file first, then [PLAN.md](PLAN.md) (the full design) and [AGENT.md](AGENT.md) (rules, security invariants,

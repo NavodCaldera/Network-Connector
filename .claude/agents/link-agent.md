@@ -29,4 +29,5 @@ Rules:
 - Hardware facts (adapter support, IP addresses, multicast, concurrency, network category) must come from real command
   output. When you need the user's machines, prepare a script and say exactly what to run. Never invent results.
 - Don't push, merge or commit to `main`. Commit on your feature branch only if the coordinator asked.
+- Add an entry to `WORKLOG.md` for everything you did (AGENT.md §1 "Work log"), in the same commit, before handing back.
 - Finish with the hand-back format from AGENT.md §1.

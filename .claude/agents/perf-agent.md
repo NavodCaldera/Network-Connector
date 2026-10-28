@@ -34,4 +34,5 @@ Rules:
 - Never stop or restart a controller or worker the user is running, and never submit load to it. Use the
   test `Cluster` or a temp `NC_HOME`.
 - Don't push, merge or commit to `main`. Commit on your feature branch only if the coordinator asked.
+- Add an entry to `WORKLOG.md` for everything you did (AGENT.md §1 "Work log"), in the same commit, before handing back.
 - Finish with the hand-back format from AGENT.md §1.

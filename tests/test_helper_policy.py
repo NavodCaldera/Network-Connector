@@ -77,3 +77,21 @@ def test_cpu_rate_cap_is_validated_and_shared_between_slots():
     assert agent._cpu_rate_per_job() == 12
     agent.cfg.cpu_rate_percent = 0
     assert agent._cpu_rate_per_job() == 0
+
+
+def test_native_job_is_refused_if_owner_cpu_cap_cannot_be_installed(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    from network_connector.worker import WorkerAgent
+
+    agent = WorkerAgent(WorkerConfig(ac_only=False, cpu_rate_percent=20), tmp_path)
+    agent._refuse = Mock()
+    process = Mock(pid=123)
+    monkeypatch.setattr("network_connector.worker.subprocess.Popen", Mock(return_value=process))
+    monkeypatch.setattr("network_connector.worker.limit_memory", lambda *args: None)
+    job = {"id": "cap-test", "kind": "cpu_burn", "attempt": 1, "timeout_s": 60, "params": {"seconds": 1}}
+    agent._start_job(job)
+    process.kill.assert_called_once_with()
+    process.wait.assert_called_once_with(timeout=10)
+    agent._refuse.assert_called_once_with(job, "the owner's CPU-rate limit could not be enforced", True)
+    assert not agent.running
