@@ -494,7 +494,7 @@ def _wasm_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--input", dest="inputs", action="append", metavar="FILE",
                    help="wasm: a file given to the module on stdin; repeat for one job per file")
     p.add_argument("--input-text", help="wasm: text given to the module on stdin")
-    p.add_argument("--arg", dest="wasm_args", action="append", metavar="TEXT", help="wasm: a command-line argument")
+    p.add_argument("--arg", dest="wasm_args", action="append", metavar="TEXT", help="wasm: one command-line argument for the module (write --arg=-x for values starting with -)")
     p.add_argument("--memory-mb", type=int, help="wasm: memory limit in MB")
     p.add_argument("--seconds", type=int, help="wasm: time limit in seconds")
     p.add_argument("--fuel", type=int, help="wasm: instruction budget (optional, about 8%% slower)")

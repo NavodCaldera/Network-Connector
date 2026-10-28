@@ -277,3 +277,41 @@ def test_stop_kills_sandboxes_within_a_second_and_requeues(cluster, sandbox_runt
     job = wait_for(lambda: (j := cluster.admin.job(jid))["status"] == "queued" and j, timeout=20)
     assert job["attempt"] == 0 and job["attempts"][0]["outcome"] == "released"
     cluster.admin.cancel_job(jid)
+
+
+# ------------------------------------------------------------------ CLI
+def test_cli_sandbox_status_explains_missing_setup(tmp_path, monkeypatch, capsys):
+    from network_connector.cli import main
+
+    monkeypatch.setenv("NC_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("NC_RUNTIME_HOME", str(tmp_path / "runtime"))
+    monkeypatch.setattr(sandbox, "_avail_cache", None)
+    assert main(["sandbox", "status"]) == 1
+    out = capsys.readouterr().out
+    assert "Sandbox available: no" in out and ("nc sandbox setup" in out or "Windows" in out)
+    assert not (tmp_path / "runtime").exists()  # status never creates or grants anything
+    monkeypatch.setattr(sandbox, "_avail_cache", None)
+
+
+@windows_only
+def test_cli_sandbox_run_and_check(sandbox_runtime, capsys):
+    from network_connector.cli import main
+
+    sandbox.available(refresh=True)
+    assert main(["sandbox", "run", str(PRIMES / "primes.wasm"), "--input-text", "0 1000000"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "78498" and "[ok]" in captured.err
+    assert main(["sandbox", "run", str(PRIMES / "primes.wasm"), "--input-text", "nothing"]) == 2
+    assert main(["sandbox", "status", "--check"]) == 0
+    assert "Self-check: ok" in capsys.readouterr().out
+
+
+def test_cli_parses_wasm_submit_options():
+    from network_connector.cli import build_parser
+
+    a = build_parser().parse_args(["job", "submit", "wasm", "--module", "m.wasm", "--input", "a.txt", "--input", "b.txt",
+                                   "--arg=-v", "--memory-mb", "64", "--seconds", "30", "--fuel", "1000"])
+    assert (a.kind, a.module, a.inputs, a.wasm_args, a.memory_mb, a.seconds, a.fuel) == (
+        "wasm", "m.wasm", ["a.txt", "b.txt"], ["-v"], 64, 30, 1000)
+    assert build_parser().parse_args(["module", "list"]).sub == "list"
+    assert build_parser().parse_args(["sandbox", "setup", "--remove"]).remove
