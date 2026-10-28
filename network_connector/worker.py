@@ -23,7 +23,7 @@ import psutil
 from . import __version__, jobs, modules, sandbox
 from .client import ControllerError, controller_url, fetch_module, pinned_context, probe, raise_for_error
 from .config import WorkerConfig, load_config, save_config
-from .helper_policy import can_help
+from .helper_policy import limit_reason
 from .helper_usage import HelperUsage
 from .security import constant_time_equal, fingerprint_pem_file
 from .sysinfo import hardware_info, live_metrics, prime_cpu_counter
@@ -81,6 +81,7 @@ class RunningJob:
     wasm_result: Any = None
     wasm_error: str = ""
     module_sha256: str = ""
+    label: str = ""  # the requester's batch label, shown in "what is running"
 
 
 class WorkerAgent:
@@ -114,6 +115,7 @@ class WorkerAgent:
         self._remote_group_mode = "closed"
         self._sandbox_note = ""
         self._policy_note = ""
+        self._next_limit_check = 0.0
         self._info = hardware_info() | {
             "limits": {
                 "max_cpu_threads": cfg.max_cpu_threads,
@@ -170,7 +172,7 @@ class WorkerAgent:
                     ram_mb = process.memory_info().rss / (1024 * 1024)
                 except psutil.Error:
                     pass
-            running.append({"id": j.id, "kind": j.kind, "progress": round(j.progress, 1),
+            running.append({"id": j.id, "kind": j.kind, "label": j.label, "progress": round(j.progress, 1),
                             "elapsed": round(time.monotonic() - j.started, 1),
                             "cpu_percent": round(cpu_percent, 1), "ram_mb": round(ram_mb, 1)}
                            | ({"module_sha256": j.module_sha256} if j.module_sha256 else {}))
@@ -182,7 +184,8 @@ class WorkerAgent:
             "link": self._link, "controller_host": self.cfg.controller_host, "rtt_ms": self._rtt_ms,
             "group_mode": self.cfg.group_mode, "requester_name": self.cfg.requester_name, "closing": self.remote_closing,
             "requester_id": (self.cfg.requester_device_id or self.cfg.controller_fingerprint)[:8],
-            "cpu_minutes_today": round(self.usage.seconds(self._requester_key()) / 60, 1),
+            "cpu_minutes_today": round(self._used_today() / 60, 1),
+            "daily_cpu_min": self.cfg.daily_cpu_min,
             "policy_reason": self._policy_note,
         }
 
@@ -211,6 +214,7 @@ class WorkerAgent:
         try:
             while not self.stop_event.is_set():
                 self._read_control_file()
+                self._check_limits_while_running()
                 finished = self._poll_running()
                 if finished:
                     last_activity = time.monotonic()
@@ -355,22 +359,75 @@ class WorkerAgent:
             return False
         if len(self.running) >= self.slots or self.state in ("stopping", "offline", "connecting"):
             return False
-        allowed, reason = can_help(self.cfg)
-        if not allowed:
-            if reason != self._policy_note:
-                self._event(reason)
-            self._policy_note = reason
+        if self._limit_note():
             return False
-        if self.cfg.daily_cpu_min > 0 and self.usage.seconds(self._requester_key()) >= self.cfg.daily_cpu_min * 60:
-            if self._policy_note != "daily CPU limit reached":
-                self._event("daily CPU limit reached")
-            self._policy_note = "daily CPU limit reached"
-            return False
-        self._policy_note = ""
         return psutil.virtual_memory().percent < 92  # never start work when the laptop is nearly out of RAM
 
     def _requester_key(self) -> str:
         return self.cfg.requester_device_id or self.cfg.controller_fingerprint
+
+    def _requester_blocked(self) -> bool:
+        from .identity import PeerBook
+
+        key = self._requester_key()
+        if not key:
+            return False
+        if key in self.cfg.blocked_requesters:
+            return True
+        try:
+            return PeerBook().is_blocked(key)
+        except (OSError, ValueError):
+            return False
+
+    @staticmethod
+    def _job_cpu(j: RunningJob) -> float:
+        pid = j.sandbox.pid if j.sandbox is not None else j.proc.pid if j.proc is not None else 0
+        if not pid:
+            return 0.0
+        try:
+            times = psutil.Process(pid).cpu_times()
+            return times.user + times.system
+        except psutil.Error:
+            return 0.0
+
+    def _running_cpu_seconds(self) -> float:
+        """CPU time the running jobs used so far; counted against the daily limit before they finish."""
+        return sum(self._job_cpu(j) for j in list(self.running.values()))
+
+    def _used_today(self) -> float:
+        return self.usage.seconds(self._requester_key()) + self._running_cpu_seconds()
+
+    def _limit_note(self) -> str:
+        """Checks the owner's limits on this helper; records and announces a new reason."""
+        reason = limit_reason(self.cfg, self._used_today(), self._requester_blocked())
+        if reason and reason != self._policy_note:
+            self._event(reason + ("" if not self.running else
+                                  "; stopping the running job(s) now" if self.cfg.limit_stop_now or
+                                  reason.startswith("requester blocked") else "; the running job(s) may finish"))
+        self._policy_note = reason
+        return reason
+
+    def _check_limits_while_running(self) -> None:
+        """PLAN §16.2: limits also apply while jobs run. Blocking always stops them; other limits only
+        when the owner chose "stop immediately"."""
+        now = time.monotonic()
+        if not self.running or now < self._next_limit_check:
+            return
+        self._next_limit_check = now + 1.0
+        reason = self._limit_note()
+        if not reason or not (self.cfg.limit_stop_now or reason.startswith("requester blocked")):
+            return
+        sandbox.stop_all()
+        for rj in list(self.running.values()):
+            used = self._job_cpu(rj)
+            self._kill(rj)
+            self._drop(rj)
+            self.usage.add(self._requester_key(), used)
+            try:
+                self._call(f"/worker/jobs/{rj.id}/release", {"attempt": rj.attempt})
+                self._event(f"job {rj.id} stopped ({reason}); handed back to the requester")
+            except Exception:  # noqa: BLE001 - its lease expires and it is re-queued anyway
+                pass
 
     def claim_kinds(self) -> list[str]:
         """Job kinds this helper accepts right now: by group mode, and wasm only if the sandbox works."""
@@ -444,7 +501,8 @@ class WorkerAgent:
             except psutil.Error:
                 pass
         rj = RunningJob(job["id"], job["kind"], job["attempt"], job["timeout_s"], proc,
-                        limit_memory(proc.pid, self.cfg.max_memory_mb))
+                        limit_memory(proc.pid, self.cfg.max_memory_mb, self._cpu_rate_per_job()),
+                        label=str(job.get("label") or "")[:120])
         payload = json.dumps({"kind": job["kind"], "params": job["params"]}).encode()
 
         def feed() -> None:
@@ -479,6 +537,12 @@ class WorkerAgent:
         self.running[rj.id] = rj
         self._event(f"started job {rj.id} ({rj.kind}, attempt {rj.attempt})")
 
+    def _cpu_rate_per_job(self) -> int:
+        """The owner's whole-helper CPU cap, shared out between the job slots (at least 1 %)."""
+        if not self.cfg.cpu_rate_percent:
+            return 0
+        return max(1, min(100, self.cfg.cpu_rate_percent // self.slots))
+
     def _module(self, sha256: str) -> bytes:
         data = self.module_cache.get(sha256)
         if data is None:
@@ -511,9 +575,9 @@ class WorkerAgent:
             return
         box = sandbox.Sandbox(module, base64.b64decode(params["input_b64"]), params["args"],
                               memory_mb=limits["memory_mb"], seconds=min(limits["seconds"], job["timeout_s"]),
-                              fuel=limits.get("fuel"))
+                              fuel=limits.get("fuel"), cpu_rate_percent=self._cpu_rate_per_job())
         rj = RunningJob(job["id"], job["kind"], job["attempt"], job["timeout_s"], None, None, sandbox=box,
-                        module_sha256=params["module_sha256"])
+                        module_sha256=params["module_sha256"], label=str(job.get("label") or "")[:120])
 
         def go() -> None:
             try:

@@ -565,9 +565,10 @@ def create_app(state: ControllerState) -> FastAPI:
         if not kinds:
             return {"jobs": []}
         claimed = store.claim(worker, req.max_jobs, cfg.lease_seconds, kinds)
+        labels = store.batch_labels({j["batch_id"] for j in claimed})
         return {"jobs": [
             {"id": j["id"], "kind": j["kind"], "params": j["params"], "attempt": j["attempt"],
-             "timeout_s": j["timeout_s"]} for j in claimed]}
+             "timeout_s": j["timeout_s"], "label": labels.get(j["batch_id"]) or ""} for j in claimed]}
 
     @app.post("/worker/jobs/{job_id}/complete")
     def complete(job_id: str, req: CompleteRequest, worker: dict = Depends(require_worker)) -> dict[str, Any]:
@@ -1175,6 +1176,20 @@ class ControllerRuntime:
                     log.warning("re-queued/failed %d job(s) with expired lease or timeout", n)
             except Exception:  # noqa: BLE001
                 log.exception("reaper error")
+
+    def wind_down(self, wait_s: float = 20.0, heartbeat_s: float = 6.0) -> None:
+        """Stop requesting politely (PLAN §13): hand out no more work and announce "closing", let running
+        chunks finish for up to `wait_s`, then give helpers one heartbeat to hear it and leave. stop() follows."""
+        if not self.running:
+            return
+        self.state.closing = True
+        deadline = time.monotonic() + wait_s
+        while self.store.summary()["running"] and time.monotonic() < deadline and not self.stop_event.is_set():
+            time.sleep(0.25)
+        active = [w for w in self.store.list_workers() if w["state"] == "active" and w["last_seen"]
+                  and time.time() - w["last_seen"] < self.cfg.worker_offline_after_s]
+        if active:
+            self.stop_event.wait(heartbeat_s)
 
     def stop(self) -> None:
         self.stop_event.set()

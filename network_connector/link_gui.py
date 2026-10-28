@@ -332,6 +332,10 @@ class ControllerJoinControls:
             for d in devices["devices"]])
 
 
+def helper_threads(cfg: WorkerConfig) -> int:
+    return max(1, min(cfg.max_cpu_threads, cfg.max_concurrent_jobs))
+
+
 def sandbox_ready() -> bool:
     """Automatic joining waits for the Compute agent's sandbox (PLAN §17); until then joining is one click."""
     try:
@@ -369,6 +373,12 @@ class WorkerNearbyControls:
         self.nearby_status.pack(anchor="w")
         self._nearby_busy = False
         self.nearby = NearbyList(on_new=lambda e: self.bg.call_soon(self._nearby_new, e))
+        from .notify import ConsentRequests, Notifier
+
+        self.consent = ConsentRequests()
+        self._consent_windows: dict[str, tk.Toplevel] = {}
+        self.notifier = Notifier(lambda action, device: self.bg.call_soon(self._notify_action, action, device),
+                                 window=lambda kind, text, device: self.bg.call_soon(self._notify_window, kind, text, device))
         self.listener: Listener | None = None
         if self.cfg.discovery:
             self.listener = Listener(self.ident.device_id, self.nearby, port=self.cfg.discovery_port)
@@ -387,6 +397,9 @@ class WorkerNearbyControls:
         from .gui_common import fill_tree
 
         self.root.after(1000, self._nearby_tick)
+        for request in self.consent.expire():
+            self._consent_closed(request.device_id)
+            self._write(f"No answer for {request.name} ({request.short_id}) in 60 s, so it was declined.")
         rows = []
         for e in self.nearby.entries():
             badge = "Blocked" if self.peers.is_blocked(e.device_id) else "Trusted" if self.peers.is_trusted(e.device_id) else ""
@@ -407,12 +420,58 @@ class WorkerNearbyControls:
         return entry
 
     def _nearby_new(self, entry: Any) -> None:
-        """A requester appeared. Auto-accept needs the sandbox, so for now this only shows it in the list."""
+        """A requester appeared. Joining by itself (or asking first) needs a working sandbox (PLAN §16.2)."""
         if self.agent or not entry.open or self.peers.is_blocked(entry.device_id) or not sandbox_ready():
             return
         mode = self.cfg.join_mode
         if mode == "auto" or (mode == "trusted" and self.peers.is_trusted(entry.device_id)):
-            self._join_entry(entry, ask=False)
+            self._join_entry(entry, ask=False, announce=True)
+        elif mode == "ask" and self.consent.add(entry.device_id, entry.name, entry.short_id, helper_threads(self.cfg)):
+            request = next(r for r in self.consent.pending() if r.device_id == entry.device_id)
+            self.notifier.ask(request)
+
+    # ---- owner messages: Accept / Decline / Stop (from a toast, the tray or the window)
+    def _notify_action(self, action: str, device_id: str) -> None:
+        if action == "stop":
+            agent = self.agent
+            if agent and device_id in (agent.cfg.requester_device_id, agent.cfg.controller_fingerprint):
+                self.stop()
+            return
+        request = self.consent.answer(action, device_id)
+        self._consent_closed(device_id)
+        if request is None or action != "accept":
+            if request is not None:
+                self._write(f"Declined {request.name} ({request.short_id}).")
+            return
+        entry = self.nearby.get(device_id)
+        if entry is None or not entry.open:
+            self._write(f"{request.name} is no longer asking for help nearby.")
+            return
+        self._join_entry(entry, ask=False, announce=True)
+
+    def _notify_window(self, kind: str, text: str, device_id: str) -> None:
+        self._write(text)
+        if kind != "ask" or device_id in self._consent_windows:
+            return
+        win = tk.Toplevel(self.root)
+        win.title("Network Connector")
+        win.attributes("-topmost", True)
+        ttk.Label(win, text=text, wraplength=380, padding=12).pack()
+        row = ttk.Frame(win, padding=(12, 0, 12, 12))
+        row.pack()
+        ttk.Button(row, text="Accept", command=lambda: self._notify_action("accept", device_id)).pack(side="left", padx=4)
+        ttk.Button(row, text="Decline", command=lambda: self._notify_action("decline", device_id)).pack(side="left", padx=4)
+        win.protocol("WM_DELETE_WINDOW", lambda: self._notify_action("decline", device_id))
+        self._consent_windows[device_id] = win
+
+    def _consent_closed(self, device_id: str) -> None:
+        self.notifier.withdraw(device_id)
+        win = self._consent_windows.pop(device_id, None)
+        if win is not None:
+            try:
+                win.destroy()
+            except tk.TclError:
+                pass
 
     def _nearby_search(self) -> None:
         from .discovery import probe_requesters
@@ -449,7 +508,7 @@ class WorkerNearbyControls:
         if entry:
             self._join_entry(entry, ask=True)
 
-    def _join_entry(self, entry: Any, ask: bool) -> None:
+    def _join_entry(self, entry: Any, ask: bool, announce: bool = False) -> None:
         from .client import JoinPending, join_requester, joined_dir
 
         if self.agent:
@@ -462,8 +521,8 @@ class WorkerNearbyControls:
             messagebox.showinfo("Join", "This requester is not accepting helpers right now.")
             return
         if ask and not messagebox.askyesno("Join", f"Help {entry.name} ({entry.short_id})?\n\nIt can send jobs to this "
-                                           "computer within the limits below. Until the sandbox is installed, only "
-                                           "Network Connector's built-in job types run. You can Stop or Leave at any time."):
+                                           "computer within the limits below. Its jobs run only inside the Wasm sandbox "
+                                           "(no network, no files). You can Stop or Leave at any time."):
             return
         cfg = self._apply_limits(load_config(WorkerConfig, self.dir / "worker.json"))
         cfg.token = cfg.worker_id = ""
@@ -479,6 +538,10 @@ class WorkerNearbyControls:
             self._use_dir(joined_dir(entry.device_id))
             self._write(f"Joined {entry.name} ({entry.short_id}) without a code. Its certificate is pinned.")
             self._launch(new_cfg)
+            if announce:
+                from .notify import using_text
+
+                self.notifier.info(using_text(entry.name, entry.short_id, helper_threads(new_cfg)), entry.device_id)
 
         def fail(exc: Exception) -> None:
             self._nearby_busy = False
@@ -568,6 +631,46 @@ class WorkerDirectControls:
         ttk.Button(box, text="Find controller", command=self._find_controller).grid(row=0, column=5, padx=3)
         self.link_status = ttk.Label(box, text="Join the controller's SSID, then find its address.", wraplength=840)
         self.link_status.grid(row=1, column=0, columnspan=6, sticky="w", pady=3)
+        self.radio_status = ttk.Label(box, text="", foreground="#b00020")
+        self.radio_button = ttk.Button(box, text="Turn on", command=self._radio_on)
+        self._radio_busy = False
+        self.root.after(1500, self._radio_tick)
+
+    # ---- Wi-Fi radio: shown only when it is off; turned on only by this click, never off
+    def _radio_tick(self) -> None:
+        from .radio import wifi_state
+
+        self.root.after(15000, self._radio_tick)
+        if not self._radio_busy:
+            self._radio_busy = True
+            self.bg.run(wifi_state, self._radio_render, lambda _e: self._radio_render("unknown"))
+
+    def _radio_render(self, state: str) -> None:
+        self._radio_busy = False
+        if state == "off":
+            self.radio_status.config(text="Wi-Fi is off — nearby requesters can't be found.")
+            self.radio_status.grid(row=2, column=0, columnspan=4, sticky="w")
+            self.radio_button.grid(row=2, column=4, sticky="w")
+        else:
+            self.radio_status.grid_remove()
+            self.radio_button.grid_remove()
+
+    def _radio_on(self) -> None:
+        from .radio import turn_wifi_on
+
+        self.radio_button.config(state="disabled")
+        self.radio_status.config(text="Asking Windows to turn Wi-Fi on …")
+
+        def done(text: str) -> None:
+            self.radio_button.config(state="normal")
+            self._radio_render("on")
+            self._write(text)
+
+        def fail(exc: Exception) -> None:
+            self.radio_button.config(state="normal")
+            self.radio_status.config(text=str(exc))
+
+        self.bg.run(turn_wifi_on, done, fail)
 
     def _join_direct(self) -> None:
         if self._join_busy:

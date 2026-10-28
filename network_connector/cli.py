@@ -672,6 +672,39 @@ def cmd_worker_gui(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_app_open(args: argparse.Namespace) -> int:
+    from .app import main as run
+
+    run(["--background"] if args.background else [])
+    return 0
+
+
+def cmd_app_autostart(args: argparse.Namespace) -> int:
+    from . import autostart
+
+    if not autostart.supported():
+        print("Starting at login is supported only on Windows.")
+        return 1
+    if args.state != "status":
+        autostart.set_enabled(args.state == "on")
+    print(f"Start at login: {'on' if autostart.enabled() else 'off'}")
+    return 0
+
+
+def cmd_app_reset(_: argparse.Namespace) -> int:
+    """Undo what the app registered for this user: the login entry and the toast AppUserModelID."""
+    from . import autostart, notify
+
+    if autostart.supported():
+        autostart.set_enabled(False)
+    notify.unregister_aumid()
+    from .paths import data_home
+
+    (data_home() / "app.json").unlink(missing_ok=True)
+    print("Removed the login entry and the message registration. Your identity, pairings and settings are kept.")
+    return 0
+
+
 def _wasm_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--input", dest="inputs", action="append", metavar="FILE",
                    help="wasm: a file given to the module on stdin; repeat for one job per file")
@@ -691,6 +724,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("selftest", help="quick check that the install works").set_defaults(fn=cmd_selftest)
     sub.add_parser("gui", help="open the controller window (i7)").set_defaults(fn=cmd_gui)
     sub.add_parser("worker-gui", help="open the worker window (i3)").set_defaults(fn=cmd_worker_gui)
+
+    ap = sub.add_parser("app", help="the one app: open it, start at login, reset").add_subparsers(dest="sub", required=True)
+    ao = ap.add_parser("open", help="open the app (role buttons, tray icon)")
+    ao.add_argument("--background", action="store_true", help="start in the tray")
+    ao.set_defaults(fn=cmd_app_open)
+    aa = ap.add_parser("autostart", help="start the app in the tray when you log in (this user only)")
+    aa.add_argument("state", choices=("on", "off", "status"))
+    aa.set_defaults(fn=cmd_app_autostart)
+    ap.add_parser("reset", help="remove the login entry and message registration").set_defaults(fn=cmd_app_reset)
 
     c = sub.add_parser("controller", help="run or stop the controller").add_subparsers(dest="sub", required=True)
     s = c.add_parser("start", help="start the controller (foreground)")

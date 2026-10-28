@@ -8,12 +8,29 @@ from typing import Any
 
 from . import __version__
 from .client import pair_worker
-from .config import WorkerConfig, default_worker_limits, load_config, save_config, setup_logging
+from .config import ConfigError, WorkerConfig, default_worker_limits, load_config, save_config, setup_logging
 from .gui_common import Background, fill_tree, make_tree
+from .helper_policy import HelperPolicy
 from .link_gui import WorkerDirectControls, WorkerNearbyControls
 from .paths import worker_dir
 from .sysinfo import hardware_info, live_metrics, prime_cpu_counter
 from .worker import NotPaired, WorkerAgent, load_worker_config
+
+
+ACCEPT_LABELS = {"auto": "Accept automatically and tell me", "ask": "Ask me each time", "trusted": "Trusted requesters only"}
+
+
+def running_summary(s: dict[str, Any]) -> str:
+    """Who this helper works for and how much of today's limit is used (no job contents)."""
+    who = s.get("requester_name") or s.get("controller_host") or "the requester"
+    short = s.get("requester_id", "")
+    short = f"{short[:4]}-{short[4:8]}".upper() if len(short) >= 8 else short
+    limit = s.get("daily_cpu_min") or 0
+    used = f"{s.get('cpu_minutes_today', 0):.1f}" + (f" of {limit}" if limit else "") + " CPU minutes used today"
+    text = f"Working for {who} ({short}) · {len(s.get('running', []))} job(s) running · {used}."
+    if s.get("policy_reason"):
+        text += f"  Not taking new work: {s['policy_reason']}."
+    return text
 
 
 class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
@@ -89,6 +106,9 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
         self.v_idle_gate = tk.IntVar(value=self.cfg.idle_min)
         self.v_hours = tk.StringVar(value=self.cfg.allowed_hours)
         self.v_daily = tk.IntVar(value=self.cfg.daily_cpu_min)
+        self.v_accept = tk.StringVar(value=ACCEPT_LABELS.get(self.cfg.join_mode, ACCEPT_LABELS["auto"]))
+        self.v_stop_now = tk.BooleanVar(value=self.cfg.limit_stop_now)
+        self.v_cpu_rate = tk.IntVar(value=self.cfg.cpu_rate_percent)
         items = (("Max CPU threads", self.v_threads, 1, 128, f"This PC has {hw['cores_logical']}. Leave one free to stay smooth."),
                  ("Max jobs at once", self.v_jobs, 1, 64, "Each job uses one thread."),
                  ("Max memory per job (MB)", self.v_mem, 256, 65536, "A job using more is stopped."),
@@ -106,7 +126,16 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
         ttk.Entry(lim, textvariable=self.v_hours, width=16).grid(row=7, column=1, sticky="w")
         ttk.Label(lim, text="Daily CPU minutes per requester (0 = unlimited)").grid(row=8, column=0, sticky="w")
         ttk.Spinbox(lim, from_=0, to=10080, textvariable=self.v_daily, width=8).grid(row=8, column=1, sticky="w")
-        ttk.Button(lim, text="Save limits", command=self.save_limits).grid(row=9, column=0, sticky="w", pady=4)
+        ttk.Label(lim, text="When a requester asks").grid(row=9, column=0, sticky="w")
+        ttk.Combobox(lim, values=list(ACCEPT_LABELS.values()), textvariable=self.v_accept, state="readonly",
+                     width=34).grid(row=9, column=1, columnspan=2, sticky="w")
+        ttk.Checkbutton(lim, text="When a limit is reached, stop running jobs at once (otherwise they finish first)",
+                        variable=self.v_stop_now).grid(row=10, column=0, columnspan=3, sticky="w")
+        ttk.Label(lim, text="CPU cap for all jobs (% of this PC; 0 = none)").grid(row=11, column=0, sticky="w")
+        ttk.Spinbox(lim, from_=0, to=100, textvariable=self.v_cpu_rate, width=8).grid(row=11, column=1, sticky="w")
+        self.blocked_label = ttk.Label(lim, text="", foreground="#666")
+        self.blocked_label.grid(row=12, column=0, columnspan=3, sticky="w")
+        ttk.Button(lim, text="Save limits", command=self.save_limits).grid(row=13, column=0, sticky="w", pady=4)
 
         # controls
         ctl = ttk.LabelFrame(root, text="3. Run", padding=8)
@@ -124,7 +153,11 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
         self.usage = ttk.Label(ctl, text="")
         self.usage.pack(side="right")
 
-        self.jtree = make_tree(root, [("Job", 120), ("Kind", 140), ("Progress", 80), ("Running for", 100)], height=4)
+        ttk.Label(root, text="What is running", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=8)
+        self.running_label = ttk.Label(root, text="", wraplength=860, foreground="#444")
+        self.running_label.pack(anchor="w", padx=8)
+        self.jtree = make_tree(root, [("Job", 100), ("Kind", 70), ("Label", 150), ("Module SHA-256", 130), ("CPU", 60),
+                                      ("RAM", 70), ("Progress", 70), ("Running for", 80)], height=4)
         perf = ttk.LabelFrame(root, text="Performance", padding=6)
         perf.pack(fill="x", padx=8, pady=4)
         self.performance = ttk.Label(perf, text="No shared benchmark loaded.", wraplength=840)
@@ -213,6 +246,10 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
         cfg.idle_min = max(0, int(self.v_idle_gate.get()))
         cfg.allowed_hours = self.v_hours.get().strip()
         cfg.daily_cpu_min = max(0, int(self.v_daily.get()))
+        cfg.join_mode = next((k for k, v in ACCEPT_LABELS.items() if v == self.v_accept.get()), "auto")
+        cfg.limit_stop_now = bool(self.v_stop_now.get())
+        cfg.cpu_rate_percent = int(self.v_cpu_rate.get())
+        HelperPolicy.from_config(cfg).validate()  # refuses bad hours or values before anything is saved
         return cfg
 
     # ------------------------------------------------------------------ actions
@@ -257,15 +294,27 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
         self._refresh_paired()
 
     def save_limits(self) -> None:
-        cfg = self._apply_limits(load_config(WorkerConfig, self.cfg_path))
+        try:
+            cfg = self._apply_limits(load_config(WorkerConfig, self.cfg_path))
+        except (ConfigError, ValueError, tk.TclError) as exc:
+            messagebox.showerror("Limits", str(exc))
+            return
         save_config(cfg, self.cfg_path)
-        self._write("Limits saved" + (" (they apply the next time you start the worker)." if self.agent else "."))
+        self.cfg.join_mode = cfg.join_mode
+        if self.agent:  # limits are enforced on this helper, so the running agent picks them up at once
+            for attr in ("ac_only", "idle_min", "allowed_hours", "daily_cpu_min", "limit_stop_now", "join_mode"):
+                setattr(self.agent.cfg, attr, getattr(cfg, attr))
+        self._write("Limits saved" + (". Threads, jobs and memory apply the next time you start the worker; hours, "
+                                      "power, idle and daily limits apply now." if self.agent else "."))
 
     def start(self) -> None:
         try:
             cfg = self._apply_limits(load_worker_config(self.dir))
         except NotPaired as exc:
             messagebox.showinfo("Start", str(exc))
+            return
+        except (ConfigError, ValueError, tk.TclError) as exc:
+            messagebox.showerror("Limits", str(exc))
             return
         if not messagebox.askyesno("Start worker", f"Start working for {cfg.controller_host}?\n\nUp to "
                                    f"{min(cfg.max_cpu_threads, cfg.max_concurrent_jobs)} job(s) at once, "
@@ -361,8 +410,12 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
         m = live_metrics()
         self.usage.config(text=f"This PC now: CPU {m['cpu_percent']}%   RAM {m['mem_percent']}%")
         agent = self.agent
+        blocked = len(set(self.cfg.blocked_requesters) | set(self.peers.blocked()))
+        self.blocked_label.config(text=f"Blocked requesters: {blocked}. Block or unblock them in the Nearby list."
+                                  if blocked else "No blocked requesters.")
         if not agent:
             self.state_label.config(text="Worker is stopped", foreground="#b00020")
+            self.running_label.config(text="Nothing is running.")
             fill_tree(self.jtree, [])
             return
         s = agent.snapshot()
@@ -375,7 +428,10 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
                 "disabled": "Disabled on the controller", "stopping": "Stopping …", "stopped": "Stopped"}.get(s["state"], s["state"])
         self.state_label.config(text=f"{text}    ·    {len(s['running'])} running, {s['completed']} done, {s['failed']} failed",
                                 foreground=colors.get(s["state"], "#555"))
-        fill_tree(self.jtree, [(j["id"], [j["id"], j["kind"], f"{j['progress']:.0f}%", f"{j['elapsed']:.0f}s"]) for j in s["running"]])
+        self.running_label.config(text=running_summary(s))
+        fill_tree(self.jtree, [(j["id"], [j["id"], j["kind"], j.get("label", ""), j.get("module_sha256", "")[:16],
+                                          f"{j.get('cpu_percent', 0):.0f}%", f"{j.get('ram_mb', 0):.0f} MB",
+                                          f"{j['progress']:.0f}%", f"{j['elapsed']:.0f}s"]) for j in s["running"]])
         new = min(agent.event_count - self._shown_events, len(agent.events))
         if new > 0:
             for line in list(agent.events)[-new:]:

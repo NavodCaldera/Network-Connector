@@ -308,6 +308,9 @@ class PeerBook:
     def is_blocked(self, device_id: str) -> bool:
         return device_id in self._load()["blocked"]
 
+    def blocked(self) -> list[str]:
+        return list(self._load()["blocked"])
+
     def set(self, device_id: str, *, trusted: bool | None = None, blocked: bool | None = None, name: str | None = None) -> None:
         if not DEVICE_ID_RE.match(device_id):
             raise ValueError("A full device ID is required.")

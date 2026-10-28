@@ -497,6 +497,13 @@ class Store:
         return [dict(r) | {"result": json.loads(r["result"]) if r["result"] else None}
                 for r in self._q("select idx, result, status from jobs where batch_id=? order by idx", (batch_id,))]
 
+    def batch_labels(self, batch_ids: set[str]) -> dict[str, str]:
+        ids = sorted(batch_ids)
+        if not ids:
+            return {}
+        rows = self._q(f"select id, label from batches where id in ({','.join('?' * len(ids))})", tuple(ids))
+        return {r["id"]: (r["label"] or "")[:120] for r in rows}
+
     def list_batches(self, limit: int = 50) -> list[dict[str, Any]]:
         return [self.get_batch(r["id"]) for r in self._q("select id from batches order by created desc limit ?", (limit,))]  # type: ignore[misc]
 

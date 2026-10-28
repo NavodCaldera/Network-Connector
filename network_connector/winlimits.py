@@ -22,6 +22,12 @@ if sys.platform == "win32":
     _LIMIT_PROCESS_MEMORY = 0x00000100
     _LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
     _EXTENDED_LIMIT_INFO = 9
+    _CPU_RATE_INFO = 15
+    _CPU_RATE_ENABLE = 0x1
+    _CPU_RATE_HARD_CAP = 0x4
+
+    class _CpuRate(ctypes.Structure):
+        _fields_ = [("ControlFlags", wintypes.DWORD), ("CpuRate", wintypes.DWORD)]
 
     class _IoCounters(ctypes.Structure):
         _fields_ = [(n, ctypes.c_ulonglong) for n in (
@@ -72,8 +78,24 @@ def set_low_priority(pid: int) -> None:
         log.debug("could not lower priority of %s: %s", pid, exc)
 
 
-def limit_memory(pid: int, megabytes: int) -> object | None:
-    """Cap a process's memory. Returns a handle to pass to release(); None if unavailable."""
+def cpu_rate_value(percent: int) -> int:
+    """Windows counts the rate in 1/100 of a percent of all CPUs: 1..10000."""
+    if isinstance(percent, bool) or not isinstance(percent, int) or not 1 <= percent <= 100:
+        raise ValueError("the CPU-rate cap must be a whole percent between 1 and 100")
+    return percent * 100
+
+
+def set_cpu_rate(job: object, percent: int) -> bool:
+    """Hard-cap a Job Object's CPU use. False if Windows refused (callers decide whether to refuse the job)."""
+    value = cpu_rate_value(percent)
+    if sys.platform != "win32" or not job:
+        return False
+    info = _CpuRate(_CPU_RATE_ENABLE | _CPU_RATE_HARD_CAP, value)
+    return bool(_k32.SetInformationJobObject(job, _CPU_RATE_INFO, ctypes.byref(info), ctypes.sizeof(info)))
+
+
+def limit_memory(pid: int, megabytes: int, cpu_rate_percent: int = 0) -> object | None:
+    """Cap a process's memory (and optionally its CPU rate). Returns a handle for release(); None if unavailable."""
     if sys.platform != "win32":
         return None
     job = _k32.CreateJobObjectW(None, None)
@@ -83,6 +105,8 @@ def limit_memory(pid: int, megabytes: int) -> object | None:
     info.BasicLimitInformation.LimitFlags = _LIMIT_PROCESS_MEMORY | _LIMIT_KILL_ON_JOB_CLOSE
     info.ProcessMemoryLimit = megabytes * 1024 * 1024
     ok = _k32.SetInformationJobObject(job, _EXTENDED_LIMIT_INFO, ctypes.byref(info), ctypes.sizeof(info))
+    if ok and cpu_rate_percent and not set_cpu_rate(job, cpu_rate_percent):
+        log.warning("CPU-rate cap unavailable for pid %s", pid)
     process = _k32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
     assigned = bool(ok and process and _k32.AssignProcessToJobObject(job, process))
     if process:
