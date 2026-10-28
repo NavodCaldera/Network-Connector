@@ -6,10 +6,20 @@ from pathlib import Path
 
 import pytest
 
+from network_connector import discovery
 from network_connector.client import AdminClient, pair_worker
 from network_connector.config import ControllerConfig, WorkerConfig
 from network_connector.controller import ControllerRuntime
 from network_connector.worker import WorkerAgent, load_worker_config
+
+REAL_INTERFACE_ADDRESSES = discovery.interface_addresses
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(tmp_path_factory, monkeypatch):
+    """No test may touch the real %LOCALAPPDATA%\\NetworkConnector or bind discovery sockets on real networks."""
+    monkeypatch.setenv("NC_HOME", str(tmp_path_factory.mktemp("nc-home")))
+    monkeypatch.setattr(discovery, "interface_addresses", lambda include_loopback=False: [])
 
 
 def free_port() -> int:

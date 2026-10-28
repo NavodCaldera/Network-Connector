@@ -148,7 +148,19 @@ candidates. Keep the existing controller certificate.
 An offline update fails with a message to reconnect to a normal network. Git fetch
 has a 30-second timeout. Install dependencies on both machines before going offline.
 
+## Nearby list is empty / joining fails (0.3.0)
+
+- "Discovery blocked? Use Find controller": announcements (UDP 8766) don't arrive. Usually the link is Public, a
+  firewall rule blocks Python, or the router isolates Wi-Fi clients. Click **Search** (outbound only) or type the
+  address and use **Find controller**.
+- "Discovery port busy": another program uses UDP 8766 on this PC. Search still works.
+- `join_disabled`: the requester requires pairing codes. Pair with a code, or ask its owner to change the policy.
+- `not_trusted`, `device_blocked`: the requester only accepts trusted devices, or blocked this one.
+- `wrong_requester`: the computer at that address has another certificate than the one announced. Nothing was sent.
+- Ask me: the window waits up to 2 minutes for the owner to click Accept.
+
 ## Reset
 
 To start fresh on one computer, stop everything and rename `%LOCALAPPDATA%\NetworkConnector`
 (for example to `NetworkConnector.old`). On the i7 this creates a new certificate, so all workers must re-pair.
+Since 0.3.0 this also creates a new device identity (`identity\`), so requesters see a new device ID.

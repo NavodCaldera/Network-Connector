@@ -1,16 +1,20 @@
 """The controller: FastAPI service (HTTPS, LAN-only) + SQLite state + lease reaper."""
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import ipaddress
 import logging
 import math
+import re
+import secrets
 import threading
 import time
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import uvicorn
 import psutil
@@ -19,8 +23,17 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
-from . import __version__, jobs
-from .config import ControllerConfig, detect_lan_ip, load_config, save_config, validate_bind_host
+from . import __version__, identity, jobs
+from .config import (
+    ControllerConfig,
+    detect_lan_ip,
+    legacy_controller_config,
+    load_config,
+    save_config,
+    validate_bind_host,
+    validate_join_settings,
+)
+from .discovery import Announcer, SlidingWindow
 from .paths import controller_dir
 from .security import (
     constant_time_equal,
@@ -119,6 +132,37 @@ class DirectListenRequest(BaseModel):
     enabled: bool
 
 
+class JoinRequest(BaseModel):
+    challenge: str = Field(pattern=r"^[A-Za-z0-9_-]{43}$")
+    name: str = Field(min_length=1, max_length=40)
+    device_cert: str = Field(min_length=64, max_length=4096)
+    signature: str = Field(min_length=8, max_length=128, pattern=r"^[A-Za-z0-9+/=]+$")
+    info: dict[str, Any] = Field(default_factory=dict)
+    policy_summary: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("info", "policy_summary")
+    @classmethod
+    def small(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if len(json.dumps(value)) > 8192:
+            raise ValueError("must be at most 8 KB of JSON")
+        return value
+
+
+class VerifyFinishRequest(BaseModel):
+    session: str = Field(pattern=r"^[0-9a-f]{32}$")
+    nonce: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
+class PolicyUpdate(BaseModel):
+    join_policy: Literal["anyone", "trusted", "ask", "code"] | None = None
+    announce: bool | None = None
+    announce_label: str | None = Field(default=None, max_length=60)
+
+
+class CloseRequest(BaseModel):
+    closing: bool
+
+
 class SubmitRequest(BaseModel):
     kind: str = Field(max_length=40)
     params: dict[str, Any] = Field(default_factory=dict)
@@ -179,6 +223,119 @@ class PairingManager:
             return code
 
 
+# ------------------------------------------------------------------ joining (open groups)
+SERVER_INFO_KEYS = ("device_id", "device_name", "group_mode")  # set by the requester, never by the helper
+JOIN_ACTIONS = ("trust", "untrust", "block", "unblock", "accept", "decline")
+
+
+def worker_group_mode(worker: dict[str, Any]) -> str:
+    """'open' for helpers that joined through /join, 'closed' for paired ones (AGENT.md §4 contract)."""
+    info = worker.get("info") or {}
+    if isinstance(info, str):
+        try:
+            info = json.loads(info)
+        except ValueError:
+            info = {}
+    return "open" if isinstance(info, dict) and info.get("group_mode") == "open" else "closed"
+
+
+def joined_worker_name(name: str, device_id: str) -> str:
+    """Server-chosen, stable worker name for a joined device, so it can never pick a paired worker's name."""
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-._")[:40] or "helper"
+    if not slug[0].isalnum():
+        slug = "helper-" + slug
+    return f"{slug[:40]}-{device_id[:8]}"
+
+
+class JoinManager:
+    """In-memory join state: single-use challenges, Ask-me requests, approvals and Verify sessions."""
+
+    def __init__(self, challenge_ttl_s: int = 60, max_challenges: int = 512) -> None:
+        self.challenge_ttl_s, self.max_challenges = challenge_ttl_s, max_challenges
+        self._challenges: OrderedDict[str, tuple[float, str]] = OrderedDict()
+        self.requests: dict[str, dict[str, Any]] = {}
+        self._approved: dict[str, float] = {}
+        self._verify: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self.per_source = SlidingWindow(limit=60, window_s=60)  # an Ask-me wait polls hello + join every 5 s
+        self.overall = SlidingWindow(limit=600, window_s=60, max_keys=1)
+        self._lock = threading.Lock()
+
+    def check_rate(self, source: str) -> None:
+        if not self.overall.allow("all") or not self.per_source.allow(source):
+            raise ApiError(429, "rate_limited", "Too many join requests. Wait a minute and try again.")
+
+    def new_challenge(self, source: str) -> str:
+        challenge = secrets.token_urlsafe(32)
+        with self._lock:
+            self._challenges[challenge] = (time.time() + self.challenge_ttl_s, source)
+            while len(self._challenges) > self.max_challenges:
+                self._challenges.popitem(last=False)
+        return challenge
+
+    def take_challenge(self, challenge: str, source: str) -> bool:
+        with self._lock:
+            item = self._challenges.pop(challenge, None)
+        return bool(item) and time.time() < item[0] and item[1] == source
+
+    def ask(self, device_id: str, name: str, source: str) -> None:
+        with self._lock:
+            now = time.time()
+            for key in [k for k, r in self.requests.items() if now - r["ts"] > 600]:
+                del self.requests[key]
+            if device_id in self.requests or len(self.requests) < 64:
+                self.requests[device_id] = {"device_id": device_id, "short_id": identity.short_id(device_id),
+                                            "name": name, "source": source, "ts": now}
+
+    def decide(self, device_id: str, accept: bool) -> bool:
+        with self._lock:
+            found = self.requests.pop(device_id, None) is not None
+            if accept and found:
+                self._approved[device_id] = time.time() + 600
+            elif not accept:
+                self._approved.pop(device_id, None)
+            return found
+
+    def take_approval(self, device_id: str) -> bool:
+        with self._lock:
+            expires = self._approved.pop(device_id, 0.0)
+        return time.time() < expires
+
+    def pending(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return sorted((dict(r) for r in self.requests.values()), key=lambda r: r["ts"])
+
+    # ---- Verify: numeric comparison, the requester commits to its nonce first
+    def verify_start(self, helper_id: str, requester_id: str, worker_name: str) -> tuple[str, str]:
+        session, nonce = secrets.token_hex(16), identity.new_nonce()
+        with self._lock:
+            self._expire_verify()
+            self._verify[session] = {"helper_id": helper_id, "requester_id": requester_id, "nonce": nonce,
+                                     "worker": worker_name, "ts": time.time(), "code": None}
+            while len(self._verify) > 64:
+                self._verify.popitem(last=False)
+        return session, identity.commitment(nonce, helper_id, requester_id)
+
+    def verify_finish(self, session: str, helper_id: str, helper_nonce: str) -> str:
+        with self._lock:
+            self._expire_verify()
+            item = self._verify.get(session)
+            if not item or item["helper_id"] != helper_id or item["code"] is not None:
+                raise ApiError(404, "unknown_verify_session", "Start Verify again.")
+            item["code"] = identity.verify_code(helper_id, item["requester_id"], helper_nonce, item["nonce"])
+            return item["nonce"]
+
+    def verifications(self) -> list[dict[str, Any]]:
+        with self._lock:
+            self._expire_verify()
+            return [{"device_id": v["helper_id"], "short_id": identity.short_id(v["helper_id"]), "worker": v["worker"],
+                     "code": v["code"], "ts": v["ts"]} for v in self._verify.values() if v["code"]]
+
+    def _expire_verify(self) -> None:
+        now = time.time()
+        for key in [k for k, v in self._verify.items() if now - v["ts"] > 300]:
+            del self._verify[key]
+
+
 # ------------------------------------------------------------------ shared state
 @dataclass
 class ControllerState:
@@ -194,6 +351,11 @@ class ControllerState:
     direct_runtime: Any = None
     direct_subnets: set[str] = field(default_factory=set)
     worker_links: dict[str, str] = field(default_factory=dict)
+    identity: Any = None  # the requester's device identity (its TLS certificate and key)
+    join: JoinManager = field(default_factory=JoinManager)
+    closing: bool = False
+    save_cfg: Any = None
+    on_policy_change: Any = None
 
 
 def create_app(state: ControllerState) -> FastAPI:
@@ -216,7 +378,8 @@ def create_app(state: ControllerState) -> FastAPI:
     @app.middleware("http")
     async def _limit_body(request: Request, call_next):  # type: ignore[no-untyped-def]
         length = request.headers.get("content-length")
-        if request.method in ("POST", "PUT") and (length is None or int(length) > cfg.max_request_bytes):
+        limit = 32 * 1024 if request.url.path.startswith("/join") else cfg.max_request_bytes
+        if request.method in ("POST", "PUT") and (length is None or not length.isdigit() or int(length) > limit):
             return JSONResponse(
                 {"error": {"code": "payload_too_large", "message": "Request body missing length or too large."}},
                 status_code=413,
@@ -258,6 +421,94 @@ def create_app(state: ControllerState) -> FastAPI:
             "controller_proof": pairing_proof(code, "controller", state.fingerprint, req.nonce),
         }
 
+    # ---- open groups: join without a code (PLAN §16.1)
+    def _source(request: Request) -> str:
+        return request.client.host if request.client else ""
+
+    def _requester_name() -> str:
+        return state.identity.name if state.identity else "Network Connector requester"
+
+    def _joins_enabled() -> None:
+        if cfg.join_policy == "code":
+            raise ApiError(403, "join_disabled", "This requester only accepts helpers with a pairing code.")
+
+    @app.post("/join/hello")
+    def join_hello(request: Request) -> dict[str, Any]:
+        source = _source(request)
+        state.join.check_rate(source)
+        _joins_enabled()
+        return {"challenge": state.join.new_challenge(source), "requester_device_id": state.fingerprint,
+                "requester_name": _requester_name(), "open": not state.closing, "policy": cfg.join_policy,
+                "expires_in_seconds": state.join.challenge_ttl_s}
+
+    @app.post("/join")
+    def join(req: JoinRequest, request: Request) -> Any:
+        source = _source(request)
+        state.join.check_rate(source)
+        _joins_enabled()
+        if state.closing:
+            raise ApiError(403, "requester_closing", "This requester is not accepting helpers right now.")
+        if not state.join.take_challenge(req.challenge, source):
+            raise ApiError(403, "bad_challenge", "The join challenge is unknown, used or expired. Start again.")
+        try:
+            cert = identity.load_cert(req.device_cert)
+            signature = base64.b64decode(req.signature, validate=True)
+            name = identity.clean_name(req.name)
+        except (ValueError, binascii.Error) as exc:
+            raise ApiError(422, "bad_device_identity", "The device certificate, signature or name is malformed.") from exc
+        device_id = identity.device_id_of(cert)
+        if device_id == state.fingerprint:
+            raise ApiError(422, "own_device", "A requester can't join itself.")
+        if not identity.verify_signature(cert, identity.join_message(req.challenge, state.fingerprint, device_id), signature):
+            log.warning("join refused: bad signature from %s", source)
+            raise ApiError(403, "bad_signature", "The device signature does not match the challenge.")
+        device = store.get_device(device_id)
+        short = identity.short_id(device_id)
+        if device and device["blocked"]:
+            log.info("join refused: blocked device %s", short)
+            raise ApiError(403, "device_blocked", "This device is blocked by the requester.")
+        trusted = bool(device and device["trusted"])
+        if cfg.join_policy == "trusted" and not trusted:
+            raise ApiError(403, "not_trusted", "This requester only accepts trusted devices. Ask its owner to trust you.")
+        if cfg.join_policy == "ask" and not trusted and not state.join.take_approval(device_id):
+            store.upsert_device(device_id, name, req.device_cert)
+            state.join.ask(device_id, name, source)
+            return JSONResponse({"status": "pending", "retry_after_seconds": 5,
+                                 "message": "Waiting for the requester's owner to accept."}, status_code=202)
+        worker_name = joined_worker_name(name, device_id)
+        existing = store.get_worker(worker_name)
+        if existing and json.loads(existing["info"] or "{}").get("device_id") != device_id:
+            raise ApiError(409, "name_taken", "Another worker already uses this name on the requester.")
+        store.upsert_device(device_id, name, req.device_cert)
+        info = {k: v for k, v in req.info.items() if k not in SERVER_INFO_KEYS}
+        info |= {"device_id": device_id, "device_name": name, "group_mode": "open", "policy_summary": req.policy_summary}
+        token = new_token()
+        wid = store.add_worker(worker_name, hash_token(token), info)
+        log.info("helper %s (%s) joined with policy %s", worker_name, short, cfg.join_policy)
+        return {"status": "joined", "worker_id": wid, "worker_name": worker_name, "token": token,
+                "requester_device_id": state.fingerprint, "requester_name": _requester_name(), "group_mode": "open"}
+
+    @app.post("/worker/leave")
+    def worker_leave(worker: dict = Depends(require_worker)) -> dict[str, Any]:
+        store.set_worker_state(worker["id"], "revoked")  # drops the token and re-queues its running jobs
+        log.info("worker %s left", worker["name"])
+        return {"left": True}
+
+    def _helper_device(worker: dict[str, Any]) -> str:
+        device_id = json.loads(worker.get("info") or "{}").get("device_id", "")
+        if not identity.DEVICE_ID_RE.match(str(device_id)):
+            raise ApiError(409, "no_device_identity", "Verify needs a helper that joined with its device identity.")
+        return device_id
+
+    @app.post("/worker/verify/start")
+    def verify_start(worker: dict = Depends(require_worker)) -> dict[str, Any]:
+        session, commit = state.join.verify_start(_helper_device(worker), state.fingerprint, worker["name"])
+        return {"session": session, "commitment": commit, "requester_device_id": state.fingerprint}
+
+    @app.post("/worker/verify/finish")
+    def verify_finish(req: VerifyFinishRequest, worker: dict = Depends(require_worker)) -> dict[str, Any]:
+        return {"nonce": state.join.verify_finish(req.session, _helper_device(worker), req.nonce)}
+
     # ---- worker API
     @app.post("/worker/heartbeat")
     def heartbeat(req: HeartbeatRequest, request: Request, worker: dict = Depends(require_worker)) -> dict[str, Any]:
@@ -272,6 +523,10 @@ def create_app(state: ControllerState) -> FastAPI:
             pass
         state.worker_links[worker["id"]] = link
         req.metrics["link"] = link
+        if req.info is not None:
+            saved = json.loads(worker.get("info") or "{}")
+            req.info = {k: v for k, v in req.info.items() if k not in SERVER_INFO_KEYS} | {
+                k: saved[k] for k in SERVER_INFO_KEYS if k in saved}
         store.touch_worker(worker["id"], req.info, req.metrics, req.version)
         state.history[worker["id"]].append(
             (round(time.time(), 1), req.metrics.get("cpu_percent", 0), req.metrics.get("mem_percent", 0)))
@@ -283,11 +538,12 @@ def create_app(state: ControllerState) -> FastAPI:
             "paused": worker["state"] == "paused",
             "disabled": worker["state"] == "disabled",
             "link": link,
+            "closing": state.closing,
         }
 
     @app.post("/worker/claim")
     def claim(req: ClaimRequest, worker: dict = Depends(require_worker)) -> dict[str, Any]:
-        if worker["state"] != "active":
+        if worker["state"] != "active" or state.closing:
             return {"jobs": []}
         claimed = store.claim(worker, req.max_jobs, cfg.lease_seconds)
         return {"jobs": [
@@ -511,6 +767,83 @@ def create_app(state: ControllerState) -> FastAPI:
     def admin_cancel_batch(batch_id: str) -> dict[str, Any]:
         return {"cancelled_or_cancelling": store.cancel_batch(batch_id)}
 
+    # ---- admin: identity, join policy and devices
+    @app.get("/admin/identity", dependencies=[Depends(require_admin)])
+    def admin_identity() -> dict[str, Any]:
+        return {"device_id": state.fingerprint, "short_id": identity.short_id(state.fingerprint), "name": _requester_name()}
+
+    def _policy() -> dict[str, Any]:
+        announcer = getattr(state.direct_runtime, "announcer", None)
+        return {"join_policy": cfg.join_policy, "announce": cfg.announce, "announce_label": cfg.announce_label,
+                "closing": state.closing, "announcing": bool(announcer and announcer.running),
+                "group_mode": "closed" if cfg.join_policy == "code" else "open"}
+
+    @app.get("/admin/policy", dependencies=[Depends(require_admin)])
+    def admin_policy() -> dict[str, Any]:
+        return _policy()
+
+    @app.put("/admin/policy", dependencies=[Depends(require_admin)])
+    def admin_set_policy(req: PolicyUpdate) -> dict[str, Any]:
+        for key, value in req.model_dump(exclude_none=True).items():
+            setattr(cfg, key, value)
+        validate_join_settings(cfg)
+        if state.save_cfg:
+            state.save_cfg()
+        if state.on_policy_change:
+            state.on_policy_change()
+        log.info("join policy is now %s (announce %s)", cfg.join_policy, cfg.announce)
+        return _policy()
+
+    @app.post("/admin/close", dependencies=[Depends(require_admin)])
+    def admin_close(req: CloseRequest) -> dict[str, Any]:
+        state.closing = req.closing
+        return _policy()
+
+    def _device_ref(ref: str) -> str:
+        try:
+            ref = identity.normalize_device_ref(ref)
+        except ValueError as exc:
+            raise ApiError(422, "bad_device_id", str(exc)) from exc
+        if len(ref) == 64:
+            return ref
+        known = {d["device_id"] for d in store.list_devices()} | {r["device_id"] for r in state.join.pending()}
+        matches = sorted(d for d in known if d.startswith(ref))
+        if len(matches) != 1:
+            raise ApiError(404, "unknown_device", "Unknown or ambiguous short ID. Use the full device ID.")
+        return matches[0]
+
+    def _workers_of(device_id: str) -> list[dict[str, Any]]:
+        return [w for w in store.list_workers() if w["info"].get("device_id") == device_id]
+
+    @app.get("/admin/devices", dependencies=[Depends(require_admin)])
+    def admin_devices() -> dict[str, Any]:
+        devices = []
+        for d in store.list_devices():
+            d.pop("cert", None)
+            d["short_id"] = identity.short_id(d["device_id"])
+            d["workers"] = [w["name"] for w in _workers_of(d["device_id"]) if w["state"] != "revoked"]
+            devices.append(d)
+        return {"devices": devices, "requests": state.join.pending(), "verifications": state.join.verifications()}
+
+    @app.post("/admin/devices/{ref}/{action}", dependencies=[Depends(require_admin)])
+    def admin_device_action(ref: str, action: str) -> dict[str, Any]:
+        if action not in JOIN_ACTIONS:
+            raise ApiError(404, "unknown_action", f"Action must be one of {', '.join(JOIN_ACTIONS)}.")
+        device_id = _device_ref(ref)
+        if action in ("trust", "untrust"):
+            store.set_trusted(device_id, action == "trust")
+        elif action in ("block", "unblock"):
+            store.set_blocked(device_id, action == "block")
+            if action == "block":
+                store.set_trusted(device_id, False)
+                state.join.decide(device_id, accept=False)
+                for w in _workers_of(device_id):  # its tokens stop working at once
+                    store.set_worker_state(w["id"], "revoked")
+        elif not state.join.decide(device_id, accept=action == "accept"):
+            raise ApiError(404, "no_request", "This device has no pending join request.")
+        log.info("device %s -> %s", identity.short_id(device_id), action)
+        return {"device_id": device_id, "action": action}
+
     @app.post("/admin/shutdown", dependencies=[Depends(require_admin)])
     def admin_shutdown() -> dict[str, Any]:
         if state.shutdown_cb:
@@ -547,6 +880,10 @@ class ControllerRuntime:
         self.dir = home or controller_dir()
         self.dir.mkdir(parents=True, exist_ok=True)
         self.cfg = cfg or load_config(ControllerConfig, self.dir / "controller.json")
+        if legacy_controller_config(self.dir / "controller.json"):
+            # Upgraded from 0.2.0 or earlier: stay a closed group until the owner opens it.
+            self.cfg.join_policy, self.cfg.announce = "code", False
+        validate_join_settings(self.cfg)
         if not self.cfg.bind_host:
             self.cfg.bind_host = detect_lan_ip()
         self.cfg.bind_host = validate_bind_host(self.cfg.bind_host)
@@ -560,10 +897,21 @@ class ControllerRuntime:
         if self.cert.is_file() != self.key.is_file():
             raise RuntimeError("The controller certificate or private key is missing. Restore the matching pair from backup; refusing to replace its identity.")
         if not (self.cert.is_file() and self.key.is_file()):
-            generate_self_signed(self.cert, self.key, [self.cfg.bind_host, "127.0.0.1"])
-            log.info("created new TLS certificate")
+            if home is None:
+                # The requester's server certificate is the device certificate (PLAN §14).
+                identity.install_server_cert(self.cert, self.key, identity.current())
+                log.info("using the device identity as the TLS certificate")
+            else:
+                generate_self_signed(self.cert, self.key, [self.cfg.bind_host, "127.0.0.1"])
+                log.info("created new TLS certificate")
         self.admin_token = load_or_create_admin_token(self.dir / "admin.token")
         self.fingerprint = fingerprint_pem_file(self.cert)
+        # A 0.2.0 controller certificate is adopted as the device identity, so both are the same key.
+        name = identity.current().name if home is None else identity.default_name()
+        self.identity = identity.Identity.from_files(self.cert, self.key, name)
+        if home is None and identity.current().device_id != self.fingerprint:
+            log.warning("the controller certificate differs from the device identity; helpers see the controller certificate")
+        self.announcer: Announcer | None = None
         self.store = Store(self.dir / "state.db")
         self.stop_event = threading.Event()
         self.state = ControllerState(
@@ -571,6 +919,9 @@ class ControllerRuntime:
             admin_hosts={"127.0.0.1", "::1", *self.cfg.bind_hosts}, pairing=PairingManager(self.cfg.pairing_ttl_s),
             shutdown_cb=self.stop,
             direct_runtime=self,
+            identity=self.identity,
+            save_cfg=lambda: save_config(self.cfg, self.dir / "controller.json"),
+            on_policy_change=self._sync_announcer,
         )
         self.direct_group = DirectGroup()
         self._direct_listener: str | None = None
@@ -689,7 +1040,30 @@ class ControllerRuntime:
         self._threads.append(reaper)
         reaper.start()
         self._refresh_direct_subnets()
+        self.state.closing = False
+        self._sync_announcer()
         log.info("controller listening on https://%s:%d", self.cfg.bind_host, self.cfg.port)
+
+    # ---- nearby announcements (requester side)
+    def _announce_state(self) -> dict[str, Any]:
+        summary = self.store.summary()
+        now = time.time()
+        helpers = sum(1 for w in self.store.list_workers() if w["state"] == "active" and w["last_seen"]
+                      and now - w["last_seen"] < self.cfg.worker_offline_after_s)
+        return {"port": self.cfg.port, "open": self.cfg.join_policy != "code" and not self.state.closing,
+                "threads": summary["queued"] + summary["running"], "helpers": helpers,
+                "job_label": self.cfg.announce_label}
+
+    def _sync_announcer(self) -> None:
+        with self._listener_lock:
+            wanted = self.cfg.announce and self.cfg.join_policy != "code" and not self.stop_event.is_set() and bool(self._servers)
+            if wanted and self.announcer is None:
+                self.announcer = Announcer(self.identity, lambda: self.listener_hosts, self._announce_state,
+                                           dest_port=self.cfg.discovery_port)
+                self.announcer.start()
+            elif not wanted and self.announcer is not None:
+                self.announcer.stop()
+                self.announcer = None
 
     def _refresh_direct_subnets(self) -> None:
         try:
@@ -754,6 +1128,10 @@ class ControllerRuntime:
 
     def stop(self) -> None:
         self.stop_event.set()
+        self.state.closing = True
+        if self.announcer is not None:
+            self.announcer.stop()
+            self.announcer = None
         benchmarks = getattr(self.state, "benchmarks", None)
         if benchmarks:
             benchmarks.stop()

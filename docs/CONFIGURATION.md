@@ -67,6 +67,31 @@ detected direct interface's gateway/first host. It switches only when the observ
 certificate matches the pin. `nc worker find` uses the same identity requirement
 for paired workers; an unpaired worker must compare the fingerprint before pairing.
 
+## Joining and discovery (0.3.0)
+
+Controller (`controller\controller.json`):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `join_policy` | `anyone` (new installs), `code` (upgraded from 0.2.0) | `anyone`, `trusted`, `ask` or `code`. `code` turns `/join` off: pairing codes only |
+| `announce` | `true` (new), `false` (upgraded) | Send signed nearby announcements while the group is open |
+| `announce_label` | empty | Up to 60 characters shown to everyone nearby |
+| `discovery_port` | `8766` | UDP port for announcements |
+
+Worker (`worker\worker.json`, and `requesters\<id>\worker.json` for each joined requester):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `group_mode` | `closed` | `open` for a connection made with Join instead of a pairing code. Set by joining |
+| `requester_device_id`, `requester_name` | set by joining | Who this connection is with |
+| `join_mode` | `auto` | What to do when a nearby requester asks: `auto`, `ask` or `trusted`. Automatic joining waits for the sandbox (Phase 8); until then Join is one click |
+| `discovery` | `true` | Listen for nearby announcements while the window is open (receive-only UDP) |
+| `discovery_port` | `8766` | UDP port to listen on |
+| `auto_join_direct` | `false` | Join `DIRECT-NC-*` groups by itself. Not available yet |
+
+The device identity (`identity\device.crt`, `device.key`, `identity.json` with the name) and this computer's own
+trusted/blocked list (`identity\peers.json`) are ACL-protected. See [JOINING.md](JOINING.md).
+
 Set address lists in environment variables as JSON, for example
 `NC_BIND_HOSTS=["192.168.1.4","127.0.0.1"]`. Only use addresses assigned to this
 computer. See [WIFI_DIRECT.md](WIFI_DIRECT.md) for runtime link setup and firewall rules.

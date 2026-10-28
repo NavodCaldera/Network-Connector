@@ -88,6 +88,8 @@ class WorkerAgent:
         self.remote_paused = False
         self.remote_disabled = False
         self._revoked = False
+        self.remote_closing = False  # the requester stopped handing out work (PLAN §13)
+        self._leave = False
         self.state = "starting"
         self.last_error = ""
         self.completed = 0
@@ -117,6 +119,11 @@ class WorkerAgent:
         if wait and self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=self.cfg.shutdown_grace_s + 15)
 
+    def leave(self, wait: bool = True) -> None:
+        """Stop, hand unfinished jobs back, and tell the requester this helper leaves (its token is dropped)."""
+        self._leave = True
+        self.stop(wait)
+
     def pause(self) -> None:
         self.local_paused = True
         self._event("paused (no new jobs will be started)")
@@ -137,6 +144,7 @@ class WorkerAgent:
             "completed": self.completed, "failed": self.failed, "last_error": self.last_error,
             "slots": self.slots, "metrics": live_metrics(), "name": self.cfg.name,
             "link": self._link, "controller_host": self.cfg.controller_host, "rtt_ms": self._rtt_ms,
+            "group_mode": self.cfg.group_mode, "requester_name": self.cfg.requester_name, "closing": self.remote_closing,
         }
 
     # ------------------------------------------------------------ main loop
@@ -191,12 +199,19 @@ class WorkerAgent:
                         and time.monotonic() - last_activity > self.cfg.idle_timeout_minutes * 60):
                     self._event(f"idle for {self.cfg.idle_timeout_minutes} minutes; stopping (idle timeout)")
                     break
+                if self.remote_closing and self.cfg.group_mode == "open" and not self.running:
+                    # Joined groups end when the requester closes; paired (closed) groups wait for it to come back.
+                    self._event("the requester is closing; leaving its group")
+                    self._leave = True
+                    break
                 self.stop_event.wait(0.25)
         finally:
             self._graceful_shutdown()
+            if self._leave and not self._revoked:
+                self._send_leave()
             if self._http:
                 self._http.close()
-            self.state = "revoked" if self._revoked else "stopped"
+            self.state = "revoked" if self._revoked else "left" if self._leave else "stopped"
             self._write_status()
             self._event("worker stopped")
 
@@ -276,10 +291,14 @@ class WorkerAgent:
                 self.running[jid].abandon = True
         self.remote_paused = bool(resp.get("paused"))
         self.remote_disabled = bool(resp.get("disabled"))
+        closing = bool(resp.get("closing"))
+        if closing and not self.remote_closing:
+            self._event("the requester is closing: no new jobs; running jobs may finish")
+        self.remote_closing = closing
         self._write_status()
 
     def _can_claim(self) -> bool:
-        if self.stop_event.is_set() or self.local_paused or self.remote_paused or self.remote_disabled:
+        if self.stop_event.is_set() or self.local_paused or self.remote_paused or self.remote_disabled or self.remote_closing:
             return False
         if len(self.running) >= self.slots or self.state in ("stopping", "offline", "connecting"):
             return False
@@ -463,6 +482,18 @@ class WorkerAgent:
         try:
             self._flush_pending()
         except Exception:  # noqa: BLE001
+            pass
+
+    def _send_leave(self) -> None:
+        try:
+            self._call("/worker/leave", {})
+            self._event("left the requester's group")
+        except Exception:  # noqa: BLE001 - the token is forgotten here either way
+            self._event("could not reach the requester to say goodbye; its owner can revoke this helper")
+        self.cfg.token = self.cfg.worker_id = ""
+        try:
+            save_config(self.cfg, self.dir / "worker.json")
+        except OSError:
             pass
 
     def _write_status(self) -> None:

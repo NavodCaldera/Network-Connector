@@ -96,9 +96,31 @@ def test_both_windows_construct_with_connection_and_benchmark_controls(monkeypat
             if app_type is gui.ControllerApp:
                 assert app.direct_status.winfo_exists()
                 assert app.bench_table.winfo_exists()
+                assert app.devices_tree.winfo_exists() and app.requests_tree.winfo_exists()
+                app._devices_render(({"name": "i7", "short_id": "ABCD-1234"},
+                                     {"join_policy": "ask", "announcing": True, "closing": False},
+                                     {"devices": [{"device_id": "ab" * 32, "name": "i3", "short_id": "ABAB-ABAB", "trusted": True,
+                                                   "blocked": False, "workers": ["i3-abababab"], "last_seen": 1.0}],
+                                      "requests": [{"device_id": "cd" * 32, "name": "guest", "short_id": "CDCD-CDCD"}],
+                                      "verifications": [{"device_id": "ab" * 32, "worker": "i3-abababab", "short_id": "ABAB-ABAB", "code": "123456"}]}))
+                assert app.devices_tree.item("ab" * 32)["values"][2] == "yes"
+                assert app.requests_tree.item("v:" + "ab" * 32)["values"][3] == "123 456"
+                app.requests_tree.selection_set("r:" + "cd" * 32)
+                assert app._selected_device() == "cd" * 32
+                assert "Ask me" in app.policy_status.cget("text")
             else:
                 assert app.link_status.winfo_exists()
                 assert app.performance.winfo_exists()
+                from network_connector.discovery import NearbyEntry
+
+                assert app.listener is not None and app.listener.bound == []  # no real interfaces in tests
+                app.peers.set("ef" * 32, trusted=True)
+                app.nearby.update(NearbyEntry("ef" * 32, "Navod's i7", "192.168.1.4", 8765, helpers=2, threads=8))
+                app._nearby_tick()
+                row = app.nearby_tree.item("ef" * 32)["values"]
+                assert row[0] == "Navod's i7" and row[2] == "Trusted" and row[7] == "192.168.1.4:8765"
+                assert "Find controller" in app.nearby_status.cget("text")
+                app._nearby_stop()
         finally:
             root.destroy()
 

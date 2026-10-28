@@ -13,7 +13,15 @@ from typing import Any
 import httpx
 
 from . import __version__, jobs
-from .client import AdminClient, ControllerError, admin_client_from_disk, pair_worker
+from .client import (
+    AdminClient,
+    ControllerError,
+    admin_client_from_disk,
+    device_action,
+    join_policy,
+    pair_worker,
+    requester_devices,
+)
 from .config import ConfigError, ControllerConfig, WorkerConfig, default_worker_limits, load_config, load_dotenv, save_config, setup_logging
 from .paths import controller_dir, worker_dir
 
@@ -279,6 +287,180 @@ def cmd_worker_find(a: argparse.Namespace) -> int:
     return 0
 
 
+# ------------------------------------------------------------------ identity, nearby, trust/block, join (0.3.0)
+def _local_admin() -> AdminClient | None:
+    """The controller on this PC if it is running, without failing when it isn't."""
+    try:
+        client = admin_client_from_disk(controller_dir())
+        client.health()
+        return client
+    except (httpx.HTTPError, OSError, ControllerError):
+        return None
+
+
+def cmd_identity(a: argparse.Namespace) -> int:
+    from . import identity
+
+    ident = identity.set_name(a.name) if a.name else identity.current()
+    print(f"Name:       {ident.name}\nShort ID:   {ident.short_id}\nDevice ID:  {ident.device_id}\n"
+          f"Folder:     {ident.cert_path.parent}")
+    return 0
+
+
+def cmd_nearby(a: argparse.Namespace) -> int:
+    from . import identity
+    from .discovery import Listener, NearbyList, probe_requesters
+
+    ident, book = identity.current(), identity.PeerBook()
+    nearby = NearbyList()
+    listener = Listener(ident.device_id, nearby, port=a.port)
+    listener.start()
+    try:
+        print(f"Listening for {a.seconds:g} s (receive-only) …")
+        for entry in probe_requesters(a.probe or None, a.controller_port, own_device_id=ident.device_id):
+            nearby.update(entry)
+        time.sleep(a.seconds)
+        status = listener.status()
+    finally:
+        listener.stop()
+    rows = []
+    for e in nearby.entries():
+        badge = "blocked" if book.is_blocked(e.device_id) else "trusted" if book.is_trusted(e.device_id) else ""
+        rows.append([e.name, e.short_id, badge, "open" if e.open else "closed", e.helpers, e.threads, e.link,
+                     f"{e.host}:{e.port}", e.job_label])
+    _table(rows, ["NAME", "ID", "BADGE", "GROUP", "HELPERS", "NEEDS", "LINK", "ADDRESS", "LABEL"])
+    if not rows:
+        print("No requesters found.")
+    print(status["hint"] + ("" if rows else " Discovery blocked? Use: nc worker find"))
+    return 0
+
+
+def _set_flag(a: argparse.Namespace, flag: str) -> int:
+    from . import identity
+
+    book = identity.PeerBook()
+    try:
+        device_id = book.resolve(a.id)
+    except ValueError:
+        device_id = ""
+    admin = _local_admin()
+    if not device_id and admin is None:
+        raise SystemExit("Unknown short ID. Use the full device ID (nc nearby shows it).")
+    value = not a.undo
+    if device_id:
+        book.set(device_id, **{flag: value})
+        print(f"This computer: {identity.short_id(device_id)} {'is' if value else 'is no longer'} {flag}.")
+    if admin is not None:
+        action = {"trusted": "trust", "blocked": "block"}[flag]
+        result = device_action(admin, device_id or identity.normalize_device_ref(a.id), action if value else "un" + action)
+        print(f"Requester on this computer: {result['action']} {identity.short_id(result['device_id'])}.")
+    return 0
+
+
+def cmd_trust(a: argparse.Namespace) -> int:
+    return _set_flag(a, "trusted")
+
+
+def cmd_block(a: argparse.Namespace) -> int:
+    return _set_flag(a, "blocked")
+
+
+def cmd_policy(a: argparse.Namespace) -> int:
+    print(json.dumps(join_policy(_admin(), join_policy=a.policy, announce=a.announce, announce_label=a.label), indent=2))
+    return 0
+
+
+def cmd_devices(a: argparse.Namespace) -> int:
+    from . import identity
+
+    client = _admin()
+    if a.action != "list":
+        if not a.id:
+            raise SystemExit(f"nc devices {a.action} needs a device ID.")
+        print(json.dumps(device_action(client, identity.normalize_device_ref(a.id), a.action)))
+        return 0
+    data = requester_devices(client)
+    _table([[d["name"], d["short_id"], "yes" if d["trusted"] else "", "yes" if d["blocked"] else "", ", ".join(d["workers"])]
+            for d in data["devices"]], ["NAME", "ID", "TRUSTED", "BLOCKED", "WORKERS"])
+    for r in data["requests"]:
+        print(f"Waiting to join: {r['name']} ({r['short_id']}). Accept with: nc devices accept {r['short_id']}")
+    for v in data["verifications"]:
+        print(f"Verify {v['worker']} ({v['short_id']}): {v['code'][:3]} {v['code'][3:]}. If the helper shows the same number: nc trust {v['short_id']}")
+    return 0
+
+
+def _requester_dir(a: argparse.Namespace) -> Path:
+    from . import identity
+    from .client import joined_dir
+
+    ref = getattr(a, "requester", None)
+    if not ref:
+        return _wdir(a)
+    ref = identity.normalize_device_ref(ref)
+    if len(ref) == 64:
+        return joined_dir(ref)
+    matches = sorted(p for p in worker_dir("requesters").iterdir() if p.is_dir() and p.name.startswith(ref))
+    if len(matches) != 1:
+        raise SystemExit("Unknown requester. Use the ID shown by nc worker connect.")
+    return matches[0]
+
+
+def cmd_worker_connect(a: argparse.Namespace) -> int:
+    from . import identity
+    from .client import JoinPending, join_requester, requester_hello
+
+    host, _, port_text = a.to.partition(":")
+    port = int(port_text or 8765)
+    expected = identity.normalize_device_ref(a.device_id) if a.device_id else ""
+    if len(expected) != 64:
+        info = requester_hello(host, port)
+        if not info or (expected and not info["device_id"].startswith(expected)):
+            raise SystemExit("No open requester with that ID answered at this address. It may be off, closed, or "
+                             "require a pairing code (then use: nc worker pair).")
+        print(f"Requester: {info['name']}  ID {identity.short_id(info['device_id'])}  ({info['device_id']})")
+        if not a.yes and input("Join it? [y/N] ").strip().lower() != "y":
+            return 1
+        expected = info["device_id"]
+    cfg = load_config(WorkerConfig, worker_dir("worker") / "worker.json")
+    for key, value in default_worker_limits().items():
+        setattr(cfg, key, value)
+    cfg.token = cfg.worker_id = ""
+    try:
+        cfg = join_requester(host, port, expected, identity.current(), None, cfg, wait_s=a.wait)
+    except JoinPending as exc:
+        raise SystemExit(f"{exc.message} (increase --wait to keep waiting)") from exc
+    except (ControllerError, httpx.HTTPError, OSError) as exc:
+        raise SystemExit(f"Join failed: {exc}") from exc
+    short = identity.short_id(cfg.requester_device_id)
+    print(f"Joined {cfg.requester_name} ({short}) as '{cfg.name}'. Start helping with:  nc worker run --requester {short}")
+    return 0
+
+
+def cmd_worker_leave(a: argparse.Namespace) -> int:
+    from .client import leave_requester
+    from .worker import load_worker_config
+
+    wdir = _requester_dir(a)
+    leave_requester(load_worker_config(wdir), wdir)
+    print("Left the requester's group. Its token was dropped on both sides.")
+    return 0
+
+
+def cmd_worker_verify(a: argparse.Namespace) -> int:
+    from . import identity
+    from .client import verify_requester
+    from .worker import load_worker_config
+
+    wdir = _requester_dir(a)
+    cfg = load_worker_config(wdir)
+    code = verify_requester(cfg, wdir, identity.current())
+    print(f"\n  {code[:3]} {code[3:]}\n\nThe requester's Devices view must show the same number for this computer.")
+    if input("Do the numbers match? Trust this requester [y/N] ").strip().lower() == "y":
+        identity.PeerBook().set(cfg.controller_fingerprint, trusted=True, name=cfg.requester_name or None)
+        print("Trusted.")
+    return 0
+
+
 def cmd_demo(a: argparse.Namespace) -> int:
     from .demo import run_demo
 
@@ -314,7 +496,7 @@ def cmd_worker_run(a: argparse.Namespace) -> int:
     from .worker import NotPaired, WorkerAgent, load_worker_config
 
     setup_logging("worker")
-    wdir = _wdir(a)
+    wdir = _requester_dir(a)
     try:
         cfg = load_worker_config(wdir)
     except NotPaired as exc:
@@ -342,7 +524,7 @@ def cmd_worker_control(a: argparse.Namespace) -> int:
 
 
 def cmd_worker_status(a: argparse.Namespace) -> int:
-    status_file = _wdir(a) / "status.json"
+    status_file = _requester_dir(a) / "status.json"
     if not status_file.is_file():
         print("No status yet: the worker has not been started.")
         return 1
@@ -475,6 +657,30 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--format", choices=["json", "csv", "html"], default="json")
             command.add_argument("-o", "--output")
 
+    ident = sub.add_parser("identity", help="show this computer's device identity")
+    ident.add_argument("--name", help="change the friendly name shown to nearby computers")
+    ident.set_defaults(fn=cmd_identity)
+    near = sub.add_parser("nearby", help="list nearby requesters (receive-only listening, plus a direct-link probe)")
+    near.add_argument("--seconds", type=float, default=6)
+    near.add_argument("--port", type=int, default=8766, help="discovery UDP port")
+    near.add_argument("--controller-port", type=int, default=8765, help="TCP port probed on direct links")
+    near.add_argument("--probe", nargs="*", metavar="IP", help="also ask these addresses directly (outbound)")
+    near.set_defaults(fn=cmd_nearby)
+    for name, fn in (("trust", cmd_trust), ("block", cmd_block)):
+        flag = sub.add_parser(name, help=f"{name} a device by its ID, here and on this computer's requester")
+        flag.add_argument("id", help="device ID or short ID (AB12-CD34)")
+        flag.add_argument("--undo", action="store_true", help=f"un{name} instead")
+        flag.set_defaults(fn=fn)
+    pol = sub.add_parser("policy", help="who may join this requester without a code")
+    pol.add_argument("policy", nargs="?", choices=["anyone", "trusted", "ask", "code"])
+    pol.add_argument("--announce", action=argparse.BooleanOptionalAction, default=None)
+    pol.add_argument("--label", help="short text nearby helpers see (everyone nearby can read it)")
+    pol.set_defaults(fn=cmd_policy)
+    dev = sub.add_parser("devices", help="devices known to this requester, join requests and Verify numbers")
+    dev.add_argument("action", nargs="?", default="list", choices=["list", "accept", "decline"])
+    dev.add_argument("id", nargs="?")
+    dev.set_defaults(fn=cmd_devices)
+
     d = sub.add_parser("demo", help="run the proof-of-work demo")
     d.add_argument("--chunks", type=int, default=40)
     d.add_argument("--target", help="run only on this worker (e.g. your i3) to prove it works")
@@ -500,11 +706,25 @@ def build_parser() -> argparse.ArgumentParser:
     wr.add_argument("--max-concurrent-jobs", dest="max_concurrent_jobs", type=int)
     wr.add_argument("--max-memory-mb", dest="max_memory_mb", type=int)
     wr.add_argument("--idle-timeout-minutes", dest="idle_timeout_minutes", type=int)
+    wr.add_argument("--requester", help="help a requester joined with 'nc worker connect' (its short ID)")
     wr.set_defaults(fn=cmd_worker_run)
     for name in ("stop", "pause", "resume"):
         wc = wk.add_parser(name, help=f"{name} the running worker")
         wc.set_defaults(fn=cmd_worker_control, cmd=name)
-    wk.add_parser("status").set_defaults(fn=cmd_worker_status)
+    ws = wk.add_parser("status")
+    ws.add_argument("--requester")
+    ws.set_defaults(fn=cmd_worker_status)
+    wj = wk.add_parser("connect", help="join a nearby requester's open group (no pairing code)")
+    wj.add_argument("--to", required=True, metavar="IP[:PORT]", help="the requester's address (nc nearby shows it)")
+    wj.add_argument("--device-id", help="the requester's ID from nc nearby; the certificate must match it")
+    wj.add_argument("--wait", type=float, default=0, help="seconds to wait if the requester asks its owner first")
+    wj.add_argument("--yes", action="store_true", help="don't ask for confirmation")
+    wj.set_defaults(fn=cmd_worker_connect)
+    for name, fn, text in (("leave", cmd_worker_leave, "leave a joined requester's group"),
+                           ("verify", cmd_worker_verify, "compare a 6-digit number with the requester, then trust it")):
+        wv = wk.add_parser(name, help=text)
+        wv.add_argument("--requester", help="short ID of a joined requester (default: the paired controller)")
+        wv.set_defaults(fn=fn)
     wk.add_parser("perf", help="show this worker's latest shared benchmark").set_defaults(fn=cmd_worker_perf)
     join = wk.add_parser("join", help="join the controller's direct Wi-Fi or hotspot")
     join.add_argument("--ssid", required=True)

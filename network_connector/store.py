@@ -13,7 +13,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 SCHEMA = """
 create table if not exists workers(
@@ -38,6 +38,31 @@ create table if not exists attempts(
 TERMINAL = ("succeeded", "failed", "cancelled")
 
 
+def _m1_measurement(c: sqlite3.Connection) -> None:
+    for table, columns in {
+        "jobs": {"cpu_seconds": "real", "peak_mem_mb": "real", "queue_wait_s": "real", "link": "text", "eligible_workers": "text"},
+        "attempts": {"duration": "real", "cpu_seconds": "real", "peak_mem_mb": "real"},
+    }.items():
+        existing = {r[1] for r in c.execute(f"pragma table_info({table})")}
+        for name, kind in columns.items():
+            if name not in existing:
+                c.execute(f"alter table {table} add column {name} {kind}")
+    c.execute("create table if not exists worker_samples(worker_id text, ts real, cpu_percent real, mem_percent real, running_jobs integer, rtt_ms real)")
+    c.execute("create index if not exists samples_worker_ts on worker_samples(worker_id,ts)")
+    c.execute("create table if not exists benchmarks(id text primary key, created real, label text, spec text, status text, result text, error text, idem_key text unique)")
+    c.execute("create table if not exists benchmark_runs(benchmark_id text, scenario text, repeat integer, batch_id text, started real, finished real, wall_s real, settings text, per_worker text, answer text, valid integer)")
+
+
+def _m2_devices(c: sqlite3.Connection) -> None:
+    c.execute(
+        "create table if not exists devices(device_id text primary key, name text not null default '',"
+        " cert text not null default '', trusted integer not null default 0, blocked integer not null default 0,"
+        " score real not null default 0, first_seen real, last_seen real)")
+
+
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _m1_measurement, 2: _m2_devices}
+
+
 class Store:
     def __init__(self, path: str | Path) -> None:
         existed = Path(path).is_file()
@@ -56,27 +81,18 @@ class Store:
         self._conn.execute("create table if not exists meta(key text primary key, value text not null)")
         row = self._conn.execute("select value from meta where key='schema_version'").fetchone()
         version = int(row[0]) if row else 0
-        if version >= 1:
+        latest = max(MIGRATIONS)
+        if version >= latest:
             return
         if existed:
-            backup = path.with_name(path.name + ".bak-0.1.0")
+            backup = path.with_name(path.name + (".bak-0.1.0" if version == 0 else f".bak-v{version}"))
             if not backup.exists():
                 with sqlite3.connect(str(backup)) as dest:
                     self._conn.backup(dest)
-        with self._tx() as c:
-            for table, columns in {
-                "jobs": {"cpu_seconds": "real", "peak_mem_mb": "real", "queue_wait_s": "real", "link": "text", "eligible_workers": "text"},
-                "attempts": {"duration": "real", "cpu_seconds": "real", "peak_mem_mb": "real"},
-            }.items():
-                existing = {r[1] for r in c.execute(f"pragma table_info({table})")}
-                for name, kind in columns.items():
-                    if name not in existing:
-                        c.execute(f"alter table {table} add column {name} {kind}")
-            c.execute("create table if not exists worker_samples(worker_id text, ts real, cpu_percent real, mem_percent real, running_jobs integer, rtt_ms real)")
-            c.execute("create index if not exists samples_worker_ts on worker_samples(worker_id,ts)")
-            c.execute("create table if not exists benchmarks(id text primary key, created real, label text, spec text, status text, result text, error text, idem_key text unique)")
-            c.execute("create table if not exists benchmark_runs(benchmark_id text, scenario text, repeat integer, batch_id text, started real, finished real, wall_s real, settings text, per_worker text, answer text, valid integer)")
-            c.execute("insert or replace into meta values('schema_version','1')")
+        for step in range(version + 1, latest + 1):
+            with self._tx() as c:
+                MIGRATIONS[step](c)
+                c.execute("insert or replace into meta values('schema_version',?)", (str(step),))
 
     def prune_samples(self) -> None:
         now = time.time()
@@ -176,6 +192,40 @@ class Store:
                 )
         if time.time() - self._last_prune > 3600:
             self.prune_samples()
+
+    # ------------------------------------------------------------ devices (identity, trust, block)
+    def upsert_device(self, device_id: str, name: str, cert: str) -> None:
+        now = time.time()
+        with self._tx() as c:
+            c.execute(
+                "insert into devices(device_id,name,cert,first_seen,last_seen) values(?,?,?,?,?)"
+                " on conflict(device_id) do update set name=excluded.name, cert=excluded.cert, last_seen=excluded.last_seen",
+                (device_id, name, cert, now, now))
+
+    def get_device(self, device_id: str) -> dict[str, Any] | None:
+        rows = self._q("select * from devices where device_id=?", (device_id,))
+        return self._device(rows[0]) if rows else None
+
+    def list_devices(self) -> list[dict[str, Any]]:
+        return [self._device(r) for r in self._q("select * from devices order by last_seen desc")]
+
+    def set_trusted(self, device_id: str, trusted: bool) -> None:
+        self._set_device_flag(device_id, "trusted", trusted)
+
+    def set_blocked(self, device_id: str, blocked: bool) -> None:
+        self._set_device_flag(device_id, "blocked", blocked)
+
+    def _set_device_flag(self, device_id: str, column: str, value: bool) -> None:
+        # A device can be trusted or blocked by ID before it was ever seen.
+        with self._tx() as c:
+            c.execute("insert or ignore into devices(device_id,first_seen) values(?,?)", (device_id, time.time()))
+            c.execute(f"update devices set {column}=? where device_id=?", (int(bool(value)), device_id))
+
+    @staticmethod
+    def _device(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["trusted"], d["blocked"] = bool(d["trusted"]), bool(d["blocked"])
+        return d
 
     # ------------------------------------------------------------ submitting
     def create_batch(

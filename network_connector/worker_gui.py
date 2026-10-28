@@ -10,13 +10,13 @@ from . import __version__
 from .client import pair_worker
 from .config import WorkerConfig, default_worker_limits, load_config, save_config, setup_logging
 from .gui_common import Background, fill_tree, make_tree
-from .link_gui import WorkerDirectControls
+from .link_gui import WorkerDirectControls, WorkerNearbyControls
 from .paths import worker_dir
 from .sysinfo import hardware_info, live_metrics, prime_cpu_counter
 from .worker import NotPaired, WorkerAgent, load_worker_config
 
 
-class WorkerApp(WorkerDirectControls):
+class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.bg = Background(root)
@@ -55,6 +55,7 @@ class WorkerApp(WorkerDirectControls):
         self.state_label.pack(anchor="w", pady=(4, 0))
 
         self._build_worker_direct()
+        self._build_nearby()
         # pairing
         self.pair_box = ttk.LabelFrame(root, text="1. Pair with the controller", padding=8)
         self.pair_box.pack(fill="x", padx=8, pady=4)
@@ -167,11 +168,21 @@ class WorkerApp(WorkerDirectControls):
         except NotPaired:
             return False
 
+    def _use_dir(self, directory: Any) -> None:
+        """Switch between the paired controller (worker\\) and a joined requester (requesters\\<id>)."""
+        self.dir = directory
+        self.cfg_path = directory / "worker.json"
+        self.cfg = load_config(WorkerConfig, self.cfg_path)
+        self._refresh_paired()
+
     def _refresh_paired(self) -> None:
         if self._paired():
             cfg = load_config(WorkerConfig, self.cfg_path)
-            self.pair_status.config(text=f"Paired as '{cfg.name}' with {cfg.controller_host}:{cfg.controller_port}.",
-                                    foreground="#1b5e20")
+            if cfg.group_mode == "open":
+                text = f"Joined {cfg.requester_name or cfg.controller_host} as '{cfg.name}' (open group, no code)."
+            else:
+                text = f"Paired as '{cfg.name}' with {cfg.controller_host}:{cfg.controller_port}."
+            self.pair_status.config(text=text, foreground="#1b5e20")
             self.start_btn.config(state="normal" if not self.agent else "disabled")
         else:
             self.pair_status.config(text="Not paired yet.", foreground="#b00020")
@@ -245,6 +256,10 @@ class WorkerApp(WorkerDirectControls):
                                    f"{min(cfg.max_cpu_threads, cfg.max_concurrent_jobs)} job(s) at once, "
                                    f"{cfg.max_memory_mb} MB each. Only built-in, allowlisted job types can run."):
             return
+        self._launch(cfg)
+
+    def _launch(self, cfg: WorkerConfig) -> None:
+        cfg = self._apply_limits(cfg)
         save_config(cfg, self.cfg_path)
         self.agent = WorkerAgent(cfg, self.dir)
         self._shown_events = 0
@@ -315,6 +330,7 @@ class WorkerApp(WorkerDirectControls):
         self.bg.run(lambda: updater.update(log=lambda t: self.bg.call_soon(self._write, t)), done, fail)
 
     def on_close(self) -> None:
+        self._nearby_stop()
         if self.agent:
             if not messagebox.askyesno("Exit", "Stop the worker and exit? Unfinished jobs go back to the queue."):
                 return

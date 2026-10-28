@@ -213,6 +213,346 @@ class ControllerDirectControls:
                     lambda e: self.direct_firewall.config(text=str(e)))
 
 
+POLICY_LABELS = {"anyone": "Anyone nearby", "trusted": "Trusted only", "ask": "Ask me", "code": "Require pairing code"}
+
+
+class ControllerJoinControls:
+    """Requester side: join policy, announcements, devices (trust/block), Ask-me requests and Verify numbers."""
+
+    def _build_devices(self, nb: ttk.Notebook) -> None:
+        tab = ttk.Frame(nb, padding=12)
+        nb.add(tab, text="Devices")
+        self.identity_label = ttk.Label(tab, text="Start the controller to see this requester's identity.",
+                                        font=("Segoe UI", 10, "bold"))
+        self.identity_label.pack(anchor="w")
+        box = ttk.LabelFrame(tab, text="Who may join without a pairing code", padding=8)
+        box.pack(fill="x", pady=6)
+        self.policy_var = tk.StringVar(value=POLICY_LABELS.get(self.cfg.join_policy, "Anyone nearby"))
+        self.announce_var = tk.BooleanVar(value=self.cfg.announce)
+        self.announce_label_var = tk.StringVar(value=self.cfg.announce_label)
+        ttk.Combobox(box, values=list(POLICY_LABELS.values()), textvariable=self.policy_var, state="readonly",
+                     width=24).grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(box, text="Announce to nearby computers", variable=self.announce_var).grid(row=0, column=1, padx=10)
+        ttk.Label(box, text="Label").grid(row=0, column=2)
+        ttk.Entry(box, textvariable=self.announce_label_var, width=24).grid(row=0, column=3, padx=4)
+        ttk.Button(box, text="Save", command=self._policy_save).grid(row=0, column=4, padx=4)
+        ttk.Label(box, text="Anyone nearby: helpers join in one click. Everyone on this network can see the name and label "
+                  "you announce, and joined helpers see the inputs of the jobs they run, so don't send private data to "
+                  "helpers you don't trust. 'Require pairing code' keeps the Part 1 closed group.",
+                  wraplength=950, foreground="#555").grid(row=1, column=0, columnspan=5, sticky="w", pady=(6, 0))
+        self.policy_status = ttk.Label(box, text="")
+        self.policy_status.grid(row=2, column=0, columnspan=5, sticky="w")
+        from .gui_common import make_tree
+
+        ttk.Label(tab, text="Waiting to join, and Verify numbers", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(6, 2))
+        self.requests_tree = make_tree(tab, [("What", 140), ("Name", 200), ("ID", 110), ("Number", 120)], height=3)
+        ttk.Label(tab, text="Devices", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(6, 2))
+        self.devices_tree = make_tree(tab, [("Name", 200), ("ID", 110), ("Trusted", 70), ("Blocked", 70),
+                                            ("Workers", 260), ("Last seen", 140)], height=8)
+        buttons = ttk.Frame(tab)
+        buttons.pack(fill="x", pady=4)
+        for label, action in (("Accept", "accept"), ("Decline", "decline"), ("Trust", "trust"), ("Untrust", "untrust"),
+                              ("Block", "block"), ("Unblock", "unblock")):
+            ttk.Button(buttons, text=label, command=lambda a=action: self._device_action(a)).pack(side="left", padx=2)
+        ttk.Label(buttons, text="Select a row first. Trust only after the helper shows the same Verify number.",
+                  foreground="#666").pack(side="left", padx=8)
+        self._devices_busy = False
+        self.root.after(2000, self._devices_tick)
+
+    def _selected_device(self) -> str | None:
+        for tree in (self.requests_tree, self.devices_tree):
+            selection = tree.selection()
+            if selection:
+                return selection[0].split(":", 1)[-1]
+        return None
+
+    def _policy_save(self) -> None:
+        from .client import join_policy
+
+        admin = self._need_admin()
+        if not admin:
+            return
+        policy = next(k for k, v in POLICY_LABELS.items() if v == self.policy_var.get())
+        announce, label = self.announce_var.get(), self.announce_label_var.get().strip()[:60]
+        self.bg.run(lambda: join_policy(admin, join_policy=policy, announce=announce, announce_label=label),
+                    self._policy_render, lambda e: messagebox.showerror("Join policy", str(e)))
+
+    def _policy_render(self, data: dict[str, Any]) -> None:
+        self.policy_status.config(text=f"Now: {POLICY_LABELS.get(data['join_policy'], data['join_policy'])}, "
+                                  f"{'announcing' if data.get('announcing') else 'not announcing'}"
+                                  f"{', closing' if data.get('closing') else ''}.")
+
+    def _device_action(self, action: str) -> None:
+        from .client import device_action
+
+        admin, device = self._need_admin(), self._selected_device()
+        if not admin or not device:
+            return
+        if action == "block" and not messagebox.askyesno("Block", "Block this device? Its helpers are removed at once."):
+            return
+        self.bg.run(lambda: device_action(admin, device, action), lambda _r: self._devices_refresh(),
+                    lambda e: messagebox.showerror("Devices", str(e)))
+
+    def _devices_tick(self) -> None:
+        self.root.after(3000, self._devices_tick)
+        self._devices_refresh()
+
+    def _devices_refresh(self) -> None:
+        from .client import join_policy, requester_devices, requester_identity
+
+        admin = self.admin
+        if not admin or self._devices_busy:
+            return
+        self._devices_busy = True
+
+        def work() -> tuple[Any, Any, Any]:
+            return requester_identity(admin), join_policy(admin), requester_devices(admin)
+
+        def fail(_exc: Exception) -> None:
+            self._devices_busy = False
+
+        self.bg.run(work, self._devices_render, fail)
+
+    def _devices_render(self, data: tuple[dict[str, Any], dict[str, Any], dict[str, Any]]) -> None:
+        import time
+
+        from .gui_common import fill_tree
+
+        self._devices_busy = False
+        ident, policy, devices = data
+        self.identity_label.config(text=f"This requester: {ident['name']}   ·   ID {ident['short_id']}")
+        self._policy_render(policy)
+        rows = [(f"r:{r['device_id']}", ["Wants to join", r["name"], r["short_id"], ""]) for r in devices["requests"]]
+        rows += [(f"v:{v['device_id']}", ["Verify", v["worker"], v["short_id"], f"{v['code'][:3]} {v['code'][3:]}"])
+                 for v in devices["verifications"]]
+        fill_tree(self.requests_tree, rows)
+        fill_tree(self.devices_tree, [(d["device_id"], [
+            d["name"] or "(not seen yet)", d["short_id"], "yes" if d["trusted"] else "", "yes" if d["blocked"] else "",
+            ", ".join(d["workers"]), time.strftime("%Y-%m-%d %H:%M", time.localtime(d["last_seen"])) if d["last_seen"] else ""])
+            for d in devices["devices"]])
+
+
+def sandbox_ready() -> bool:
+    """Automatic joining waits for the Compute agent's sandbox (PLAN §17); until then joining is one click."""
+    try:
+        from . import sandbox  # type: ignore[attr-defined]
+
+        return bool(sandbox.available()[0])
+    except Exception:  # noqa: BLE001 - missing module or a failed check both mean "not ready"
+        return False
+
+
+class WorkerNearbyControls:
+    """Helper side: the nearby requesters list, one-click Join, Trust/Block, Verify and Leave."""
+
+    def _build_nearby(self) -> None:
+        from . import identity
+        from .discovery import Listener, NearbyList
+        from .gui_common import make_tree
+
+        self.ident = identity.current()
+        self.peers = identity.PeerBook()
+        box = ttk.LabelFrame(getattr(self, "body", self.root), text="Nearby requesters (join without a code)", padding=6)
+        box.pack(fill="x", padx=8, pady=4)
+        ttk.Label(box, text=f"This computer: {self.ident.name}  ·  ID {self.ident.short_id}", foreground="#444").pack(anchor="w")
+        self.nearby_tree = make_tree(box, [("Name", 170), ("ID", 95), ("Badge", 70), ("Group", 60), ("Helpers", 60),
+                                           ("Needs", 60), ("Link", 85), ("Address", 140), ("Label", 140)], height=4)
+        buttons = ttk.Frame(box)
+        buttons.pack(fill="x", pady=3)
+        for label, fn in (("Join", self._nearby_join), ("Search", self._nearby_search), ("Trust", self._nearby_trust),
+                          ("Block", self._nearby_block), ("Verify", self._nearby_verify), ("Leave", self._nearby_leave)):
+            ttk.Button(buttons, text=label, command=fn).pack(side="left", padx=2)
+        self.auto_direct = tk.BooleanVar(value=False)
+        ttk.Checkbutton(buttons, text="Join nearby Wi-Fi Direct groups automatically (not available yet)",
+                        variable=self.auto_direct, state="disabled").pack(side="left", padx=10)
+        self.nearby_status = ttk.Label(box, text="", wraplength=840, foreground="#555")
+        self.nearby_status.pack(anchor="w")
+        self._nearby_busy = False
+        self.nearby = NearbyList(on_new=lambda e: self.bg.call_soon(self._nearby_new, e))
+        self.listener: Listener | None = None
+        if self.cfg.discovery:
+            self.listener = Listener(self.ident.device_id, self.nearby, port=self.cfg.discovery_port)
+            try:
+                self.listener.start()
+            except OSError as exc:
+                self.nearby_status.config(text=f"Discovery unavailable ({exc}). Use Search or Find controller.")
+        self.root.after(1000, self._nearby_tick)
+
+    def _nearby_stop(self) -> None:
+        if getattr(self, "listener", None):
+            self.listener.stop()
+            self.listener = None
+
+    def _nearby_tick(self) -> None:
+        from .gui_common import fill_tree
+
+        self.root.after(1000, self._nearby_tick)
+        rows = []
+        for e in self.nearby.entries():
+            badge = "Blocked" if self.peers.is_blocked(e.device_id) else "Trusted" if self.peers.is_trusted(e.device_id) else ""
+            rows.append((e.device_id, [e.name, e.short_id, badge, "open" if e.open else "closed", e.helpers, e.threads,
+                                       e.link, f"{e.host}:{e.port}", e.job_label]))
+        fill_tree(self.nearby_tree, rows)
+        if not self._nearby_busy:
+            hint = self.listener.status()["hint"] if self.listener else "Discovery is off in settings."
+            if not rows:
+                hint += "  Discovery blocked? Use Search, or Find controller above."
+            self.nearby_status.config(text=hint)
+
+    def _nearby_selected(self) -> Any:
+        selection = self.nearby_tree.selection()
+        entry = self.nearby.get(selection[0]) if selection else None
+        if entry is None:
+            messagebox.showinfo("Nearby", "Select a requester in the list first.")
+        return entry
+
+    def _nearby_new(self, entry: Any) -> None:
+        """A requester appeared. Auto-accept needs the sandbox, so for now this only shows it in the list."""
+        if self.agent or not entry.open or self.peers.is_blocked(entry.device_id) or not sandbox_ready():
+            return
+        mode = self.cfg.join_mode
+        if mode == "auto" or (mode == "trusted" and self.peers.is_trusted(entry.device_id)):
+            self._join_entry(entry, ask=False)
+
+    def _nearby_search(self) -> None:
+        from .discovery import probe_requesters
+        from .wifidirect import DirectLinkError, candidate_controllers
+
+        if self._nearby_busy:
+            return
+        typed = self.addr.get().strip().partition(":")[0]
+        port = self.cfg.controller_port
+        self._nearby_busy = True
+        self.nearby_status.config(text="Asking the direct-link gateway and the typed address (outbound only) …")
+
+        def work() -> list[Any]:
+            try:
+                hosts = candidate_controllers()
+            except (DirectLinkError, OSError, RuntimeError):
+                hosts = []
+            return probe_requesters(([typed] if typed else []) + hosts, port, own_device_id=self.ident.device_id)
+
+        def done(found: list[Any]) -> None:
+            self._nearby_busy = False
+            for entry in found:
+                self.nearby.update(entry)
+            self.nearby_status.config(text=f"Search found {len(found)} open requester(s).")
+
+        def fail(exc: Exception) -> None:
+            self._nearby_busy = False
+            self.nearby_status.config(text=f"Search failed: {exc}")
+
+        self.bg.run(work, done, fail)
+
+    def _nearby_join(self) -> None:
+        entry = self._nearby_selected()
+        if entry:
+            self._join_entry(entry, ask=True)
+
+    def _join_entry(self, entry: Any, ask: bool) -> None:
+        from .client import JoinPending, join_requester, joined_dir
+
+        if self.agent:
+            messagebox.showinfo("Join", "Stop the current work first.")
+            return
+        if self.peers.is_blocked(entry.device_id):
+            messagebox.showinfo("Join", "You blocked this requester. Unblock it with Trust, or 'nc block --undo'.")
+            return
+        if not entry.open:
+            messagebox.showinfo("Join", "This requester is not accepting helpers right now.")
+            return
+        if ask and not messagebox.askyesno("Join", f"Help {entry.name} ({entry.short_id})?\n\nIt can send jobs to this "
+                                           "computer within the limits below. Until the sandbox is installed, only "
+                                           "Network Connector's built-in job types run. You can Stop or Leave at any time."):
+            return
+        cfg = self._apply_limits(load_config(WorkerConfig, self.dir / "worker.json"))
+        cfg.token = cfg.worker_id = ""
+        ident = self.ident
+        self._nearby_busy = True
+        self.nearby_status.config(text=f"Joining {entry.name} … (waits up to 2 minutes if its owner must accept)")
+
+        def work() -> Any:
+            return join_requester(entry.host, entry.port, entry.device_id, ident, None, cfg, wait_s=120)
+
+        def done(new_cfg: WorkerConfig) -> None:
+            self._nearby_busy = False
+            self._use_dir(joined_dir(entry.device_id))
+            self._write(f"Joined {entry.name} ({entry.short_id}) without a code. Its certificate is pinned.")
+            self._launch(new_cfg)
+
+        def fail(exc: Exception) -> None:
+            self._nearby_busy = False
+            text = exc.message if isinstance(exc, JoinPending) else str(exc)
+            self.nearby_status.config(text=f"Join did not finish: {text}")
+
+        self.bg.run(work, done, fail)
+
+    def _nearby_trust(self) -> None:
+        entry = self._nearby_selected()
+        if entry:
+            trusted = not self.peers.is_trusted(entry.device_id)
+            if trusted and not messagebox.askyesno("Trust", f"Trust {entry.name} ({entry.short_id})? Use Verify first "
+                                                   "to be sure it is the computer you think it is."):
+                return
+            self.peers.set(entry.device_id, trusted=trusted, blocked=False if trusted else None, name=entry.name)
+
+    def _nearby_block(self) -> None:
+        entry = self._nearby_selected()
+        if not entry:
+            return
+        blocked = not self.peers.is_blocked(entry.device_id)
+        self.peers.set(entry.device_id, blocked=blocked, name=entry.name)
+        if blocked and self.agent and self.cfg.controller_fingerprint == entry.device_id:
+            self._nearby_leave()
+
+    def _nearby_verify(self) -> None:
+        from .client import verify_requester
+        from .worker import NotPaired, load_worker_config
+
+        try:
+            cfg = load_worker_config(self.dir)
+        except NotPaired:
+            messagebox.showinfo("Verify", "Join a requester first.")
+            return
+        ident, directory = self.ident, self.dir
+
+        def done(code: str) -> None:
+            name = cfg.requester_name or cfg.controller_host
+            if messagebox.askyesno("Verify", f"{code[:3]} {code[3:]}\n\nDoes {name} show the same number in its Devices "
+                                   "tab?\n\nYes trusts it. If the numbers differ, click No: you may not be connected to "
+                                   "the computer you think."):
+                self.peers.set(cfg.controller_fingerprint, trusted=True, name=cfg.requester_name or None)
+
+        self.bg.run(lambda: verify_requester(cfg, directory, ident), done, lambda e: messagebox.showerror("Verify", str(e)))
+
+    def _nearby_leave(self) -> None:
+        from .client import leave_requester
+        from .paths import worker_dir
+        from .worker import NotPaired, load_worker_config
+
+        agent = self.agent
+        group = agent.cfg.group_mode if agent else load_config(WorkerConfig, self.dir / "worker.json").group_mode
+        if group != "open" and not messagebox.askyesno(
+                "Leave", "This is a paired (closed) group. Leaving removes this computer there, and you need a new "
+                "pairing code to come back. Leave anyway?"):
+            return
+        if agent:
+            self._write("Leaving: unfinished jobs go back to the requester …")
+            self.bg.run(agent.leave, lambda _r: (self._stopped(), self._use_dir(worker_dir("worker"))))
+            return
+        try:
+            cfg = load_worker_config(self.dir)
+        except NotPaired:
+            return
+        directory = self.dir
+
+        def finish(_r: Any = None) -> None:
+            self._use_dir(worker_dir("worker"))
+            self._write("Left the requester's group.")
+
+        self.bg.run(lambda: leave_requester(cfg, directory), finish, lambda _e: finish())
+
+
 class WorkerDirectControls:
     def _build_worker_direct(self) -> None:
         box = ttk.LabelFrame(getattr(self, "body", self.root), text="0. Connect (router-less Wi-Fi)", padding=6)

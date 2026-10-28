@@ -31,6 +31,11 @@ class ControllerConfig:
     worker_offline_after_s: int = 20
     pairing_ttl_s: int = 600
     max_request_bytes: int = 24 * 1024 * 1024
+    # Joining (PLAN §16.1). "code" = closed group: only pairing codes, /join is off.
+    join_policy: str = "anyone"  # anyone | trusted | ask | code
+    announce: bool = True  # signed nearby announcements while the group is open
+    announce_label: str = ""  # optional text shown to nearby helpers (everyone nearby can read it)
+    discovery_port: int = 8766
 
 
 @dataclass
@@ -50,6 +55,14 @@ class WorkerConfig:
     poll_s: float = 2.0
     shutdown_grace_s: float = 20.0
     low_priority: bool = True
+    # Joining nearby requesters (PLAN §15–§16). The pairing fields above are reused for a joined requester.
+    group_mode: str = "closed"  # "open" when this connection was made through /join instead of a pairing code
+    requester_device_id: str = ""
+    requester_name: str = ""
+    join_mode: str = "auto"  # auto | ask | trusted: what to do when a nearby requester asks for help
+    discovery: bool = True  # listen for nearby announcements while the window is open (receive-only UDP)
+    discovery_port: int = 8766
+    auto_join_direct: bool = False  # join DIRECT-NC-* groups by itself; stays off until tested on the i3
 
 
 T = TypeVar("T")
@@ -96,6 +109,27 @@ def load_config(cls: type[T], path: Path) -> T:
         if env is not None:
             setattr(cfg, f.name, _cast(env, getattr(cfg, f.name)))
     return cfg
+
+
+JOIN_POLICIES = ("anyone", "trusted", "ask", "code")
+HELPER_JOIN_MODES = ("auto", "ask", "trusted")
+
+
+def legacy_controller_config(path: Path) -> bool:
+    """True for a controller.json written before 0.3.0: it stays a closed group (pairing codes only)."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(raw, dict) and "join_policy" not in raw
+
+
+def validate_join_settings(cfg: ControllerConfig) -> None:
+    if cfg.join_policy not in JOIN_POLICIES:
+        raise ConfigError(f"join_policy must be one of {', '.join(JOIN_POLICIES)}.")
+    if not isinstance(cfg.discovery_port, int) or not 1024 <= cfg.discovery_port <= 65535 or cfg.discovery_port == cfg.port:
+        raise ConfigError("discovery_port must be a free UDP port between 1024 and 65535, different from the TCP port.")
+    cfg.announce_label = "".join(ch for ch in str(cfg.announce_label) if ch.isprintable())[:60]
 
 
 def save_config(cfg: Any, path: Path) -> None:
