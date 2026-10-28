@@ -26,7 +26,7 @@ from .config import WorkerConfig, load_config, save_config
 from .helper_policy import limit_reason
 from .helper_usage import OUTCOME_KIND, HelperUsage
 from .security import constant_time_equal, fingerprint_pem_file
-from .sysinfo import hardware_info, live_metrics, prime_cpu_counter
+from .sysinfo import hardware_info, live_metrics, prime_cpu_counter, speed_score
 from .winlimits import limit_memory, release, peak_memory_mb
 
 log = logging.getLogger("network_connector.worker")
@@ -198,8 +198,18 @@ class WorkerAgent:
         own = getattr(self.cfg, "group_mode", "closed")
         return "open" if "open" in (own, self._remote_group_mode) else "closed"
 
+    def _share_speed(self) -> None:
+        try:
+            from .paths import data_home
+
+            self._info["speed_units_per_s"] = speed_score(data_home() / "speed.json", __version__)
+        except Exception:  # noqa: BLE001 - the score is optional
+            pass
+
     def run(self) -> None:
         prime_cpu_counter()
+        if self.cfg.share_speed_score:  # only with the owner's permission (PLAN §19)
+            threading.Thread(target=self._share_speed, name="speed-score", daemon=True).start()
         try:
             swept = sandbox.sweep()  # leftovers from a crash or power loss
             if swept:
@@ -329,6 +339,7 @@ class WorkerAgent:
             self.state = "offline"
 
     def _heartbeat(self) -> None:
+        self._info["sandbox"] = bool(sandbox.available()[0])  # cached; lets the requester plan wasm benchmarks
         resp = self._call("/worker/heartbeat", {
             "info": self._info,
             "metrics": live_metrics() | {"running_jobs": len(self.running), "rtt_ms": self._rtt_ms},

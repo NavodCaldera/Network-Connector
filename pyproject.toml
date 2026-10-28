@@ -59,6 +59,9 @@ version = { attr = "network_connector.__version__" }
 [tool.setuptools.packages.find]
 include = ["network_connector*"]
 
+[tool.setuptools.package-data]
+network_connector = ["data/*.wasm"]
+
 [tool.setuptools.data-files]
 "share/network_connector/scripts" = ["scripts/add-firewall-rule.ps1", "scripts/remove-firewall-rule.ps1"]
 

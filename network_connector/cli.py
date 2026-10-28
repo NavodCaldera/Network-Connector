@@ -241,7 +241,8 @@ def cmd_bench(a: argparse.Namespace) -> int:
 
     client = _admin()
     if a.sub == "run":
-        spec = {"workload": a.workload, "size": a.size, "scenarios": a.scenarios.split(","), "repeats": a.repeats, "order": a.order, "label": a.label}
+        spec = {"workload": a.workload, "size": a.size, "scenarios": a.scenarios.split(","), "repeats": a.repeats, "order": a.order, "label": a.label,
+                "engines": a.engines.split(",")}
         if a.units is not None:
             spec["units"] = a.units
         ident = client.start_benchmark(spec)["id"]
@@ -262,7 +263,9 @@ def cmd_bench(a: argparse.Namespace) -> int:
         item = client.benchmark(a.id)
         print(f"Benchmark {a.id}: {item['status']}")
         rows = (item.get("result") or {}).get("scenarios", [])
-        _table([[r["scenario"], f"{r['wall_s']:.3f}", f"{r['min_s']:.3f}-{r['max_s']:.3f}", f"{r['units_per_s']:.3f}", r["speedup"]] for r in rows], ["SCENARIO", "WALL MEDIAN (s)", "RANGE (s)", "UNITS/S", "SPEEDUP"])
+        _table([[r["scenario"], f"{r['wall_s']:.3f}", f"{r['min_s']:.3f}-{r['max_s']:.3f}", f"{r['units_per_s']:.3f}", r["speedup"],
+                 f"{r['wasm_overhead']:.2f}x" if r.get("wasm_overhead") else ""] for r in rows],
+               ["SCENARIO", "WALL MEDIAN (s)", "RANGE (s)", "UNITS/S", "SPEEDUP", "WASM OVERHEAD"])
         print(json.dumps(item.get("result") or {"error": item.get("error")}, indent=2))
     elif a.sub == "export":
         content = export_benchmark(client.benchmark(a.id), a.format)
@@ -824,7 +827,8 @@ def build_parser() -> argparse.ArgumentParser:
     size = br.add_mutually_exclusive_group()
     size.add_argument("--size", choices=["quick", "standard", "long"], default="quick")
     size.add_argument("--units", type=int)
-    br.add_argument("--scenarios", default="each,all")
+    br.add_argument("--scenarios", default="each,all", help="comma list: each, all, topN (the N fastest), worker names")
+    br.add_argument("--engines", default="native", help="native, wasm, or native,wasm for a Wasm overhead column")
     br.add_argument("--repeats", type=int, default=3)
     br.add_argument("--order", choices=["fixed", "shuffled"], default="fixed")
     br.add_argument("--label", default="")

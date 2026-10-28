@@ -505,8 +505,8 @@ class Store:
 
     def _success_status(self, c: sqlite3.Connection, job: sqlite3.Row, worker_id: str) -> str:
         """A reported success is final, or first checked by the requester's verifier or by a twin run."""
-        if job["check_of"]:
-            return "succeeded"  # twins and tie-breaks are judged in _resolve_checks
+        if job["check_of"] or job["eligible_workers"]:
+            return "succeeded"  # twins and tie-breaks are judged in _resolve_checks; benchmarks check their answers
         if job["verifier"]:
             return "verifying"
         _, is_open = self._worker_device(c, worker_id)

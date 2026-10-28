@@ -73,7 +73,8 @@ class WorkerConfig:
     daily_cpu_min: int = 120  # per requester
     blocked_requesters: list[str] = field(default_factory=list)
     cpu_rate_percent: int = 0  # 0 = no cap; otherwise jobs together may use at most this % of the whole CPU
-    limit_stop_now: bool = False  # when a limit is hit: False = let the running chunk finish, True = stop it at once
+    limit_stop_now: bool = False
+    share_speed_score: bool = False  # tell requesters this PC's measured speed (PLAN §19); off unless the owner allows  # when a limit is hit: False = let the running chunk finish, True = stop it at once
 
 
 T = TypeVar("T")

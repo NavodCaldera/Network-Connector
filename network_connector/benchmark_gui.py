@@ -24,6 +24,8 @@ class BenchmarkControls:
         self.bench_repeats = tk.IntVar(value=3)
         self.bench_units = tk.StringVar()
         self.bench_order = tk.BooleanVar(value=True)
+        self.bench_wasm = tk.BooleanVar(value=False)
+        self.bench_top = tk.StringVar()
         for label, var, values in (("Workload", self.bench_workload, ["hash_chain", "prime_sieve"]),
                                    ("Size", self.bench_size, ["quick", "standard", "long"])):
             ttk.Label(inputs, text=label).pack(side="left", padx=3)
@@ -32,6 +34,9 @@ class BenchmarkControls:
         ttk.Spinbox(inputs, from_=1, to=5, textvariable=self.bench_repeats, width=4).pack(side="left")
         ttk.Label(inputs, text="Units (optional)").pack(side="left", padx=4)
         ttk.Entry(inputs, textvariable=self.bench_units, width=7).pack(side="left")
+        ttk.Checkbutton(inputs, text="Also in the Wasm sandbox", variable=self.bench_wasm).pack(side="left", padx=6)
+        ttk.Label(inputs, text="Top N").pack(side="left", padx=4)
+        ttk.Entry(inputs, textvariable=self.bench_top, width=4).pack(side="left")
         self.bench_workers_box = ttk.Frame(tab)
         self.bench_workers_box.pack(fill="x", pady=5)
         self.bench_workers: dict[str, tk.BooleanVar] = {}
@@ -50,7 +55,7 @@ class BenchmarkControls:
         self.bench_progress = ttk.Progressbar(tab, mode="indeterminate")
         self.bench_progress.pack(fill="x")
         self.bench_table = make_tree(tab, [("Scenario", 160), ("Wall median (s)", 110), ("Range (s)", 120),
-                                          ("Units/s", 90), ("Speedup", 90)], height=4)
+                                          ("Units/s", 90), ("Speedup", 90), ("Wasm overhead", 100)], height=4)
         self.bench_chart = tk.Canvas(tab, height=150, background="white", highlightthickness=0)
         self.bench_chart.pack(fill="x")
         self.bench_detail = tk.Text(tab, height=5, font=("Consolas", 9))
@@ -80,7 +85,10 @@ class BenchmarkControls:
             spec = {"workload": self.bench_workload.get(), "size": self.bench_size.get(),
                     "scenarios": [name for name, var in self.bench_workers.items() if var.get()]
                                  + (["all"] if self.bench_all.get() else []),
-                    "repeats": self.bench_repeats.get(), "order": "shuffled" if self.bench_order.get() else "fixed"}
+                    "repeats": self.bench_repeats.get(), "order": "shuffled" if self.bench_order.get() else "fixed",
+                    "engines": ["native", "wasm"] if self.bench_wasm.get() else ["native"]}
+            if self.bench_top.get().strip():
+                spec["scenarios"].append(f"top{int(self.bench_top.get())}")
             if self.bench_units.get().strip():
                 spec["units"] = int(self.bench_units.get())
                 spec.pop("size")
@@ -174,7 +182,8 @@ class BenchmarkControls:
                 continue
             spread = row.get("range_s", f"{row.get('min_s', wall):.3f} - {row.get('max_s', wall):.3f}")
             rows.append((name, [name, f"{wall:.3f}", str(spread),
-                                row.get("throughput", row.get("units_per_s", "")), row.get("speedup", "")]))
+                                row.get("throughput", row.get("units_per_s", "")), row.get("speedup", ""),
+                                f"{row['wasm_overhead']:.2f}x" if row.get("wasm_overhead") else ""]))
             walls.append((name, wall))
         fill_tree(self.bench_table, rows)
         self.bench_chart.delete("all")

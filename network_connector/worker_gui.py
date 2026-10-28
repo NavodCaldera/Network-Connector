@@ -114,6 +114,7 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
         self.v_accept = tk.StringVar(value=ACCEPT_LABELS.get(self.cfg.join_mode, ACCEPT_LABELS["auto"]))
         self.v_stop_now = tk.BooleanVar(value=self.cfg.limit_stop_now)
         self.v_cpu_rate = tk.IntVar(value=self.cfg.cpu_rate_percent)
+        self.v_share_speed = tk.BooleanVar(value=self.cfg.share_speed_score)
         items = (("Max CPU threads", self.v_threads, 1, 128, f"This PC has {hw['cores_logical']}. Leave one free to stay smooth."),
                  ("Max jobs at once", self.v_jobs, 1, 64, "Each job uses one thread."),
                  ("Max memory per job (MB)", self.v_mem, 256, 65536, "A job using more is stopped."),
@@ -138,9 +139,11 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
                         variable=self.v_stop_now).grid(row=10, column=0, columnspan=3, sticky="w")
         ttk.Label(lim, text="CPU cap for all jobs (% of this PC; 0 = none)").grid(row=11, column=0, sticky="w")
         ttk.Spinbox(lim, from_=0, to=100, textvariable=self.v_cpu_rate, width=8).grid(row=11, column=1, sticky="w")
+        ttk.Checkbutton(lim, text="Share this computer's measured speed with requesters (helps them size work)",
+                        variable=self.v_share_speed).grid(row=12, column=0, columnspan=3, sticky="w")
         self.blocked_label = ttk.Label(lim, text="", foreground="#666")
-        self.blocked_label.grid(row=12, column=0, columnspan=3, sticky="w")
-        ttk.Button(lim, text="Save limits", command=self.save_limits).grid(row=13, column=0, sticky="w", pady=4)
+        self.blocked_label.grid(row=13, column=0, columnspan=3, sticky="w")
+        ttk.Button(lim, text="Save limits", command=self.save_limits).grid(row=14, column=0, sticky="w", pady=4)
 
         # controls
         ctl = ttk.LabelFrame(root, text="3. Run", padding=8)
@@ -259,6 +262,7 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
         cfg.join_mode = next((k for k, v in ACCEPT_LABELS.items() if v == self.v_accept.get()), "auto")
         cfg.limit_stop_now = bool(self.v_stop_now.get())
         cfg.cpu_rate_percent = int(self.v_cpu_rate.get())
+        cfg.share_speed_score = bool(self.v_share_speed.get())
         HelperPolicy.from_config(cfg).validate()  # refuses bad hours or values before anything is saved
         return cfg
 

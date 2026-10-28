@@ -132,7 +132,8 @@ def test_benchmark_api_auth_limits_and_privacy(cluster):
         assert shared.status_code == 200
         assert len(shared.content) <= 65536
         assert "secret" not in shared.text
-        assert set(shared.json()["benchmark"]["workers"]["one"]) == {"cpu_name", "ram_total_mb", "threads"}
+        # Device names and short IDs are shared, never addresses (PLAN §19).
+        assert set(shared.json()["benchmark"]["workers"]["one"]) == {"cpu_name", "ram_total_mb", "threads", "device_name", "short_id"}
         cluster.runtime.state.admin_hosts = {"192.168.137.1"}
         assert http.post("/admin/benchmarks", headers=admin, json={"units": 1}).status_code == 403
 
@@ -158,3 +159,19 @@ def test_cli_parsing():
     assert parser.parse_args(["job", "cancel-all", "--yes"]).yes
     assert parser.parse_args(["bench", "run", "--units", "4", "--wait"]).units == 4
     assert parser.parse_args(["worker", "perf"]).fn.__name__ == "cmd_worker_perf"
+
+
+def test_speed_score_is_measured_once_per_version_and_shared_only_when_allowed(tmp_path, monkeypatch):
+    from network_connector import sysinfo
+    from network_connector.config import WorkerConfig
+    from network_connector.worker import WorkerAgent
+
+    monkeypatch.setattr(jobs, "HASH_ROUNDS", 1000)
+    cache = tmp_path / "speed.json"
+    score = sysinfo.speed_score(cache, "1.0")
+    assert score > 0 and json.loads(cache.read_text())["version"] == "1.0"
+    monkeypatch.setattr(jobs, "execute", lambda *a, **k: pytest.fail("measured again"))
+    assert sysinfo.speed_score(cache, "1.0") == score
+    assert WorkerConfig().share_speed_score is False
+    agent = WorkerAgent(WorkerConfig(), tmp_path / "w")
+    assert "speed_units_per_s" not in agent._info
