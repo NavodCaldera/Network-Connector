@@ -349,6 +349,28 @@ def verify_requester(cfg: WorkerConfig, wdir: Path, ident: Any) -> str:
     return verify_code(ident.device_id, requester_id, mine, theirs)
 
 
+def requester_identity(admin: AdminClient) -> dict[str, Any]:
+    return admin._call("GET", "/admin/identity")
+
+
+def join_policy(admin: AdminClient, **changes: Any) -> dict[str, Any]:
+    """Read the join policy, or change join_policy / announce / announce_label."""
+    changes = {k: v for k, v in changes.items() if v is not None}
+    return admin._call("PUT", "/admin/policy", json=changes) if changes else admin._call("GET", "/admin/policy")
+
+
+def close_group(admin: AdminClient, closing: bool) -> dict[str, Any]:
+    return admin._call("POST", "/admin/close", json={"closing": closing})
+
+
+def requester_devices(admin: AdminClient) -> dict[str, Any]:
+    return admin._call("GET", "/admin/devices")
+
+
+def device_action(admin: AdminClient, ref: str, action: str) -> dict[str, Any]:
+    return admin._call("POST", f"/admin/devices/{ref}/{action}")
+
+
 def leave_requester(cfg: WorkerConfig, wdir: Path) -> None:
     """Tell the requester this helper leaves (its token is dropped there), then forget the token here."""
     try:

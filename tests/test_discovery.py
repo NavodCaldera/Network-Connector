@@ -196,6 +196,21 @@ def test_nearby_list_expires_and_bounds():
     assert len(nearby.entries()) == discovery.MAX_ENTRIES
 
 
+def test_cli_nearby_lists_probe_results_and_hint(monkeypatch, tmp_path, capsys):
+    from network_connector import cli
+
+    monkeypatch.setenv("NC_HOME", str(tmp_path))
+    identity._cache.clear()
+    monkeypatch.setattr(discovery, "interface_addresses", lambda include_loopback=False: [])  # no real sockets in tests
+    monkeypatch.setattr(discovery, "probe_requesters", lambda hosts, port, own_device_id="": [
+        NearbyEntry("cd" * 32, "i7", "192.168.137.1", port, link="wifi-direct", source="probe")])
+    identity.PeerBook().set("cd" * 32, trusted=True)
+    assert cli.main(["nearby", "--seconds", "0"]) == 0
+    out = capsys.readouterr().out
+    assert "i7" in out and "CDCD-CDCD" in out and "trusted" in out and "Find controller" in out
+    identity._cache.clear()
+
+
 def test_probe_fallback_uses_outbound_hello(monkeypatch):
     from network_connector import client
 

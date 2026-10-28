@@ -334,6 +334,37 @@ def test_announcer_follows_policy_and_persists(cluster):
     assert cluster.admin._call("PUT", "/admin/policy", json={"join_policy": "anyone"})["announcing"]
 
 
+def test_cli_identity_policy_devices_connect_trust_leave(cluster, capsys, monkeypatch):
+    from network_connector import cli
+
+    rt = cluster.runtime
+    assert cli.main(["identity", "--name", "Test PC"]) == 0
+    out = capsys.readouterr().out
+    assert "Test PC" in out and rt.identity.short_id in out  # same PC: the device identity is the controller's
+    assert cli.main(["policy", "ask", "--no-announce", "--label", "primes"]) == 0
+    assert '"join_policy": "ask"' in capsys.readouterr().out and rt.announcer is None
+    cli.main(["policy", "anyone"])
+    helper = _other_device(cluster)
+    monkeypatch.setattr(identity, "current", lambda home=None: helper)  # act as another computer
+    assert cli.main(["worker", "connect", "--to", f"127.0.0.1:{rt.cfg.port}", "--device-id", rt.fingerprint]) == 0
+    assert f"--requester {rt.identity.short_id}" in capsys.readouterr().out
+    capsys.readouterr()
+    assert cli.main(["devices"]) == 0
+    assert helper.short_id in capsys.readouterr().out
+    assert cli.main(["trust", helper.device_id]) == 0
+    assert rt.store.get_device(helper.device_id)["trusted"] and identity.PeerBook().is_trusted(helper.device_id)
+    assert cli.main(["block", helper.short_id]) == 0
+    assert rt.store.get_device(helper.device_id)["blocked"]
+    assert cluster.admin.workers()[0]["state"] == "revoked"
+    assert cli.main(["block", helper.short_id, "--undo"]) == 0
+    assert not rt.store.get_device(helper.device_id)["blocked"]
+    assert cli.main(["worker", "connect", "--to", f"127.0.0.1:{rt.cfg.port}", "--yes"]) == 0
+    assert cli.main(["worker", "leave", "--requester", rt.identity.short_id]) == 0
+    assert cluster.admin.workers()[0]["state"] == "revoked"
+    with pytest.raises(SystemExit, match="not the requester you chose"):
+        cli.main(["worker", "connect", "--to", f"127.0.0.1:{rt.cfg.port}", "--device-id", "00" * 32])
+
+
 HELPER_SCRIPT = r"""
 import sys, time
 from network_connector import discovery, identity
