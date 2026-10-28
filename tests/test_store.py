@@ -3,8 +3,7 @@ import time
 
 import pytest
 
-from network_connector import store as store_mod
-from network_connector.store import LATEST_SCHEMA, MIGRATIONS, SCHEMA, Store
+from network_connector.store import MIGRATIONS, SCHEMA, Store
 
 
 @pytest.fixture
@@ -140,9 +139,8 @@ def _meta(s, key):
     return rows[0][0] if rows else None
 
 
-def test_migration_steps_are_numbered():
-    assert 1 in MIGRATIONS and 3 in MIGRATIONS  # step 2 (devices) belongs to the Link agent
-    assert LATEST_SCHEMA == max(MIGRATIONS)
+def test_migration_steps_are_consecutive():
+    assert sorted(MIGRATIONS) == list(range(1, max(MIGRATIONS) + 1))  # the loop runs version+1 .. latest
 
 
 def test_0_1_0_database_upgrades_to_latest_and_keeps_rows(tmp_path):
@@ -152,46 +150,30 @@ def test_0_1_0_database_upgrades_to_latest_and_keeps_rows(tmp_path):
         conn.execute("insert into workers(id,name,token_hash,created) values('old','old-worker','hash',1)")
     s = Store(path)
     assert s.get_worker("old")["name"] == "old-worker"
-    assert _meta(s, "schema_version") == str(LATEST_SCHEMA)
-    assert _meta(s, "applied_steps") == ",".join(map(str, sorted(MIGRATIONS)))
+    assert _meta(s, "schema_version") == str(max(MIGRATIONS))
     assert s.list_modules() == []
     assert path.with_name("state.db.bak-0.1.0").is_file()
     s.close()
 
 
-def test_version_1_database_backs_up_once_and_gets_step_3(tmp_path):
+def test_version_2_database_backs_up_once_and_gets_step_3(tmp_path):
     path = tmp_path / "state.db"
     s = Store(path)
-    with s._tx() as c:  # turn it back into a 0.2.0 (version 1) database
+    with s._tx() as c:  # turn it back into a version 2 database (0.2.0 + devices)
         c.execute("drop table modules")
-        c.execute("delete from meta where key='applied_steps'")
-        c.execute("update meta set value='1' where key='schema_version'")
+        c.execute("update meta set value='2' where key='schema_version'")
     s.close()
     s = Store(path)
     assert s.add_module("ab" * 32, b"\0asm", "x")
-    assert _meta(s, "schema_version") == str(LATEST_SCHEMA)
+    assert _meta(s, "schema_version") == str(max(MIGRATIONS))
     s.close()
-    backup = path.with_name("state.db.bak-v1")
+    backup = path.with_name("state.db.bak-v2")
     assert backup.is_file()
     with sqlite3.connect(backup) as conn:
-        assert conn.execute("select value from meta where key='schema_version'").fetchone()[0] == "1"
+        assert conn.execute("select value from meta where key='schema_version'").fetchone()[0] == "2"
     stamp = backup.stat().st_mtime_ns
-    Store(path).close()  # nothing missing: no new backup, no error
+    Store(path).close()  # up to date: no new backup, no error
     assert backup.stat().st_mtime_ns == stamp
-
-
-def test_gap_filled_later_still_runs(tmp_path, monkeypatch):
-    """A database already at step 3 must still get step 2 when that step is merged in later."""
-    path = tmp_path / "state.db"
-    Store(path).close()
-    ran = []
-    monkeypatch.setitem(store_mod.MIGRATIONS, 2, lambda c: ran.append(2))
-    s = Store(path)
-    assert ran == [2]
-    assert _meta(s, "applied_steps") == ",".join(map(str, sorted(store_mod.MIGRATIONS)))
-    s.close()
-    Store(path).close()
-    assert ran == [2]  # applied once only
 
 
 def test_claim_kind_filter(store):

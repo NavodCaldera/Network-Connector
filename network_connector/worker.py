@@ -104,9 +104,7 @@ class WorkerAgent:
         self._rtt_ms: float | None = None
         self._link = "unknown"
         self.module_cache = modules.ModuleCache(wdir / "modules")
-        # "closed" or "open". The Link agent sets cfg.group_mode when joining an open group. The requester's
-        # heartbeat can only make this stricter, never looser.
-        self.group_mode = getattr(cfg, "group_mode", "closed")
+        # The requester's heartbeat can only make cfg.group_mode stricter, never looser.
         self._remote_group_mode = "closed"
         self._sandbox_note = ""
         self._info = hardware_info() | {
@@ -154,7 +152,10 @@ class WorkerAgent:
     # ------------------------------------------------------------ main loop
     @property
     def effective_group_mode(self) -> str:
-        return "open" if "open" in (self.group_mode, self._remote_group_mode) else "closed"
+        """'open' (wasm only) if this connection was made through /join (cfg.group_mode, set by the Link
+        agent's join) or the requester says so; read live so a later join applies at once."""
+        own = getattr(self.cfg, "group_mode", "closed")
+        return "open" if "open" in (own, self._remote_group_mode) else "closed"
 
     def run(self) -> None:
         prime_cpu_counter()

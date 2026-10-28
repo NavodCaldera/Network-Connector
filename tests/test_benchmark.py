@@ -7,7 +7,7 @@ import pytest
 from network_connector import jobs
 from network_connector.benchmark import BenchmarkRunner, calibrated_units, derive, export_benchmark, shared_result
 from network_connector.cli import build_parser, main
-from network_connector.store import LATEST_SCHEMA, SCHEMA, Store
+from network_connector.store import MIGRATIONS, SCHEMA, Store
 from conftest import wait_for
 
 
@@ -38,7 +38,7 @@ def test_old_database_migration_preserves_rows_and_backups(tmp_path):
         conn.execute("insert into workers(id,name,token_hash,created) values('old','old-worker','hash',1)")
     store = Store(path)
     assert store.get_worker("old")["name"] == "old-worker"
-    assert store._q("select value from meta where key='schema_version'")[0][0] == str(LATEST_SCHEMA)
+    assert store._q("select value from meta where key='schema_version'")[0][0] == str(max(MIGRATIONS))
     assert path.with_name("state.db.bak-0.1.0").is_file()
     store.close()
     store = Store(path)

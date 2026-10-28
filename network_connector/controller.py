@@ -195,6 +195,18 @@ class PairingManager:
             return code
 
 
+# ------------------------------------------------------------------ joining (open groups)
+def worker_group_mode(worker: dict[str, Any]) -> str:
+    """'open' for helpers that joined through /join, 'closed' for paired ones (AGENT.md §4 contract)."""
+    info = worker.get("info") or {}
+    if isinstance(info, str):
+        try:
+            info = json.loads(info)
+        except ValueError:
+            info = {}
+    return "open" if isinstance(info, dict) and info.get("group_mode") == "open" else "closed"
+
+
 # ------------------------------------------------------------------ shared state
 @dataclass
 class ControllerState:
@@ -210,10 +222,6 @@ class ControllerState:
     direct_runtime: Any = None
     direct_subnets: set[str] = field(default_factory=set)
     worker_links: dict[str, str] = field(default_factory=dict)
-    # "closed" (paired, trusted helpers: every kind) or "open" (anyone nearby: wasm only). The Link agent sets
-    # this from the join policy, and may set group_mode_for(worker) -> mode to decide per worker.
-    group_mode: str = "closed"
-    group_mode_for: Any = None
 
 
 def create_app(state: ControllerState) -> FastAPI:
@@ -305,10 +313,6 @@ def create_app(state: ControllerState) -> FastAPI:
             "link": link,
             "group_mode": worker_group_mode(worker),  # a helper may only tighten its own mode with this
         }
-
-    def worker_group_mode(worker: dict[str, Any]) -> str:
-        mode = state.group_mode_for(worker) if state.group_mode_for else state.group_mode
-        return mode if mode in jobs.GROUP_MODES else "open"  # unknown means the strictest
 
     @app.post("/worker/claim")
     def claim(req: ClaimRequest, worker: dict = Depends(require_worker)) -> dict[str, Any]:

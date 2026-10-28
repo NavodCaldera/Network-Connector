@@ -167,22 +167,29 @@ def test_worker_module_download_needs_a_running_job_that_uses_it(cluster):
 
 
 def test_open_group_hands_out_wasm_only(cluster):
+    import json
+
     sha = _upload(cluster, wasm(ECHO))["sha256"]
-    cluster.runtime.state.group_mode = "open"
     raw = _raw_worker(cluster, "raw")
+    with cluster.runtime.store._tx() as c:  # as the requester's /join marks a helper (controller.worker_group_mode)
+        c.execute("update workers set info=? where name='raw'", (json.dumps({"group_mode": "open"}),))
     cluster.admin.submit("prime_range", {"start": 0, "end": 1000})
     assert raw.post("/worker/claim", json={"max_jobs": 4, "kinds": sorted(jobs.ALL_KINDS)}).json()["jobs"] == []
     cluster.admin.submit_batch([{"kind": "wasm", "params": {"module_sha256": sha}}])
     got = raw.post("/worker/claim", json={"max_jobs": 4, "kinds": sorted(jobs.ALL_KINDS)}).json()["jobs"]
     assert [j["kind"] for j in got] == ["wasm"]
     assert raw.post("/worker/heartbeat", json={}).json()["group_mode"] == "open"
-    cluster.runtime.state.group_mode_for = lambda worker: "bogus"  # unknown modes count as open
-    assert raw.post("/worker/heartbeat", json={}).json()["group_mode"] == "open"
     raw.close()
+    paired = _raw_worker(cluster, "paired")  # a paired helper in the same requester still gets native jobs
+    assert [j["kind"] for j in paired.post("/worker/claim", json={"max_jobs": 4, "kinds": sorted(jobs.ALL_KINDS)}).json()["jobs"]] == ["prime_range"]
+    paired.close()
 
 
 # ------------------------------------------------------------------ helper-side refusals (no controller needed)
 def _agent(tmp_path, monkeypatch, **cfg) -> tuple[WorkerAgent, list]:
+    monkeypatch.setenv("NC_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("NC_RUNTIME_HOME", str(tmp_path / "runtime"))
+    monkeypatch.setattr(sandbox, "_avail_cache", None)  # restored afterwards, so later tests keep theirs
     agent = WorkerAgent(WorkerConfig(name="h", max_memory_mb=512, **cfg), tmp_path)
     reports: list = []
     monkeypatch.setattr(agent, "_report", lambda job_id, action, body: reports.append((job_id, action, body)))
@@ -191,12 +198,12 @@ def _agent(tmp_path, monkeypatch, **cfg) -> tuple[WorkerAgent, list]:
 
 def test_helper_refuses_native_kinds_in_an_open_group(tmp_path, monkeypatch):
     agent, reports = _agent(tmp_path, monkeypatch)
-    agent.group_mode = "open"
+    agent.cfg.group_mode = "open"  # what the Link agent's join stores in worker.json
     assert agent.claim_kinds() in ([], ["wasm"])
     agent._start_job({"id": "j1", "kind": "prime_range", "attempt": 1, "timeout_s": 60, "params": {"start": 0, "end": 10}})
     assert not agent.running
     assert reports[0][1] == "fail" and "open groups" in reports[0][2]["error"] and reports[0][2]["retryable"] is False
-    agent.group_mode = "closed"
+    agent.cfg.group_mode = "closed"
     agent._remote_group_mode = "open"  # the requester can make it stricter
     assert "prime_range" not in agent.claim_kinds()
 

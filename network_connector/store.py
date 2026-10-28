@@ -38,9 +38,7 @@ create table if not exists attempts(
 TERMINAL = ("succeeded", "failed", "cancelled")
 
 
-# ------------------------------------------------------------ schema migrations
 def _m1_measurement(c: sqlite3.Connection) -> None:
-    """0.2.0: per-job metrics, persisted samples and benchmarks."""
     for table, columns in {
         "jobs": {"cpu_seconds": "real", "peak_mem_mb": "real", "queue_wait_s": "real", "link": "text", "eligible_workers": "text"},
         "attempts": {"duration": "real", "cpu_seconds": "real", "peak_mem_mb": "real"},
@@ -55,6 +53,13 @@ def _m1_measurement(c: sqlite3.Connection) -> None:
     c.execute("create table if not exists benchmark_runs(benchmark_id text, scenario text, repeat integer, batch_id text, started real, finished real, wall_s real, settings text, per_worker text, answer text, valid integer)")
 
 
+def _m2_devices(c: sqlite3.Connection) -> None:
+    c.execute(
+        "create table if not exists devices(device_id text primary key, name text not null default '',"
+        " cert text not null default '', trusted integer not null default 0, blocked integer not null default 0,"
+        " score real not null default 0, first_seen real, last_seen real)")
+
+
 def _m3_sandbox(c: sqlite3.Connection) -> None:
     """0.3.0: Wasm modules (bytes kept in the database), result checks and helper usage."""
     c.execute("create table if not exists modules(sha256 text primary key, size integer not null, uploaded real not null, label text, data blob not null)")
@@ -62,9 +67,7 @@ def _m3_sandbox(c: sqlite3.Connection) -> None:
     c.execute("create table if not exists helper_usage(requester_id text not null, day text not null, cpu_seconds real not null default 0, primary key(requester_id, day))")
 
 
-# Step 2 belongs to the Link agent (devices). Steps run in sorted order; gaps are allowed.
-MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _m1_measurement, 3: _m3_sandbox}
-LATEST_SCHEMA = max(MIGRATIONS)
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _m1_measurement, 2: _m2_devices, 3: _m3_sandbox}
 
 
 class Store:
@@ -82,30 +85,21 @@ class Store:
         self.prune_samples()
 
     def _migrate(self, path: Path, existed: bool) -> None:
-        """Apply every numbered step not applied yet, in order, each in its own transaction.
-
-        Steps are idempotent. `applied_steps` records exactly which ran, so a step number added
-        later below the current maximum (a gap filled by a parallel branch) still runs.
-        """
         self._conn.execute("create table if not exists meta(key text primary key, value text not null)")
         row = self._conn.execute("select value from meta where key='schema_version'").fetchone()
         version = int(row[0]) if row else 0
-        row = self._conn.execute("select value from meta where key='applied_steps'").fetchone()
-        applied = {int(s) for s in row[0].split(",") if s} if row else set(range(1, version + 1))
-        missing = [step for step in sorted(MIGRATIONS) if step not in applied]
-        if not missing:
+        latest = max(MIGRATIONS)
+        if version >= latest:
             return
         if existed:
             backup = path.with_name(path.name + (".bak-0.1.0" if version == 0 else f".bak-v{version}"))
             if not backup.exists():
                 with sqlite3.connect(str(backup)) as dest:
                     self._conn.backup(dest)
-        for step in missing:
+        for step in range(version + 1, latest + 1):
             with self._tx() as c:
                 MIGRATIONS[step](c)
-                applied.add(step)
-                c.execute("insert or replace into meta values('schema_version',?)", (str(max(applied)),))
-                c.execute("insert or replace into meta values('applied_steps',?)", (",".join(map(str, sorted(applied))),))
+                c.execute("insert or replace into meta values('schema_version',?)", (str(step),))
 
     def prune_samples(self) -> None:
         now = time.time()
