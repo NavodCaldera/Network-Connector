@@ -26,8 +26,16 @@ from network_connector.controller import (
 from network_connector.security import pairing_proof
 from network_connector.store import Store
 from network_connector.worker import WorkerAgent, load_worker_config
+from wasm_modules import ECHO, wasm
 
 ADMIN = {"X-Admin-Token": "admin-secret"}
+
+
+def submit_wasm_echo(client) -> None:
+    """Joined (open-group) helpers only get `wasm` jobs, so the join tests hand out a tiny echo module."""
+    module = base64.b64encode(wasm(ECHO)).decode()
+    sha = client.post("/admin/modules", headers=ADMIN, json={"module_b64": module}).json()["sha256"]
+    client.post("/admin/jobs", headers=ADMIN, json={"kind": "wasm", "params": {"module_sha256": sha}})
 
 
 @pytest.fixture(scope="module")
@@ -195,10 +203,13 @@ def test_leave_revokes_token_and_requeues_jobs(env, ids):
     client, state, _ = env
     body = join(client, state, ids["helper"]).json()
     client.post("/admin/jobs", headers=ADMIN, json={"kind": "number_batch", "params": {"start": 1, "count": 5}})
-    assert len(client.post("/worker/claim", headers=bearer(body["token"]), json={"max_jobs": 1}).json()["jobs"]) == 1
+    claim = {"max_jobs": 4, "kinds": ["number_batch", "wasm"]}
+    assert client.post("/worker/claim", headers=bearer(body["token"]), json=claim).json()["jobs"] == []  # open: wasm only
+    submit_wasm_echo(client)
+    assert [j["kind"] for j in client.post("/worker/claim", headers=bearer(body["token"]), json=claim).json()["jobs"]] == ["wasm"]
     assert client.post("/worker/leave", headers=bearer(body["token"]), json={}).json() == {"left": True}
     assert heartbeat(client, body["token"]).status_code == 401
-    assert state.store.summary()["queued"] == 1
+    assert state.store.summary()["queued"] == 2  # the native job never left the queue; the wasm job was re-queued
 
 
 def test_closing_stops_work_and_joins(env, ids):
@@ -269,7 +280,8 @@ def _other_device(cluster):
     return identity.load_or_create(cluster.home / "helper-pc")
 
 
-def test_helper_joins_runs_job_and_leaves_when_closing(cluster):
+@pytest.mark.skipif(sys.platform != "win32", reason="the Wasm sandbox is Windows-only")
+def test_helper_joins_runs_job_and_leaves_when_closing(cluster, sandbox_runtime):
     rt = cluster.runtime
     assert identity.current().device_id == rt.fingerprint  # same PC: the controller cert is the device identity
     helper = _other_device(cluster)
@@ -286,9 +298,12 @@ def test_helper_joins_runs_job_and_leaves_when_closing(cluster):
     agent = WorkerAgent(load_worker_config(wdir), wdir)
     cluster.agents.append(agent)
     agent.start_thread()
-    sub = cluster.admin.submit("number_batch", {"start": 1, "count": 50})
-    wait_for(lambda: cluster.admin.batch(sub["batch_id"])["done"], timeout=20)
+    native = cluster.admin.submit("number_batch", {"start": 1, "count": 50})  # open groups never get native kinds
+    sha = cluster.admin.upload_module(wasm(ECHO), "echo")["sha256"]
+    sub = cluster.admin.submit_batch([{"kind": "wasm", "params": {"module_sha256": sha}}])
+    wait_for(lambda: cluster.admin.batch(sub["batch_id"])["done"], timeout=60)
     assert cluster.admin.batch(sub["batch_id"])["by_worker"].keys() == {cfg.name}
+    assert cluster.admin.batch(native["batch_id"])["counts"] == {"queued": 1}
     rt.state.closing = True
     wait_for(lambda: agent.state == "left", timeout=20)
     assert load_config(WorkerConfig, wdir / "worker.json").token == ""

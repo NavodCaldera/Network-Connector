@@ -60,7 +60,14 @@ def _m2_devices(c: sqlite3.Connection) -> None:
         " score real not null default 0, first_seen real, last_seen real)")
 
 
-MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _m1_measurement, 2: _m2_devices}
+def _m3_sandbox(c: sqlite3.Connection) -> None:
+    """0.3.0: Wasm modules (bytes kept in the database), result checks and helper usage."""
+    c.execute("create table if not exists modules(sha256 text primary key, size integer not null, uploaded real not null, label text, data blob not null)")
+    c.execute("create table if not exists job_checks(job_id text primary key, twin_job_id text not null, match integer)")
+    c.execute("create table if not exists helper_usage(requester_id text not null, day text not null, cpu_seconds real not null default 0, primary key(requester_id, day))")
+
+
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _m1_measurement, 2: _m2_devices, 3: _m3_sandbox}
 
 
 class Store:
@@ -255,7 +262,8 @@ class Store:
             return bid, True
 
     # ------------------------------------------------------------ worker protocol
-    def claim(self, worker: dict[str, Any], limit: int, lease_s: int) -> list[dict[str, Any]]:
+    def claim(self, worker: dict[str, Any], limit: int, lease_s: int, kinds: list[str] | None = None) -> list[dict[str, Any]]:
+        """Hand out queued jobs. `kinds`, when given, limits the job kinds this worker may receive."""
         now = time.time()
         with self._tx() as c:
             saved_worker = c.execute("select metrics from workers where id=?", (worker["id"],)).fetchone()
@@ -265,8 +273,9 @@ class Store:
             rows = c.execute(
                 "select id from jobs where status='queued' and (target is null or target=?)"
                 " and (eligible_workers is null or exists(select 1 from json_each(eligible_workers) where value=?))"
+                " and (? is null or kind in (select value from json_each(?)))"
                 " order by created, idx limit ?",
-                (worker["name"], worker["name"], limit),
+                (worker["name"], worker["name"], None if kinds is None else 1, json.dumps(list(kinds or [])), limit),
             ).fetchall()
             claimed = []
             for r in rows:
@@ -554,3 +563,28 @@ class Store:
     def latest_participant_benchmark(self, worker_name: str) -> dict[str, Any] | None:
         rows = self._q("select b.id from benchmarks b where b.status='finished' and exists(select 1 from benchmark_runs r, json_each(r.per_worker) w where r.benchmark_id=b.id and w.key=? and json_extract(w.value,'$.chunks')>0) order by b.created desc limit 1", (worker_name,))
         return self.benchmark(rows[0]["id"]) if rows else None
+
+    # ------------------------------------------------------------ wasm modules
+    def add_module(self, sha256: str, data: bytes, label: str | None) -> bool:
+        """Store a module by its hash. Returns False when it was already stored."""
+        with self._tx() as c:
+            if c.execute("select 1 from modules where sha256=?", (sha256,)).fetchone():
+                return False
+            c.execute("insert into modules(sha256,size,uploaded,label,data) values(?,?,?,?,?)", (sha256, len(data), time.time(), label, data))
+            return True
+
+    def module_exists(self, sha256: str) -> bool:
+        return bool(self._q("select 1 from modules where sha256=?", (sha256,)))
+
+    def module_data(self, sha256: str) -> bytes | None:
+        rows = self._q("select data from modules where sha256=?", (sha256,))
+        return bytes(rows[0]["data"]) if rows else None
+
+    def list_modules(self) -> list[dict[str, Any]]:
+        return [dict(r) for r in self._q("select sha256, size, uploaded, label from modules order by uploaded desc")]
+
+    def worker_may_fetch_module(self, worker_id: str, sha256: str) -> bool:
+        """A worker may download a module only while it runs a wasm job that uses it."""
+        return bool(self._q(
+            "select 1 from jobs where worker_id=? and status='running' and kind='wasm'"
+            " and json_extract(params,'$.module_sha256')=? limit 1", (worker_id, sha256)))

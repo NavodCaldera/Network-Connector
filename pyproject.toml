@@ -16,6 +16,7 @@ dependencies = [
   "psutil>=5.9",
   "pillow>=10.0",
   "cryptography>=42",
+  "wasmtime==50.0.1",
 ]
 
 [project.optional-dependencies]
@@ -48,3 +49,4 @@ include = ["network_connector*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: long-running sandbox checks (still run by default)"]

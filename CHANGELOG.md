@@ -16,6 +16,22 @@
   window. CLI `nc identity`, `nc policy`, `nc devices`, `nc trust|block`, `nc worker connect|leave|verify`.
 - Store: numbered schema migrations; step 2 adds the `devices` table.
 
+### Sandbox
+
+- Added the Wasm sandbox for helpers: each `wasm` job runs in a fresh no-capability
+  AppContainer inside a Job Object (memory cap, one process, kill-on-close) with
+  wasmtime limited to WASI stdin/stdout/stderr, and is deleted afterwards on every
+  path. A start-up sweep removes leftovers; `sandbox.stop_all()` stops everything
+  within a second. `nc sandbox setup|status|sweep|run`; see docs/SANDBOX.md.
+- Added the `wasm` job kind, module upload and listing (`/admin/modules`,
+  `nc module upload|list`, `nc job submit wasm`), hash-checked module download
+  for helpers running a job that uses it, and a 200 MB helper module cache.
+- Open groups hand out and accept `wasm` jobs only. Helpers without a working
+  sandbox don't take `wasm` jobs and refuse them with the reason.
+- Database migrations are now numbered steps; step 3 adds `modules`,
+  `job_checks` and `helper_usage`. `state.db` is backed up first.
+- New pinned dependency: `wasmtime==50.0.1`. Example: `examples/wasm/primes`.
+
 ## 0.2.0 (in development)
 
 ### Wi-Fi Direct
