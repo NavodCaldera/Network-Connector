@@ -81,3 +81,16 @@ $nc = ".\.venv\Scripts\nc.exe"
 & $nc status --watch          # terminal dashboard
 & $nc controller shutdown     # stop the controller safely
 ```
+
+## Your own code: Wasm jobs (0.3.0)
+
+To run your own program instead of a built-in job, compile it to WebAssembly (stdin → stdout) and send it as a
+`wasm` job. Each helper runs it in a sandbox that is deleted afterwards. Set the sandbox up once on each helper:
+
+```powershell
+& $nc sandbox setup
+& $nc job submit wasm --module .\examples\wasm\primes\primes.wasm --input-text "0 1000000" --wait
+```
+
+See [SANDBOX.md](SANDBOX.md) for what the sandbox allows and [examples/wasm/primes](../examples/wasm/primes/README.md)
+for a complete example.

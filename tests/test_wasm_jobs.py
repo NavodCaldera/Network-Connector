@@ -306,6 +306,22 @@ def test_cli_sandbox_run_and_check(sandbox_runtime, capsys):
     assert "Self-check: ok" in capsys.readouterr().out
 
 
+@windows_only
+def test_cli_submit_wasm_end_to_end(cluster, sandbox_runtime, monkeypatch, capsys, tmp_path):
+    from network_connector import cli
+
+    cluster.add_worker("alpha")
+    monkeypatch.setattr(cli, "_admin", lambda: cluster.admin)
+    chunk = tmp_path / "chunk.txt"
+    chunk.write_text("1000000 2000000", encoding="utf-8")
+    assert cli.main(["job", "submit", "wasm", "--module", str(PRIMES / "primes.wasm"), "--input-text", "0 1000000",
+                     "--input", str(chunk), "--memory-mb", "32", "--seconds", "60", "--wait"]) == 0
+    out = capsys.readouterr().out
+    assert "2 job(s)" in out and "78498" in out and "70435" in out  # pi(1e6) and pi(2e6) - pi(1e6)
+    assert cli.main(["module", "list"]) == 0
+    assert "primes.wasm" in capsys.readouterr().out
+
+
 def test_cli_parses_wasm_submit_options():
     from network_connector.cli import build_parser
 
