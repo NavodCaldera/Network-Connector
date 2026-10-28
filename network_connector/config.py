@@ -7,7 +7,7 @@ import logging
 import logging.handlers
 import os
 import socket
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -23,6 +23,7 @@ class ConfigError(ValueError):
 @dataclass
 class ControllerConfig:
     bind_host: str = ""  # empty = auto-detect the private LAN address on first start
+    bind_hosts: list[str] = field(default_factory=list)
     port: int = 8765
     lease_seconds: int = 60  # a job returns to the queue if its worker is silent this long
     default_timeout_s: int = 600
@@ -30,6 +31,11 @@ class ControllerConfig:
     worker_offline_after_s: int = 20
     pairing_ttl_s: int = 600
     max_request_bytes: int = 24 * 1024 * 1024
+    # Joining (PLAN §16.1). "code" = closed group: only pairing codes, /join is off.
+    join_policy: str = "anyone"  # anyone | trusted | ask | code
+    announce: bool = True  # signed nearby announcements while the group is open
+    announce_label: str = ""  # optional text shown to nearby helpers (everyone nearby can read it)
+    discovery_port: int = 8766
 
 
 @dataclass
@@ -39,6 +45,8 @@ class WorkerConfig:
     name: str = ""
     worker_id: str = ""
     token: str = ""  # secret: this file is protected and lives outside Git
+    controller_fingerprint: str = ""
+    known_hosts: list[str] = field(default_factory=list)
     max_cpu_threads: int = 2
     max_concurrent_jobs: int = 2
     max_memory_mb: int = 1024  # per job
@@ -47,12 +55,30 @@ class WorkerConfig:
     poll_s: float = 2.0
     shutdown_grace_s: float = 20.0
     low_priority: bool = True
+    # Joining nearby requesters (PLAN §15–§16). The pairing fields above are reused for a joined requester.
+    group_mode: str = "closed"  # "open" when this connection was made through /join instead of a pairing code
+    requester_device_id: str = ""
+    requester_name: str = ""
+    join_mode: str = "auto"  # auto | ask | trusted: what to do when a nearby requester asks for help
+    discovery: bool = True  # listen for nearby announcements while the window is open (receive-only UDP)
+    discovery_port: int = 8766
+    auto_join_direct: bool = False  # join DIRECT-NC-* groups by itself; stays off until tested on the i3
+    ac_only: bool = True
+    idle_min: int = 0  # 0 disables the input-idle gate
+    allowed_hours: str = ""  # empty = any time; otherwise HH:MM-HH:MM in local time
+    daily_cpu_min: int = 120  # per requester
+    blocked_requesters: list[str] = field(default_factory=list)
 
 
 T = TypeVar("T")
 
 
 def _cast(value: str, current: Any) -> Any:
+    if isinstance(current, list):
+        parsed = json.loads(value)
+        if not isinstance(parsed, list) or not all(isinstance(v, str) for v in parsed):
+            raise ConfigError("Address lists must be JSON arrays of IP address strings.")
+        return parsed
     if isinstance(current, bool):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     if isinstance(current, int):
@@ -90,6 +116,27 @@ def load_config(cls: type[T], path: Path) -> T:
     return cfg
 
 
+JOIN_POLICIES = ("anyone", "trusted", "ask", "code")
+HELPER_JOIN_MODES = ("auto", "ask", "trusted")
+
+
+def legacy_controller_config(path: Path) -> bool:
+    """True for a controller.json written before 0.3.0: it stays a closed group (pairing codes only)."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(raw, dict) and "join_policy" not in raw
+
+
+def validate_join_settings(cfg: ControllerConfig) -> None:
+    if cfg.join_policy not in JOIN_POLICIES:
+        raise ConfigError(f"join_policy must be one of {', '.join(JOIN_POLICIES)}.")
+    if not isinstance(cfg.discovery_port, int) or not 1024 <= cfg.discovery_port <= 65535 or cfg.discovery_port == cfg.port:
+        raise ConfigError("discovery_port must be a free UDP port between 1024 and 65535, different from the TCP port.")
+    cfg.announce_label = "".join(ch for ch in str(cfg.announce_label) if ch.isprintable())[:60]
+
+
 def save_config(cfg: Any, path: Path) -> None:
     from .security import protect_path
 
@@ -100,6 +147,8 @@ def save_config(cfg: Any, path: Path) -> None:
 
 def validate_bind_host(host: str) -> str:
     """Refuse wildcard and public addresses: the controller is LAN-only."""
+    if not isinstance(host, str):
+        raise ConfigError("bind_host must be an explicit IP address string.")
     try:
         ip = ipaddress.ip_address(host)
     except ValueError as exc:
@@ -113,14 +162,23 @@ def validate_bind_host(host: str) -> str:
     return str(ip)
 
 
-def list_private_ips() -> list[str]:
+def list_private_ips(labelled: bool = False) -> list[str]:
     found: list[str] = []
-    for addrs in psutil.net_if_addrs().values():
+    from .wifidirect import direct_interfaces
+
+    try:
+        direct = {i.ip: i for i in direct_interfaces()}
+    except RuntimeError:
+        direct = {}
+    for name, addrs in psutil.net_if_addrs().items():
         for addr in addrs:
             if addr.family == socket.AF_INET:
                 ip = ipaddress.ip_address(addr.address)
-                if ip.is_private and not ip.is_loopback and not ip.is_link_local:
-                    found.append(addr.address)
+                if ip.is_private and not ip.is_loopback and (not ip.is_link_local or addr.address in direct):
+                    label = "Wi-Fi Direct" if addr.address in direct else name
+                    value = f"{addr.address} — {label}" if labelled else addr.address
+                    if value not in found:
+                        found.append(value)
     return found
 
 

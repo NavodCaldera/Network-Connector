@@ -17,6 +17,7 @@ def local_worker_dir() -> Path:
 
 def ensure_paired(admin: AdminClient, host: str, port: int, name: str = "i7-local") -> WorkerConfig:
     """Pair this computer's own worker, using an admin-issued code (no typing needed)."""
+    host = "127.0.0.1"
     wdir = local_worker_dir()
     try:
         cfg = load_worker_config(wdir)

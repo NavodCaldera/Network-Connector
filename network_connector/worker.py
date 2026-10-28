@@ -4,6 +4,7 @@ The worker opens no listening port, so nothing on the network can connect to it.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -19,11 +20,14 @@ from typing import Any
 import httpx
 import psutil
 
-from . import __version__
-from .client import ControllerError, pinned_context, raise_for_error
-from .config import WorkerConfig, load_config
+from . import __version__, jobs, modules, sandbox
+from .client import ControllerError, controller_url, fetch_module, pinned_context, probe, raise_for_error
+from .config import WorkerConfig, load_config, save_config
+from .helper_policy import can_help
+from .helper_usage import HelperUsage
+from .security import constant_time_equal, fingerprint_pem_file
 from .sysinfo import hardware_info, live_metrics, prime_cpu_counter
-from .winlimits import limit_memory, release
+from .winlimits import limit_memory, release, peak_memory_mb
 
 log = logging.getLogger("network_connector.worker")
 
@@ -41,6 +45,12 @@ def load_worker_config(wdir: Path) -> WorkerConfig:
     cfg = load_config(WorkerConfig, wdir / "worker.json")
     if not (cfg.token and cfg.controller_host and (wdir / "controller.crt").is_file()):
         raise NotPaired("This worker is not paired yet. Pair it with a code from the controller first.")
+    # Upgrade older pairings from the already trusted certificate, without fetching a new one.
+    fingerprint = fingerprint_pem_file(wdir / "controller.crt")
+    known = list(dict.fromkeys([cfg.controller_host, *cfg.known_hosts]))[:4]
+    if cfg.controller_fingerprint != fingerprint or cfg.known_hosts != known:
+        cfg.controller_fingerprint, cfg.known_hosts = fingerprint, known
+        save_config(cfg, wdir / "worker.json")
     return cfg
 
 
@@ -57,14 +67,20 @@ class RunningJob:
     kind: str
     attempt: int
     timeout_s: int
-    proc: subprocess.Popen
+    proc: subprocess.Popen | None
     handle: object | None
     started: float = field(default_factory=time.monotonic)
     progress: float = 0.0
     stdout: bytes = b""
     cancel: bool = False
     abandon: bool = False
+    cpu_seconds: float | None = None
+    peak_mem_mb: float = 0.0
     threads: list[threading.Thread] = field(default_factory=list)
+    sandbox: Any = None  # wasm jobs: a sandbox.Sandbox run on threads[0]
+    wasm_result: Any = None
+    wasm_error: str = ""
+    module_sha256: str = ""
 
 
 class WorkerAgent:
@@ -79,6 +95,9 @@ class WorkerAgent:
         self.remote_paused = False
         self.remote_disabled = False
         self._revoked = False
+        self.remote_closing = False  # the requester stopped handing out work (PLAN §13)
+        self._leave = False
+        self._immediate_stop = False
         self.state = "starting"
         self.last_error = ""
         self.completed = 0
@@ -87,11 +106,20 @@ class WorkerAgent:
         self.event_count = 0
         self._thread: threading.Thread | None = None
         self._http: httpx.Client | None = None
+        self._rtt_ms: float | None = None
+        self._link = "unknown"
+        self.module_cache = modules.ModuleCache(wdir / "modules")
+        self.usage = HelperUsage(wdir / "helper_usage.db")
+        # The requester's heartbeat can only make cfg.group_mode stricter, never looser.
+        self._remote_group_mode = "closed"
+        self._sandbox_note = ""
+        self._policy_note = ""
         self._info = hardware_info() | {
             "limits": {
                 "max_cpu_threads": cfg.max_cpu_threads,
                 "max_concurrent_jobs": cfg.max_concurrent_jobs,
                 "max_memory_mb": cfg.max_memory_mb,
+                "low_priority": cfg.low_priority,
             }
         }
 
@@ -104,6 +132,19 @@ class WorkerAgent:
         self.stop_event.set()
         if wait and self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=self.cfg.shutdown_grace_s + 15)
+
+    def leave(self, wait: bool = True) -> None:
+        """Stop, hand unfinished jobs back, and tell the requester this helper leaves (its token is dropped)."""
+        self._leave = True
+        self.stop(wait)
+
+    def stop_helping(self) -> None:
+        """Owner emergency Stop: refuse new claims and kill active sandboxes immediately."""
+        self.pause()
+        self._immediate_stop = True
+        self._leave = self.cfg.group_mode == "open"
+        sandbox.stop_all()
+        self.stop_event.set()
 
     def pause(self) -> None:
         self.local_paused = True
@@ -118,22 +159,50 @@ class WorkerAgent:
         return max(1, min(self.cfg.max_concurrent_jobs, self.cfg.max_cpu_threads))
 
     def snapshot(self) -> dict[str, Any]:
+        running = []
+        for j in list(self.running.values()):
+            pid = j.sandbox.pid if j.sandbox is not None else j.proc.pid if j.proc is not None else 0
+            cpu_percent = ram_mb = 0.0
+            if pid:
+                try:
+                    process = psutil.Process(pid)
+                    cpu_percent = process.cpu_percent(interval=None)
+                    ram_mb = process.memory_info().rss / (1024 * 1024)
+                except psutil.Error:
+                    pass
+            running.append({"id": j.id, "kind": j.kind, "progress": round(j.progress, 1),
+                            "elapsed": round(time.monotonic() - j.started, 1),
+                            "cpu_percent": round(cpu_percent, 1), "ram_mb": round(ram_mb, 1)}
+                           | ({"module_sha256": j.module_sha256} if j.module_sha256 else {}))
         return {
             "state": self.state, "paused": self.local_paused or self.remote_paused, "disabled": self.remote_disabled,
-            "running": [{"id": j.id, "kind": j.kind, "progress": round(j.progress, 1),
-                         "elapsed": round(time.monotonic() - j.started, 1)} for j in self.running.values()],
+            "running": running,
             "completed": self.completed, "failed": self.failed, "last_error": self.last_error,
             "slots": self.slots, "metrics": live_metrics(), "name": self.cfg.name,
+            "link": self._link, "controller_host": self.cfg.controller_host, "rtt_ms": self._rtt_ms,
+            "group_mode": self.cfg.group_mode, "requester_name": self.cfg.requester_name, "closing": self.remote_closing,
+            "requester_id": (self.cfg.requester_device_id or self.cfg.controller_fingerprint)[:8],
+            "cpu_minutes_today": round(self.usage.seconds(self._requester_key()) / 60, 1),
+            "policy_reason": self._policy_note,
         }
 
     # ------------------------------------------------------------ main loop
+    @property
+    def effective_group_mode(self) -> str:
+        """'open' (wasm only) if this connection was made through /join (cfg.group_mode, set by the Link
+        agent's join) or the requester says so; read live so a later join applies at once."""
+        own = getattr(self.cfg, "group_mode", "closed")
+        return "open" if "open" in (own, self._remote_group_mode) else "closed"
+
     def run(self) -> None:
         prime_cpu_counter()
-        self._http = httpx.Client(
-            base_url=f"https://{self.cfg.controller_host}:{self.cfg.controller_port}",
-            verify=pinned_context(self.dir / "controller.crt"),
-            headers={"Authorization": f"Bearer {self.cfg.token}"}, timeout=10,
-        )
+        try:
+            swept = sandbox.sweep()  # leftovers from a crash or power loss
+            if swept:
+                self._event(f"removed {swept} leftover sandbox(es) from an earlier run")
+        except OSError:
+            pass
+        self._http = self._new_client(self.cfg.controller_host)
         self.state = "connecting"
         self._event(f"worker '{self.cfg.name}' starting; controller {self.cfg.controller_host}:{self.cfg.controller_port}")
         next_hb = next_claim = 0.0
@@ -175,23 +244,76 @@ class WorkerAgent:
                     next_hb = time.monotonic() + BACKOFF[min(backoff_i, len(BACKOFF) - 1)]
                     backoff_i += 1
                     self.state = "offline"
+                    if backoff_i >= 3 and self._try_refind():
+                        next_hb = next_claim = 0.0
+                        backoff_i = 0
                 if (self.cfg.idle_timeout_minutes > 0 and not self.running
                         and time.monotonic() - last_activity > self.cfg.idle_timeout_minutes * 60):
                     self._event(f"idle for {self.cfg.idle_timeout_minutes} minutes; stopping (idle timeout)")
                     break
+                if self.remote_closing and self.cfg.group_mode == "open" and not self.running:
+                    # Joined groups end when the requester closes; paired (closed) groups wait for it to come back.
+                    self._event("the requester is closing; leaving its group")
+                    self._leave = True
+                    break
                 self.stop_event.wait(0.25)
         finally:
             self._graceful_shutdown()
+            if self._leave and not self._revoked:
+                self._send_leave()
             if self._http:
                 self._http.close()
-            self.state = "revoked" if self._revoked else "stopped"
+            self.state = "revoked" if self._revoked else "left" if self._leave else "stopped"
             self._write_status()
             self._event("worker stopped")
 
     # ------------------------------------------------------------ network helpers
+    def _new_client(self, host: str) -> httpx.Client:
+        return httpx.Client(
+            base_url=controller_url(host, self.cfg.controller_port),
+            verify=pinned_context(self.dir / "controller.crt"),
+            headers={"Authorization": f"Bearer {self.cfg.token}"}, timeout=10,
+        )
+
+    def _try_refind(self) -> bool:
+        from .wifidirect import candidate_controllers
+
+        try:
+            expected = fingerprint_pem_file(self.dir / "controller.crt")
+            candidates = list(dict.fromkeys([*self.cfg.known_hosts[:4], *candidate_controllers()]))[:8]
+            for host in candidates:
+                if self.stop_event.is_set():
+                    return False
+                if host == self.cfg.controller_host:
+                    continue
+                seen = probe(host, self.cfg.controller_port, timeout=2)
+                if seen is None or not constant_time_equal(seen, expected):
+                    continue
+                http = self._new_client(host)
+                previous = self.cfg.controller_host, self.cfg.controller_fingerprint, self.cfg.known_hosts
+                self.cfg.controller_host, self.cfg.controller_fingerprint = host, expected
+                self.cfg.known_hosts = list(dict.fromkeys([host, previous[0], *previous[2]]))[:4]
+                try:
+                    save_config(self.cfg, self.dir / "worker.json")
+                except OSError:
+                    self.cfg.controller_host, self.cfg.controller_fingerprint, self.cfg.known_hosts = previous
+                    http.close()
+                    return False
+                old, self._http = self._http, http
+                if old:
+                    old.close()
+                self._event(f"found the pinned controller at {host}:{self.cfg.controller_port}")
+                return True
+        except (OSError, ValueError, RuntimeError):
+            pass
+        return False
+
     def _call(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         assert self._http is not None
-        return raise_for_error(self._http.post(path, json=body))
+        started = time.monotonic()
+        response = raise_for_error(self._http.post(path, json=body))
+        self._rtt_ms = (time.monotonic() - started) * 1000
+        return response
 
     def _net_problem(self, exc: Exception) -> None:
         msg = str(exc) or type(exc).__name__
@@ -204,13 +326,14 @@ class WorkerAgent:
     def _heartbeat(self) -> None:
         resp = self._call("/worker/heartbeat", {
             "info": self._info,
-            "metrics": live_metrics() | {"running_jobs": len(self.running)},
+            "metrics": live_metrics() | {"running_jobs": len(self.running), "rtt_ms": self._rtt_ms},
             "version": __version__,
             "jobs": [{"id": j.id, "attempt": j.attempt, "progress": j.progress} for j in self.running.values()],
         })
         if self.last_error and self.state in ("offline", "connecting"):
             self._event("connected to controller")
         self.last_error = ""
+        self._link = resp.get("link", "unknown")
         for jid in resp.get("cancel", []):
             if jid in self.running and not self.running[jid].cancel:
                 self.running[jid].cancel = True
@@ -220,17 +343,52 @@ class WorkerAgent:
                 self.running[jid].abandon = True
         self.remote_paused = bool(resp.get("paused"))
         self.remote_disabled = bool(resp.get("disabled"))
+        closing = bool(resp.get("closing"))
+        if closing and not self.remote_closing:
+            self._event("the requester is closing: no new jobs; running jobs may finish")
+        self.remote_closing = closing
+        self._remote_group_mode = "open" if resp.get("group_mode") == "open" else "closed"
         self._write_status()
 
     def _can_claim(self) -> bool:
-        if self.stop_event.is_set() or self.local_paused or self.remote_paused or self.remote_disabled:
+        if self.stop_event.is_set() or self.local_paused or self.remote_paused or self.remote_disabled or self.remote_closing:
             return False
         if len(self.running) >= self.slots or self.state in ("stopping", "offline", "connecting"):
             return False
+        allowed, reason = can_help(self.cfg)
+        if not allowed:
+            if reason != self._policy_note:
+                self._event(reason)
+            self._policy_note = reason
+            return False
+        if self.cfg.daily_cpu_min > 0 and self.usage.seconds(self._requester_key()) >= self.cfg.daily_cpu_min * 60:
+            if self._policy_note != "daily CPU limit reached":
+                self._event("daily CPU limit reached")
+            self._policy_note = "daily CPU limit reached"
+            return False
+        self._policy_note = ""
         return psutil.virtual_memory().percent < 92  # never start work when the laptop is nearly out of RAM
 
+    def _requester_key(self) -> str:
+        return self.cfg.requester_device_id or self.cfg.controller_fingerprint
+
+    def claim_kinds(self) -> list[str]:
+        """Job kinds this helper accepts right now: by group mode, and wasm only if the sandbox works."""
+        kinds = set(jobs.allowed_kinds(self.effective_group_mode))
+        if jobs.WASM in kinds:
+            ok, reason = sandbox.available()
+            if not ok:
+                kinds.discard(jobs.WASM)
+                if reason != self._sandbox_note:
+                    self._event(f"not taking wasm jobs: {reason}")
+            self._sandbox_note = "" if ok else reason
+        return sorted(kinds)
+
     def _claim(self) -> bool:
-        resp = self._call("/worker/claim", {"max_jobs": self.slots - len(self.running)})
+        kinds = self.claim_kinds()
+        if not kinds:
+            return False
+        resp = self._call("/worker/claim", {"max_jobs": self.slots - len(self.running), "kinds": kinds})
         for job in resp.get("jobs", []):
             self._start_job(job)
         return bool(resp.get("jobs"))
@@ -252,7 +410,21 @@ class WorkerAgent:
             self._report(job_id, action, body)
 
     # ------------------------------------------------------------ running jobs
+    def _refuse(self, job: dict[str, Any], error: str, retryable: bool) -> None:
+        self.failed += 1
+        self._event(f"refused job {job['id']}: {error}")
+        try:
+            self._report(job["id"], "fail", {"attempt": job["attempt"], "error": error[:1900], "retryable": retryable})
+        except ControllerError:
+            pass
+
     def _start_job(self, job: dict[str, Any]) -> None:
+        if job.get("kind") not in jobs.allowed_kinds(self.effective_group_mode):
+            self._refuse(job, f"open groups run only sandboxed wasm jobs; {job.get('kind')!r} is refused on this helper", False)
+            return
+        if job["kind"] == jobs.WASM:
+            self._start_wasm(job)
+            return
         env = os.environ.copy()
         for var in _THREAD_VARS:
             env[var] = "1"
@@ -295,6 +467,11 @@ class WorkerAgent:
                         rj.progress = float(line[9:].strip())
                     except ValueError:
                         pass
+                elif line.startswith(b"METRICS "):
+                    try:
+                        rj.cpu_seconds = max(0.0, float(json.loads(line[8:])["cpu_s"]))
+                    except (ValueError, KeyError, TypeError):
+                        pass
 
         rj.threads = [threading.Thread(target=f, daemon=True) for f in (feed, read_out, read_err)]
         for t in rj.threads:
@@ -302,8 +479,111 @@ class WorkerAgent:
         self.running[rj.id] = rj
         self._event(f"started job {rj.id} ({rj.kind}, attempt {rj.attempt})")
 
-    def _kill(self, rj: RunningJob) -> None:
+    def _module(self, sha256: str) -> bytes:
+        data = self.module_cache.get(sha256)
+        if data is None:
+            assert self._http is not None
+            data = fetch_module(self._http, sha256, modules.MAX_MODULE_BYTES)
+            self.module_cache.put(sha256, data)  # checks size, hash and imports first
+        return data
+
+    def _start_wasm(self, job: dict[str, Any]) -> None:
+        ok, reason = sandbox.available()
+        if not ok:
+            self._refuse(job, f"this helper can't run wasm jobs: {reason}", True)
+            return
         try:
+            params = jobs.validate(jobs.WASM, job["params"])
+        except jobs.JobError as exc:
+            self._refuse(job, f"job rejected: {exc}", False)
+            return
+        limits = params["limits"]
+        if limits["memory_mb"] > self.cfg.max_memory_mb:
+            self._refuse(job, f"needs {limits['memory_mb']} MB; this helper allows {self.cfg.max_memory_mb} MB per job", True)
+            return
+        try:
+            module = self._module(params["module_sha256"])
+        except modules.ModuleError as exc:
+            self._refuse(job, f"module refused: {exc}", False)
+            return
+        except (ControllerError, httpx.HTTPError, OSError) as exc:
+            self._refuse(job, f"could not download the module: {exc}", True)
+            return
+        box = sandbox.Sandbox(module, base64.b64decode(params["input_b64"]), params["args"],
+                              memory_mb=limits["memory_mb"], seconds=min(limits["seconds"], job["timeout_s"]),
+                              fuel=limits.get("fuel"))
+        rj = RunningJob(job["id"], job["kind"], job["attempt"], job["timeout_s"], None, None, sandbox=box,
+                        module_sha256=params["module_sha256"])
+
+        def go() -> None:
+            try:
+                rj.wasm_result = box.run()
+            except sandbox.SandboxUnavailable as exc:
+                rj.wasm_error = f"this helper can't run wasm jobs: {exc}"
+            except Exception as exc:  # noqa: BLE001 - reported as a retryable failure
+                rj.wasm_error = f"sandbox error: {type(exc).__name__}: {exc}"
+
+        rj.threads = [threading.Thread(target=go, name=f"sandbox-{rj.id}", daemon=True)]
+        rj.threads[0].start()
+        self.running[rj.id] = rj
+        self._event(f"started job {rj.id} (wasm {rj.module_sha256[:12]}, attempt {rj.attempt}) in a fresh sandbox")
+
+    def _poll_wasm(self, rj: RunningJob) -> bool:
+        """Returns True when the job left self.running."""
+        elapsed = time.monotonic() - rj.started
+        if rj.threads[0].is_alive():
+            if rj.abandon or rj.cancel:
+                rj.sandbox.kill("cancelled")
+            if not rj.abandon:
+                rj.progress = min(99.0, elapsed * 100 / max(rj.sandbox.seconds, 1))
+                return False
+            rj.threads[0].join(5)
+        self._drop(rj)
+        if rj.abandon:
+            return True
+        r = rj.wasm_result
+        action, body = "fail", {"attempt": rj.attempt}
+        if r is None:
+            body |= {"error": rj.wasm_error or "the sandbox failed", "retryable": True}
+        elif r.outcome == "stopped" and not rj.cancel:
+            self._event(f"job {rj.id} stopped by the owner; handing it back")
+            self._report(rj.id, "release", {"attempt": rj.attempt})
+            return True
+        elif r.ok:
+            action = "complete"
+            body["result"] = {"stdout_b64": base64.b64encode(r.stdout).decode(), "exit_code": r.exit_code,
+                              "fuel_used": r.fuel_used, "cpu_seconds": r.cpu_seconds,
+                              "stderr_b64": base64.b64encode(r.stderr).decode()}
+        elif rj.cancel or r.outcome == "cancelled":
+            body |= {"error": "cancelled", "cancelled": True, "retryable": False}
+        else:
+            body |= {"error": f"wasm {r.outcome}: {r.detail}"[:1900], "retryable": r.outcome in ("timeout", "crashed", "error")}
+        if r is not None:
+            body |= {"cpu_seconds": min(r.cpu_seconds, 86400), "peak_mem_mb": r.peak_mem_mb or None}
+            self.usage.add(self._requester_key(), max(0, r.cpu_seconds))
+            if r.escape_signal:
+                self._event(f"job {rj.id} tried to start a process from inside the sandbox; it was blocked and killed")
+        body["duration"] = round(elapsed, 3)
+        if action == "complete":
+            self.completed += 1
+            self._event(f"job {rj.id} finished in {elapsed:.1f}s (sandbox deleted)")
+        else:
+            self.failed += 1
+            self._event(f"job {rj.id} did not succeed: {body['error']} (sandbox deleted)")
+        try:
+            self._report(rj.id, action, body)
+        except ControllerError:
+            pass
+        return True
+
+    def _kill(self, rj: RunningJob) -> None:
+        if rj.sandbox is not None:
+            rj.sandbox.kill("stopped")
+            for t in rj.threads:
+                t.join(timeout=10)
+            return
+        try:
+            assert rj.proc is not None
             rj.proc.kill()
             rj.proc.wait(timeout=10)
         except (OSError, subprocess.TimeoutExpired):
@@ -312,6 +592,9 @@ class WorkerAgent:
     def _poll_running(self) -> bool:
         any_finished = False
         for rj in list(self.running.values()):
+            if rj.sandbox is not None:
+                any_finished = self._poll_wasm(rj) or any_finished
+                continue
             elapsed = time.monotonic() - rj.started
             exit_code = rj.proc.poll()
             body: dict[str, Any] | None = None
@@ -319,7 +602,9 @@ class WorkerAgent:
             if exit_code is None:
                 over_memory = False
                 try:
-                    over_memory = psutil.Process(rj.proc.pid).memory_info().rss > self.cfg.max_memory_mb * 1024 * 1024 * 1.15
+                    memory = psutil.Process(rj.proc.pid).memory_info()
+                    rj.peak_mem_mb = max(rj.peak_mem_mb, getattr(memory, "peak_wset", memory.rss) / 1024 / 1024)
+                    over_memory = memory.rss > self.cfg.max_memory_mb * 1024 * 1024 * 1.15
                 except psutil.Error:
                     pass
                 if rj.abandon:
@@ -354,6 +639,8 @@ class WorkerAgent:
                 else:
                     body = {"attempt": rj.attempt, "retryable": True, "duration": round(elapsed, 3),
                             "error": f"job process exited unexpectedly (code {exit_code}); it may have hit the memory limit"}
+            body.update(duration=round(elapsed, 3), cpu_seconds=rj.cpu_seconds, peak_mem_mb=peak_memory_mb(rj.handle) or rj.peak_mem_mb or None)
+            self.usage.add(self._requester_key(), max(0, rj.cpu_seconds or 0))
             self._drop(rj)
             any_finished = True
             if action == "complete":
@@ -381,7 +668,7 @@ class WorkerAgent:
                 self._drop(rj)
         if self.running:
             self._event(f"waiting up to {self.cfg.shutdown_grace_s:.0f}s for {len(self.running)} running job(s)")
-        deadline = time.monotonic() + self.cfg.shutdown_grace_s
+        deadline = time.monotonic() + (0 if self._immediate_stop else self.cfg.shutdown_grace_s)
         while self.running and time.monotonic() < deadline:
             try:
                 self._poll_running()
@@ -399,6 +686,18 @@ class WorkerAgent:
         try:
             self._flush_pending()
         except Exception:  # noqa: BLE001
+            pass
+
+    def _send_leave(self) -> None:
+        try:
+            self._call("/worker/leave", {})
+            self._event("left the requester's group")
+        except Exception:  # noqa: BLE001 - the token is forgotten here either way
+            self._event("could not reach the requester to say goodbye; its owner can revoke this helper")
+        self.cfg.token = self.cfg.worker_id = ""
+        try:
+            save_config(self.cfg, self.dir / "worker.json")
+        except OSError:
             pass
 
     def _write_status(self) -> None:
@@ -425,6 +724,7 @@ class WorkerAgent:
                 self.resume()
             elif cmd == "stop":
                 self._event("stop requested")
+                self.stop_helping()
                 self.stop_event.set()
 
     def _event(self, msg: str) -> None:

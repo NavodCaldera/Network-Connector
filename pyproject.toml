@@ -16,10 +16,18 @@ dependencies = [
   "psutil>=5.9",
   "pillow>=10.0",
   "cryptography>=42",
+  "wasmtime==50.0.1",
 ]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+wifidirect = [
+  "winrt-runtime==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Devices.WiFiDirect==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Security.Credentials==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Foundation==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Devices.Enumeration==3.2.1; sys_platform == 'win32'",
+]
 
 [project.scripts]
 nc = "network_connector.cli:main"
@@ -27,7 +35,7 @@ nc-gui = "network_connector.gui:main"
 nc-worker-gui = "network_connector.worker_gui:main"
 
 [project.gui-scripts]
-network-connector = "network_connector.gui:main"
+network-connector = "network_connector.app:main"
 network-connector-worker = "network_connector.worker_gui:main"
 
 [tool.setuptools.dynamic]
@@ -36,5 +44,9 @@ version = { attr = "network_connector.__version__" }
 [tool.setuptools.packages.find]
 include = ["network_connector*"]
 
+[tool.setuptools.data-files]
+"share/network_connector/scripts" = ["scripts/add-firewall-rule.ps1", "scripts/remove-firewall-rule.ps1"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: long-running sandbox checks (still run by default)"]

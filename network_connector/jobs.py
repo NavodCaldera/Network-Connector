@@ -352,6 +352,49 @@ def _r_python_function(p: dict[str, Any], progress: Progress) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- registry
+HASH_ROUNDS = 2_000_000
+SIEVE_UNIT = 10_000_000
+
+
+def _v_benchmark_total(p: dict[str, Any]) -> dict[str, Any]:
+    _only(p, {"workload", "units", "seed", "start"})
+    start = _int(p, "start", 0, 19999, 0)
+    units = _int(p, "units", 1, 20000)
+    if start + units > 20000:
+        raise JobError("benchmark range must end at or before 20000 units")
+    return {"workload": _choice(p, "workload", {"hash_chain", "prime_sieve"}, "hash_chain"), "units": units, "seed": _int(p, "seed", 0, 2**32, 0), "start": start}
+
+
+def _v_benchmark(p: dict[str, Any]) -> dict[str, Any]:
+    clean = _v_benchmark_total(p)
+    if clean["units"] > 500:
+        raise JobError("each benchmark chunk must have at most 500 units")
+    return clean
+
+
+def _s_benchmark(p: dict[str, Any], parts: int) -> list[dict[str, Any]]:
+    out, cursor = [], p["start"]
+    for size in partition(p["units"], max(parts, (p["units"] + 499) // 500)):
+        out.append(p | {"start": cursor, "units": size})
+        cursor += size
+    return out
+
+
+def _r_benchmark(p: dict[str, Any], progress: Progress) -> dict[str, Any]:
+    digest, primes = 0, 0
+    for offset in range(p["units"]):
+        unit = p["start"] + offset
+        if p["workload"] == "hash_chain":
+            value = f"{p['seed']}:{unit}".encode("ascii")
+            for _ in range(HASH_ROUNDS):
+                value = hashlib.sha256(value).digest()
+            digest ^= int.from_bytes(value, "big")
+        else:
+            primes += _r_prime_range({"start": unit * SIEVE_UNIT, "end": (unit + 1) * SIEVE_UNIT}, lambda _: None)["primes"]
+        progress((offset + 1) * 100 / p["units"])
+    return {"units": p["units"], "digest": f"{digest:064x}"} if p["workload"] == "hash_chain" else {"units": p["units"], "primes": primes}
+
+
 @dataclass(frozen=True)
 class JobSpec:
     name: str
@@ -360,11 +403,13 @@ class JobSpec:
     validate: Callable[[dict[str, Any]], dict[str, Any]]
     run: Callable[[dict[str, Any], Progress], dict[str, Any]]
     split: Callable[[dict[str, Any], int], list[dict[str, Any]]] | None = None
+    validate_total: Callable[[dict[str, Any]], dict[str, Any]] | None = None
 
 
 REGISTRY: dict[str, JobSpec] = {
     s.name: s
     for s in (
+        JobSpec("benchmark", "Fixed work for comparing machines", {"workload": "hash_chain", "units": 4}, _v_benchmark, _r_benchmark, _s_benchmark, _v_benchmark_total),
         JobSpec("number_batch", "Sum of squares over a range of numbers", {"start": 1, "count": 5_000_000},
                 _v_number_batch, _r_number_batch, _s_number_batch),
         JobSpec("prime_range", "Count the primes in a range", {"start": 0, "end": 50_000_000},
@@ -383,24 +428,101 @@ REGISTRY: dict[str, JobSpec] = {
 }
 
 
+# ---------------------------------------------------------------- wasm (sandboxed code from the requester)
+WASM = "wasm"
+WASM_MAX_INPUT_BYTES = 8 * 1024 * 1024
+WASM_MAX_ARGS = 16
+WASM_MAX_ARG_CHARS = 256
+WASM_MAX_MEMORY_MB = 4096
+WASM_MAX_SECONDS = 3600
+WASM_MAX_FUEL = 10**15
+WASM_DEFAULT_LIMITS = {"memory_mb": 256, "seconds": 60}
+WASM_MAX_RESULT_BYTES = 1_500_000  # 1 MB stdout is about 1.4 MB as base64
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _v_wasm(p: dict[str, Any]) -> dict[str, Any]:
+    """PLAN §17.1. The module is referenced by hash; it never travels inside the job."""
+    _only(p, {"module_sha256", "input_b64", "args", "limits"})
+    sha = p.get("module_sha256")
+    if not isinstance(sha, str) or not _SHA256.match(sha):
+        raise JobError("module_sha256 must be 64 lowercase hex characters (upload the module first)")
+    data = p.get("input_b64", "")
+    if not isinstance(data, str) or len(data) > (WASM_MAX_INPUT_BYTES + 2) // 3 * 4:
+        raise JobError(f"input_b64 must be base64 text of at most {WASM_MAX_INPUT_BYTES // 1024 // 1024} MB")
+    try:
+        base64.b64decode(data, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise JobError("input_b64 is not valid base64") from exc
+    args = p.get("args", [])
+    if not isinstance(args, list) or len(args) > WASM_MAX_ARGS:
+        raise JobError(f"args must be a list of at most {WASM_MAX_ARGS} strings")
+    for arg in args:
+        if not isinstance(arg, str) or len(arg) > WASM_MAX_ARG_CHARS or not arg.isprintable():
+            raise JobError(f"each arg must be printable text of at most {WASM_MAX_ARG_CHARS} characters")
+    limits = p.get("limits", {})
+    if not isinstance(limits, dict):
+        raise JobError("limits must be an object")
+    _only(limits, {"memory_mb", "seconds", "fuel"})
+    clean_limits: dict[str, Any] = {
+        "memory_mb": _int(limits, "memory_mb", 1, WASM_MAX_MEMORY_MB, WASM_DEFAULT_LIMITS["memory_mb"]),
+        "seconds": _int(limits, "seconds", 1, WASM_MAX_SECONDS, WASM_DEFAULT_LIMITS["seconds"]),
+    }
+    if limits.get("fuel") is not None:
+        clean_limits["fuel"] = _int(limits, "fuel", 1, WASM_MAX_FUEL)
+    return {"module_sha256": sha, "input_b64": data, "args": list(args), "limits": clean_limits}
+
+
+# ---------------------------------------------------------------- group modes
+GROUP_MODES = ("closed", "open")
+NATIVE_KINDS = frozenset(REGISTRY)
+ALL_KINDS = NATIVE_KINDS | {WASM}
+
+
+def allowed_kinds(group_mode: str = "closed") -> frozenset[str]:
+    """Closed groups (paired, trusted) may run every kind. Open groups run sandboxed wasm only."""
+    if group_mode == "open":
+        return frozenset({WASM})
+    if group_mode == "closed":
+        return ALL_KINDS
+    raise JobError(f"unknown group mode {group_mode!r}")
+
+
+def check_group_kind(group_mode: str, kind: str) -> None:
+    if kind not in allowed_kinds(group_mode):
+        raise JobError(f"open groups run only sandboxed wasm jobs; {kind!r} is a native job kind and is refused")
+
+
 def validate(kind: str, params: Any) -> dict[str, Any]:
+    if kind == WASM:
+        if not isinstance(params, dict):
+            raise JobError("params must be an object")
+        return _v_wasm(params)
     spec = REGISTRY.get(kind) if isinstance(kind, str) else None
     if spec is None:
-        raise JobError(f"job kind {kind!r} is not allowlisted; allowed: {', '.join(sorted(REGISTRY))}")
+        raise JobError(f"job kind {kind!r} is not allowlisted; allowed: {', '.join(sorted(ALL_KINDS))}")
     if not isinstance(params, dict):
         raise JobError("params must be an object")
     return spec.validate(params)
 
 
 def execute(kind: str, params: Any, progress: Progress = lambda _pct: None) -> dict[str, Any]:
-    """Validate then run. This is the only code path the worker uses to run a job."""
+    """Validate then run. This is the only code path the worker uses to run a native job."""
+    if kind == WASM:
+        raise JobError("wasm jobs run only inside the sandbox, never in the native job runner")
     clean = validate(kind, params)
     return REGISTRY[kind].run(clean, progress)
 
 
 def split(kind: str, params: dict[str, Any], parts: int) -> list[dict[str, Any]]:
-    clean = validate(kind, params)
+    if kind == WASM and parts != 1:
+        raise JobError("wasm jobs are not split: send one job per chunk, each with its own input (jobs/batch)")
+    if kind not in REGISTRY:
+        return [validate(kind, params)]
     spec = REGISTRY[kind]
+    clean = spec.validate_total(params) if spec.validate_total else validate(kind, params)
+    if spec.validate_total and spec.split:
+        return [validate(kind, p) for p in spec.split(clean, parts)]
     if parts == 1:
         return [clean]
     if spec.split is None:
@@ -414,6 +536,14 @@ def combine(kind: str, results: list[dict[str, Any]]) -> Any:
         return None
     if kind == "number_batch":
         return {"sum_of_squares": sum(r["sum_of_squares"] for r in results), "count": sum(r["count"] for r in results)}
+    if kind == "benchmark":
+        units = sum(r["units"] for r in results)
+        if "primes" in results[0]:
+            return {"units": units, "primes": sum(r["primes"] for r in results)}
+        digest = 0
+        for r in results:
+            digest ^= int(r["digest"], 16)
+        return {"units": units, "digest": f"{digest:064x}"}
     if kind == "prime_range":
         return {"primes": sum(r["primes"] for r in results)}
     if kind == "monte_carlo_pi":

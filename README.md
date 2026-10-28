@@ -13,6 +13,19 @@ The controller computer can run a worker too, so **every machine works at the sa
 
 ## Features
 
+- **Measured comparisons:** run identical fixed work on each computer and all together,
+  compare throughput and efficiency, and share results with participating workers.
+  See [Benchmark guide](docs/BENCHMARK.md).
+- **Router-less connection:** create a Wi-Fi Direct group or use an existing Windows
+  Mobile Hotspot, join from the worker, and find the controller by its pinned identity.
+  See [Wi-Fi Direct guide](docs/WIFI_DIRECT.md). Actual adapter support and concurrent
+  home Wi-Fi still require tests on the two laptops.
+
+- **Your own code, safely sandboxed (0.3.0):** send WebAssembly programs (Rust, C, Go, …) as `wasm` jobs.
+  Each one runs on the helper in a fresh Windows AppContainer + Job Object with no network and no access to
+  the owner's files, and is deleted afterwards. See [Sandbox guide](docs/SANDBOX.md) and
+  [examples/wasm/primes](examples/wasm/primes/README.md).
+
 - **Desktop windows (GUI)** for both computers, plus a command line (`nc`) for scripting.
 - **Secure pairing** with a one-time code (`ABCD-EFGH-JKMN`). The code expires after 10 minutes,
   works once, and locks after 5 wrong tries. No passwords and no hard-coded secrets.
@@ -46,6 +59,8 @@ The controller computer can run a worker too, so **every machine works at the sa
 | `hash_files` | Hashes files whose bytes are sent inside the job | one job per file |
 | `image_resize` | Resizes an image sent inside the job (protected against decompression bombs) | one job per file |
 | `python_function` | Runs one function from a fixed list: `fibonacci`, `collatz_longest`, `nqueens` | – |
+| `benchmark` | Fixed SHA-256 chain or segmented prime-sieve work for comparisons | yes |
+| `wasm` | Runs your WebAssembly module (stdin → stdout) in the helper's sandbox | one job per input |
 
 To add your own job type, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#adding-a-job-type).
 
@@ -104,6 +119,9 @@ network_connector/
   worker.py       outbound-only worker agent (heartbeat, claim, limits, reconnect)
   jobrunner.py    child process that runs one allowlisted job
   jobs.py         the job allowlist + validation
+  sandbox.py      per-job AppContainer + Job Object sandbox for wasm jobs, sweep, Stop
+  sandbox_runner.py  runs one Wasm module inside the sandbox (wasmtime, WASI stdio only)
+  modules.py      Wasm module size/hash/import checks and the helper's module cache
   client.py       pinned-TLS clients, pairing handshake
   security.py     tokens, pairing codes and proofs, certificates, file ACLs
   winlimits.py    Windows Job Object memory cap + low priority

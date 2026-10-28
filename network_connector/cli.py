@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import getpass
 import json
 import sys
 import time
@@ -12,7 +13,15 @@ from typing import Any
 import httpx
 
 from . import __version__, jobs
-from .client import AdminClient, ControllerError, admin_client_from_disk, pair_worker
+from .client import (
+    AdminClient,
+    ControllerError,
+    admin_client_from_disk,
+    device_action,
+    join_policy,
+    pair_worker,
+    requester_devices,
+)
 from .config import ConfigError, ControllerConfig, WorkerConfig, default_worker_limits, load_config, load_dotenv, save_config, setup_logging
 from .paths import controller_dir, worker_dir
 
@@ -55,6 +64,8 @@ def cmd_controller_start(a: argparse.Namespace) -> int:
     setup_logging("controller")
     cfg = load_config(ControllerConfig, controller_dir() / "controller.json")
     if a.host:
+        if a.host != cfg.bind_host:
+            cfg.bind_hosts = [h for h in cfg.bind_hosts if h != cfg.bind_host]
         cfg.bind_host = a.host
     if a.port:
         cfg.port = a.port
@@ -123,11 +134,49 @@ def _wait_batch(client: AdminClient, batch_id: str) -> None:
         time.sleep(1)
 
 
+def _wasm_items(client: AdminClient, a: argparse.Namespace, params: dict[str, Any]) -> list[dict[str, Any]]:
+    """One wasm job per input (the module is uploaded once and shared by hash)."""
+    if a.module:
+        up = client.upload_module(Path(a.module).read_bytes(), Path(a.module).name)
+        print(f"module {up['sha256']}  ({up['size']} bytes, {'uploaded' if up['created'] else 'already uploaded'})")
+        params["module_sha256"] = up["sha256"]
+    if a.wasm_args:
+        params["args"] = a.wasm_args
+    limits = dict(params.get("limits", {}))
+    for key, value in (("memory_mb", a.memory_mb), ("seconds", a.seconds), ("fuel", a.fuel)):
+        if value is not None:
+            limits[key] = value
+    if limits:
+        params["limits"] = limits
+    inputs = [Path(f).read_bytes() for f in a.inputs or []]
+    if a.input_text is not None:
+        inputs.append(a.input_text.encode("utf-8"))
+    return [{"kind": "wasm", "params": params | ({"input_b64": base64.b64encode(data).decode()} if inputs else {})}
+            for data in (inputs or [None])]
+
+
+def _print_wasm_outputs(client: AdminClient, batch_id: str) -> None:
+    for job in sorted(client.jobs(batch_id=batch_id), key=lambda j: j["idx"]):
+        result = job.get("result") or {}
+        print(f"--- job {job['idx']} ({job['status']}, exit code {result.get('exit_code', '-')})")
+        if "stdout_b64" in result:
+            print(base64.b64decode(result["stdout_b64"]).decode("utf-8", "replace"), end="")
+        elif job.get("error"):
+            print(job["error"])
+
+
 def cmd_job_submit(a: argparse.Namespace) -> int:
     client = _admin()
     params = _parse_params(a.param, a.params_json)
     opts = {k: v for k, v in {"label": a.label, "idempotency_key": a.key, "timeout_s": a.timeout,
                               "max_attempts": a.retries, "target": a.target}.items() if v is not None}
+    if a.kind == "wasm":
+        res = client.submit_batch(_wasm_items(client, a, params), **opts)
+        print(f"batch {res['batch_id']}  ({res['chunks']} job(s), {'created' if res['created'] else 'already existed: duplicate ignored'})")
+        if a.wait:
+            _wait_batch(client, res["batch_id"])
+            _print_wasm_outputs(client, res["batch_id"])
+        return 0
     if a.kind in ("hash_files", "image_resize") and a.files:
         items = []
         for f in a.files:
@@ -179,6 +228,328 @@ def cmd_job_retry(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_job_cancel_all(a: argparse.Namespace) -> int:
+    if not a.yes and input("Cancel all queued and running jobs? [y/N] ").strip().lower() != "y":
+        return 0
+    print(json.dumps(_admin().cancel_all()))
+    return 0
+
+
+def cmd_bench(a: argparse.Namespace) -> int:
+    from .benchmark import export_benchmark
+
+    client = _admin()
+    if a.sub == "run":
+        spec = {"workload": a.workload, "size": a.size, "scenarios": a.scenarios.split(","), "repeats": a.repeats, "order": a.order, "label": a.label}
+        if a.units is not None:
+            spec["units"] = a.units
+        ident = client.start_benchmark(spec)["id"]
+        print(f"Benchmark {ident}")
+        if not a.wait:
+            return 0
+        while True:
+            item = client.benchmark(ident)
+            if item["status"] != "running":
+                print(json.dumps(item, indent=2))
+                return 0 if item["status"] == "finished" else 1
+            time.sleep(1)
+    if a.sub == "list":
+        _table([[b["id"], b["status"], b["label"], b["spec"]["workload"]] for b in client.benchmarks()], ["ID", "STATUS", "LABEL", "WORKLOAD"])
+    elif a.sub == "cancel":
+        print(json.dumps(client.cancel_benchmark(a.id)))
+    elif a.sub == "show":
+        item = client.benchmark(a.id)
+        print(f"Benchmark {a.id}: {item['status']}")
+        rows = (item.get("result") or {}).get("scenarios", [])
+        _table([[r["scenario"], f"{r['wall_s']:.3f}", f"{r['min_s']:.3f}-{r['max_s']:.3f}", f"{r['units_per_s']:.3f}", r["speedup"]] for r in rows], ["SCENARIO", "WALL MEDIAN (s)", "RANGE (s)", "UNITS/S", "SPEEDUP"])
+        print(json.dumps(item.get("result") or {"error": item.get("error")}, indent=2))
+    elif a.sub == "export":
+        content = export_benchmark(client.benchmark(a.id), a.format)
+        if a.output:
+            Path(a.output).write_text(content, encoding="utf-8")
+            print(f"Saved {a.output}")
+        else:
+            print(content)
+    return 0
+
+
+def cmd_module(a: argparse.Namespace) -> int:
+    client = _admin()
+    if a.sub == "upload":
+        path = Path(a.file)
+        res = client.upload_module(path.read_bytes(), a.label or path.name)
+        print(f"{res['sha256']}  {res['size']} bytes  ({'uploaded' if res['created'] else 'already uploaded'})")
+    else:
+        _table([[m["sha256"], m["size"], time.strftime("%Y-%m-%d %H:%M", time.localtime(m["uploaded"])), m["label"] or ""]
+                for m in client.modules()], ["SHA256", "BYTES", "UPLOADED", "LABEL"])
+    return 0
+
+
+def cmd_sandbox(a: argparse.Namespace) -> int:
+    from . import sandbox
+
+    if a.sub == "setup":
+        if a.remove:
+            sandbox.remove_runtime()
+            print(f"Removed the sandbox runtime and its grant: {sandbox.runtime_home()}")
+            return 0
+        home = sandbox.setup_runtime()
+        print(f"Sandbox runtime ready in {home} (app containers may read it; nothing else was changed).")
+    if a.sub in ("setup", "status"):
+        ok, reason = sandbox.available(refresh=True)
+        print(f"Sandbox available: {'yes' if ok else 'no'}" + ("" if ok else f"\n  {reason}"))
+        print(f"Runtime folder: {sandbox.runtime_home()}\nPython: {sandbox.base_python()}")
+        print(f"Leftover sandbox profiles: {len(sandbox.leftovers())}")
+        if ok and getattr(a, "check", False):
+            r = sandbox.self_check()
+            print(f"Self-check: {r.outcome}, output {r.stdout!r}, {r.wall_s * 1000:.0f} ms, profile deleted")
+        return 0 if ok else 1
+    if a.sub == "sweep":
+        print(f"Removed {sandbox.sweep()} leftover sandbox profile(s).")
+        return 0
+    data = b"".join(Path(f).read_bytes() for f in a.inputs or [])
+    from . import modules
+
+    module = Path(a.file).read_bytes()
+    modules.check(module)
+    if a.input_text is not None:
+        data += a.input_text.encode("utf-8")
+    r = sandbox.run(module, data, a.wasm_args or [], memory_mb=a.memory_mb or jobs.WASM_DEFAULT_LIMITS["memory_mb"],
+                    seconds=a.seconds or jobs.WASM_DEFAULT_LIMITS["seconds"], fuel=a.fuel)
+    sys.stdout.buffer.write(r.stdout)
+    sys.stdout.flush()
+    print(f"[{r.outcome}{' ' + r.detail if r.detail else ''}] exit code {r.exit_code}, {r.wall_s:.2f} s, "
+          f"cpu {r.cpu_seconds:.2f} s, peak {r.peak_mem_mb:.0f} MB" + (f", fuel {r.fuel_used}" if r.fuel_used else ""),
+          file=sys.stderr)
+    return (r.exit_code or 0) if r.ok else 1
+
+
+def cmd_worker_perf(a: argparse.Namespace) -> int:
+    from .client import latest_benchmark
+    from .worker import load_worker_config
+
+    wdir = _wdir(a)
+    result = latest_benchmark(load_worker_config(wdir), wdir)
+    print(json.dumps(result, indent=2) if result else "No completed benchmark includes this worker yet.")
+    return 0
+
+
+def cmd_wifidirect(a: argparse.Namespace) -> int:
+    client = _admin()
+    if a.sub == "start":
+        result = client.direct_start(a.ssid, a.passphrase, not a.no_listen)
+    elif a.sub == "stop":
+        result = client.direct_stop()
+    else:
+        result = client.direct_status()
+    # Display credentials only when starting a group, never in routine status output.
+    if a.sub != "start":
+        result = {k: v for k, v in result.items() if k != "passphrase"}
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_worker_join(a: argparse.Namespace) -> int:
+    from dataclasses import asdict
+    from .wifidirect import join
+
+    password = a.passphrase or getpass.getpass("Wi-Fi passphrase: ")
+    info = join(a.ssid, password)
+    print(json.dumps(asdict(info), indent=2))
+    return 0
+
+
+def cmd_worker_find(a: argparse.Namespace) -> int:
+    from .link_gui import discover_controller
+
+    directory = _wdir(a)
+    cfg = load_config(WorkerConfig, directory / "worker.json")
+    result = discover_controller(cfg, directory)
+    if cfg.token:
+        cfg.controller_host = result["host"]
+        cfg.controller_fingerprint = result["fingerprint"]
+        cfg.known_hosts = list(dict.fromkeys([result["host"]] + cfg.known_hosts))[:4]
+        save_config(cfg, directory / "worker.json")
+    print(f"Controller: {result['host']}:{cfg.controller_port}\nCertificate: {result['fingerprint']}")
+    if not cfg.token:
+        print("Compare the certificate fingerprint on the controller, then pair with its one-time code.")
+    return 0
+
+
+# ------------------------------------------------------------------ identity, nearby, trust/block, join (0.3.0)
+def _local_admin() -> AdminClient | None:
+    """The controller on this PC if it is running, without failing when it isn't."""
+    try:
+        client = admin_client_from_disk(controller_dir())
+        client.health()
+        return client
+    except (httpx.HTTPError, OSError, ControllerError):
+        return None
+
+
+def cmd_identity(a: argparse.Namespace) -> int:
+    from . import identity
+
+    ident = identity.set_name(a.name) if a.name else identity.current()
+    print(f"Name:       {ident.name}\nShort ID:   {ident.short_id}\nDevice ID:  {ident.device_id}\n"
+          f"Folder:     {ident.cert_path.parent}")
+    return 0
+
+
+def cmd_nearby(a: argparse.Namespace) -> int:
+    from . import identity
+    from .discovery import Listener, NearbyList, probe_requesters
+
+    ident, book = identity.current(), identity.PeerBook()
+    nearby = NearbyList()
+    listener = Listener(ident.device_id, nearby, port=a.port)
+    listener.start()
+    try:
+        print(f"Listening for {a.seconds:g} s (receive-only) …")
+        for entry in probe_requesters(a.probe or None, a.controller_port, own_device_id=ident.device_id):
+            nearby.update(entry)
+        time.sleep(a.seconds)
+        status = listener.status()
+    finally:
+        listener.stop()
+    rows = []
+    for e in nearby.entries():
+        badge = "blocked" if book.is_blocked(e.device_id) else "trusted" if book.is_trusted(e.device_id) else ""
+        rows.append([e.name, e.short_id, badge, "open" if e.open else "closed", e.helpers, e.threads, e.link,
+                     f"{e.host}:{e.port}", e.job_label])
+    _table(rows, ["NAME", "ID", "BADGE", "GROUP", "HELPERS", "NEEDS", "LINK", "ADDRESS", "LABEL"])
+    if not rows:
+        print("No requesters found.")
+    print(status["hint"] + ("" if rows else " Discovery blocked? Use: nc worker find"))
+    return 0
+
+
+def _set_flag(a: argparse.Namespace, flag: str) -> int:
+    from . import identity
+
+    book = identity.PeerBook()
+    try:
+        device_id = book.resolve(a.id)
+    except ValueError:
+        device_id = ""
+    admin = _local_admin()
+    if not device_id and admin is None:
+        raise SystemExit("Unknown short ID. Use the full device ID (nc nearby shows it).")
+    value = not a.undo
+    if device_id:
+        book.set(device_id, **{flag: value})
+        print(f"This computer: {identity.short_id(device_id)} {'is' if value else 'is no longer'} {flag}.")
+    if admin is not None:
+        action = {"trusted": "trust", "blocked": "block"}[flag]
+        result = device_action(admin, device_id or identity.normalize_device_ref(a.id), action if value else "un" + action)
+        print(f"Requester on this computer: {result['action']} {identity.short_id(result['device_id'])}.")
+    return 0
+
+
+def cmd_trust(a: argparse.Namespace) -> int:
+    return _set_flag(a, "trusted")
+
+
+def cmd_block(a: argparse.Namespace) -> int:
+    return _set_flag(a, "blocked")
+
+
+def cmd_policy(a: argparse.Namespace) -> int:
+    print(json.dumps(join_policy(_admin(), join_policy=a.policy, announce=a.announce, announce_label=a.label), indent=2))
+    return 0
+
+
+def cmd_devices(a: argparse.Namespace) -> int:
+    from . import identity
+
+    client = _admin()
+    if a.action != "list":
+        if not a.id:
+            raise SystemExit(f"nc devices {a.action} needs a device ID.")
+        print(json.dumps(device_action(client, identity.normalize_device_ref(a.id), a.action)))
+        return 0
+    data = requester_devices(client)
+    _table([[d["name"], d["short_id"], "yes" if d["trusted"] else "", "yes" if d["blocked"] else "", ", ".join(d["workers"])]
+            for d in data["devices"]], ["NAME", "ID", "TRUSTED", "BLOCKED", "WORKERS"])
+    for r in data["requests"]:
+        print(f"Waiting to join: {r['name']} ({r['short_id']}). Accept with: nc devices accept {r['short_id']}")
+    for v in data["verifications"]:
+        print(f"Verify {v['worker']} ({v['short_id']}): {v['code'][:3]} {v['code'][3:]}. If the helper shows the same number: nc trust {v['short_id']}")
+    return 0
+
+
+def _requester_dir(a: argparse.Namespace) -> Path:
+    from . import identity
+    from .client import joined_dir
+
+    ref = getattr(a, "requester", None)
+    if not ref:
+        return _wdir(a)
+    ref = identity.normalize_device_ref(ref)
+    if len(ref) == 64:
+        return joined_dir(ref)
+    matches = sorted(p for p in worker_dir("requesters").iterdir() if p.is_dir() and p.name.startswith(ref))
+    if len(matches) != 1:
+        raise SystemExit("Unknown requester. Use the ID shown by nc worker connect.")
+    return matches[0]
+
+
+def cmd_worker_connect(a: argparse.Namespace) -> int:
+    from . import identity
+    from .client import JoinPending, join_requester, requester_hello
+
+    host, _, port_text = a.to.partition(":")
+    port = int(port_text or 8765)
+    expected = identity.normalize_device_ref(a.device_id) if a.device_id else ""
+    if len(expected) != 64:
+        info = requester_hello(host, port)
+        if not info or (expected and not info["device_id"].startswith(expected)):
+            raise SystemExit("No open requester with that ID answered at this address. It may be off, closed, or "
+                             "require a pairing code (then use: nc worker pair).")
+        print(f"Requester: {info['name']}  ID {identity.short_id(info['device_id'])}  ({info['device_id']})")
+        if not a.yes and input("Join it? [y/N] ").strip().lower() != "y":
+            return 1
+        expected = info["device_id"]
+    cfg = load_config(WorkerConfig, worker_dir("worker") / "worker.json")
+    for key, value in default_worker_limits().items():
+        setattr(cfg, key, value)
+    cfg.token = cfg.worker_id = ""
+    try:
+        cfg = join_requester(host, port, expected, identity.current(), None, cfg, wait_s=a.wait)
+    except JoinPending as exc:
+        raise SystemExit(f"{exc.message} (increase --wait to keep waiting)") from exc
+    except (ControllerError, httpx.HTTPError, OSError) as exc:
+        raise SystemExit(f"Join failed: {exc}") from exc
+    short = identity.short_id(cfg.requester_device_id)
+    print(f"Joined {cfg.requester_name} ({short}) as '{cfg.name}'. Start helping with:  nc worker run --requester {short}")
+    return 0
+
+
+def cmd_worker_leave(a: argparse.Namespace) -> int:
+    from .client import leave_requester
+    from .worker import load_worker_config
+
+    wdir = _requester_dir(a)
+    leave_requester(load_worker_config(wdir), wdir)
+    print("Left the requester's group. Its token was dropped on both sides.")
+    return 0
+
+
+def cmd_worker_verify(a: argparse.Namespace) -> int:
+    from . import identity
+    from .client import verify_requester
+    from .worker import load_worker_config
+
+    wdir = _requester_dir(a)
+    cfg = load_worker_config(wdir)
+    code = verify_requester(cfg, wdir, identity.current())
+    print(f"\n  {code[:3]} {code[3:]}\n\nThe requester's Devices view must show the same number for this computer.")
+    if input("Do the numbers match? Trust this requester [y/N] ").strip().lower() == "y":
+        identity.PeerBook().set(cfg.controller_fingerprint, trusted=True, name=cfg.requester_name or None)
+        print("Trusted.")
+    return 0
+
+
 def cmd_demo(a: argparse.Namespace) -> int:
     from .demo import run_demo
 
@@ -214,7 +585,7 @@ def cmd_worker_run(a: argparse.Namespace) -> int:
     from .worker import NotPaired, WorkerAgent, load_worker_config
 
     setup_logging("worker")
-    wdir = _wdir(a)
+    wdir = _requester_dir(a)
     try:
         cfg = load_worker_config(wdir)
     except NotPaired as exc:
@@ -242,7 +613,7 @@ def cmd_worker_control(a: argparse.Namespace) -> int:
 
 
 def cmd_worker_status(a: argparse.Namespace) -> int:
-    status_file = _wdir(a) / "status.json"
+    status_file = _requester_dir(a) / "status.json"
     if not status_file.is_file():
         print("No status yet: the worker has not been started.")
         return 1
@@ -301,6 +672,16 @@ def cmd_worker_gui(_: argparse.Namespace) -> int:
     return 0
 
 
+def _wasm_options(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--input", dest="inputs", action="append", metavar="FILE",
+                   help="wasm: a file given to the module on stdin; repeat for one job per file")
+    p.add_argument("--input-text", help="wasm: text given to the module on stdin")
+    p.add_argument("--arg", dest="wasm_args", action="append", metavar="TEXT", help="wasm: one command-line argument for the module (write --arg=-x for values starting with -)")
+    p.add_argument("--memory-mb", type=int, help="wasm: memory limit in MB")
+    p.add_argument("--seconds", type=int, help="wasm: time limit in seconds")
+    p.add_argument("--fuel", type=int, help="wasm: instruction budget (optional, about 8%% slower)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="nc", description="Network Connector: distribute safe jobs across your LAN computers.")
     p.add_argument("--version", action="version", version=__version__)
@@ -330,7 +711,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     j = sub.add_parser("job", help="submit and manage jobs").add_subparsers(dest="sub", required=True)
     js = j.add_parser("submit", help="submit a job")
-    js.add_argument("kind", choices=sorted(jobs.REGISTRY))
+    js.add_argument("kind", choices=sorted(jobs.ALL_KINDS))
     js.add_argument("--param", "-p", action="append", metavar="KEY=VALUE")
     js.add_argument("--params-json")
     js.add_argument("--files", nargs="+", help="files to embed (hash_files / image_resize); one job per file")
@@ -341,20 +722,99 @@ def build_parser() -> argparse.ArgumentParser:
     js.add_argument("--key", help="idempotency key: submitting the same key twice creates only one job")
     js.add_argument("--label")
     js.add_argument("--wait", action="store_true")
+    _wasm_options(js)
+    js.add_argument("--module", help="wasm: a .wasm file to upload and run (or --param module_sha256=...)")
     js.set_defaults(fn=cmd_job_submit)
     jl = j.add_parser("list")
     jl.add_argument("--status")
     jl.add_argument("--limit", type=int, default=50)
     jl.set_defaults(fn=cmd_job_list)
+    ja = j.add_parser("cancel-all", help="cancel every queued and running job")
+    ja.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    ja.set_defaults(fn=cmd_job_cancel_all)
     for name, fn in (("status", cmd_job_status), ("cancel", cmd_job_cancel), ("retry", cmd_job_retry)):
         jp = j.add_parser(name)
         jp.add_argument("id")
         jp.set_defaults(fn=fn)
 
+    mod = sub.add_parser("module", help="upload and list Wasm modules").add_subparsers(dest="sub", required=True)
+    mu = mod.add_parser("upload", help="upload a .wasm module (at most 10 MB) and print its sha256")
+    mu.add_argument("file")
+    mu.add_argument("--label")
+    mu.set_defaults(fn=cmd_module)
+    mod.add_parser("list").set_defaults(fn=cmd_module)
+
+    sb = sub.add_parser("sandbox", help="the Wasm sandbox on this helper").add_subparsers(dest="sub", required=True)
+    ss = sb.add_parser("setup", help="create the sandbox runtime folder and its one read grant")
+    ss.add_argument("--remove", action="store_true", help="remove the runtime folder and the grant again")
+    ss.set_defaults(fn=cmd_sandbox)
+    sst = sb.add_parser("status", help="can this computer run wasm jobs?")
+    sst.add_argument("--check", action="store_true", help="also run a tiny module in a fresh sandbox")
+    sst.set_defaults(fn=cmd_sandbox)
+    sb.add_parser("sweep", help="remove sandbox profiles left by a crash").set_defaults(fn=cmd_sandbox)
+    sr = sb.add_parser("run", help="run a .wasm file here, in the sandbox (to test your module)")
+    sr.add_argument("file")
+    _wasm_options(sr)
+    sr.set_defaults(fn=cmd_sandbox)
+
+    bench = sub.add_parser("bench", help="compare machines on identical fixed work").add_subparsers(dest="sub", required=True)
+    br = bench.add_parser("run")
+    br.add_argument("--workload", choices=["hash_chain", "prime_sieve"], default="hash_chain")
+    size = br.add_mutually_exclusive_group()
+    size.add_argument("--size", choices=["quick", "standard", "long"], default="quick")
+    size.add_argument("--units", type=int)
+    br.add_argument("--scenarios", default="each,all")
+    br.add_argument("--repeats", type=int, default=3)
+    br.add_argument("--order", choices=["fixed", "shuffled"], default="fixed")
+    br.add_argument("--label", default="")
+    br.add_argument("--wait", action="store_true")
+    br.set_defaults(fn=cmd_bench)
+    bench.add_parser("list").set_defaults(fn=cmd_bench)
+    for action in ("show", "cancel", "export"):
+        command = bench.add_parser(action)
+        command.add_argument("id")
+        command.set_defaults(fn=cmd_bench)
+        if action == "export":
+            command.add_argument("--format", choices=["json", "csv", "html"], default="json")
+            command.add_argument("-o", "--output")
+
+    ident = sub.add_parser("identity", help="show this computer's device identity")
+    ident.add_argument("--name", help="change the friendly name shown to nearby computers")
+    ident.set_defaults(fn=cmd_identity)
+    near = sub.add_parser("nearby", help="list nearby requesters (receive-only listening, plus a direct-link probe)")
+    near.add_argument("--seconds", type=float, default=6)
+    near.add_argument("--port", type=int, default=8766, help="discovery UDP port")
+    near.add_argument("--controller-port", type=int, default=8765, help="TCP port probed on direct links")
+    near.add_argument("--probe", nargs="*", metavar="IP", help="also ask these addresses directly (outbound)")
+    near.set_defaults(fn=cmd_nearby)
+    for name, fn in (("trust", cmd_trust), ("block", cmd_block)):
+        flag = sub.add_parser(name, help=f"{name} a device by its ID, here and on this computer's requester")
+        flag.add_argument("id", help="device ID or short ID (AB12-CD34)")
+        flag.add_argument("--undo", action="store_true", help=f"un{name} instead")
+        flag.set_defaults(fn=fn)
+    pol = sub.add_parser("policy", help="who may join this requester without a code")
+    pol.add_argument("policy", nargs="?", choices=["anyone", "trusted", "ask", "code"])
+    pol.add_argument("--announce", action=argparse.BooleanOptionalAction, default=None)
+    pol.add_argument("--label", help="short text nearby helpers see (everyone nearby can read it)")
+    pol.set_defaults(fn=cmd_policy)
+    dev = sub.add_parser("devices", help="devices known to this requester, join requests and Verify numbers")
+    dev.add_argument("action", nargs="?", default="list", choices=["list", "accept", "decline"])
+    dev.add_argument("id", nargs="?")
+    dev.set_defaults(fn=cmd_devices)
+
     d = sub.add_parser("demo", help="run the proof-of-work demo")
     d.add_argument("--chunks", type=int, default=40)
     d.add_argument("--target", help="run only on this worker (e.g. your i3) to prove it works")
     d.set_defaults(fn=cmd_demo)
+
+    direct = sub.add_parser("wifidirect", help="manage the running controller's direct Wi-Fi group").add_subparsers(dest="sub", required=True)
+    ds = direct.add_parser("start")
+    ds.add_argument("--ssid", help="optional DIRECT-NC-xxxx SSID")
+    ds.add_argument("--passphrase", help="optional WPA2 passphrase; omitted generates a new one")
+    ds.add_argument("--no-listen", action="store_true", help="create the link without adding a controller listener")
+    ds.set_defaults(fn=cmd_wifidirect)
+    direct.add_parser("stop").set_defaults(fn=cmd_wifidirect)
+    direct.add_parser("status").set_defaults(fn=cmd_wifidirect)
 
     wk = sub.add_parser("worker", help="the worker agent on this computer").add_subparsers(dest="sub", required=True)
     wp = wk.add_parser("pair", help="pair this computer with a controller")
@@ -367,11 +827,31 @@ def build_parser() -> argparse.ArgumentParser:
     wr.add_argument("--max-concurrent-jobs", dest="max_concurrent_jobs", type=int)
     wr.add_argument("--max-memory-mb", dest="max_memory_mb", type=int)
     wr.add_argument("--idle-timeout-minutes", dest="idle_timeout_minutes", type=int)
+    wr.add_argument("--requester", help="help a requester joined with 'nc worker connect' (its short ID)")
     wr.set_defaults(fn=cmd_worker_run)
     for name in ("stop", "pause", "resume"):
         wc = wk.add_parser(name, help=f"{name} the running worker")
         wc.set_defaults(fn=cmd_worker_control, cmd=name)
-    wk.add_parser("status").set_defaults(fn=cmd_worker_status)
+    ws = wk.add_parser("status")
+    ws.add_argument("--requester")
+    ws.set_defaults(fn=cmd_worker_status)
+    wj = wk.add_parser("connect", help="join a nearby requester's open group (no pairing code)")
+    wj.add_argument("--to", required=True, metavar="IP[:PORT]", help="the requester's address (nc nearby shows it)")
+    wj.add_argument("--device-id", help="the requester's ID from nc nearby; the certificate must match it")
+    wj.add_argument("--wait", type=float, default=0, help="seconds to wait if the requester asks its owner first")
+    wj.add_argument("--yes", action="store_true", help="don't ask for confirmation")
+    wj.set_defaults(fn=cmd_worker_connect)
+    for name, fn, text in (("leave", cmd_worker_leave, "leave a joined requester's group"),
+                           ("verify", cmd_worker_verify, "compare a 6-digit number with the requester, then trust it")):
+        wv = wk.add_parser(name, help=text)
+        wv.add_argument("--requester", help="short ID of a joined requester (default: the paired controller)")
+        wv.set_defaults(fn=fn)
+    wk.add_parser("perf", help="show this worker's latest shared benchmark").set_defaults(fn=cmd_worker_perf)
+    join = wk.add_parser("join", help="join the controller's direct Wi-Fi or hotspot")
+    join.add_argument("--ssid", required=True)
+    join.add_argument("--passphrase", help="omit to enter privately")
+    join.set_defaults(fn=cmd_worker_join)
+    wk.add_parser("find", help="find the controller; paired workers require its pinned certificate").set_defaults(fn=cmd_worker_find)
     wu = wk.add_parser("update", help="install the newest approved release from GitHub")
     wu.add_argument("--check", action="store_true", help="only report whether an update exists")
     wu.add_argument("--verify-signature", action="store_true", help="require a GPG/SSH-signed tag")
@@ -385,6 +865,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.fn(args) or 0)
     except ControllerError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except (RuntimeError, ValueError, OSError, httpx.HTTPError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

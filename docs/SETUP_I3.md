@@ -82,5 +82,19 @@ $nc = "$env:LOCALAPPDATA\NetworkConnector\app\.venv\Scripts\nc.exe"
 | Settings, token, pinned certificate | `%LOCALAPPDATA%\NetworkConnector\worker` |
 | Logs | `%LOCALAPPDATA%\NetworkConnector\logs\worker.log` |
 
+## Router-less option
+
+Install this worker while online. In its window, **0. Connect** joins the SSID and
+password displayed by the controller. **Find controller** fills in its address and
+shows its certificate fingerprint. Compare it on the controller before pairing with
+the one-time code. Existing paired workers accept only their saved certificate.
+See [WIFI_DIRECT.md](WIFI_DIRECT.md) for setup, reconnection and adapter limitations.
+
+## Joining without a code (0.3.0 preview)
+
+If the i7 lets nearby helpers join (its **Devices** tab), the i3 shows it under **Nearby requesters**. Select it and
+click **Join**; no code is needed. Nothing in the list? Click **Search**, or use **Find controller**. See
+[JOINING.md](JOINING.md).
+
 To uninstall, stop the worker, revoke it on the controller, then delete
 `%LOCALAPPDATA%\NetworkConnector` and the desktop shortcut.

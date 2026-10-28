@@ -32,10 +32,16 @@ Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue
 ```
 
 - **Nothing listed:** the controller isn't running. Click **Start controller**.
-- **Listed with LocalAddress `127.0.0.1`:** it's bound to loopback only. In *Settings & help*, choose
+- **Only LocalAddress `127.0.0.1` listed:** it's bound to loopback only. In *Settings & help*, choose
   your LAN IP (e.g. `192.168.1.4`), **Save**, then stop and start the controller.
 - **"Port already in use" error:** another program uses 8765. Choose another port in Settings, and
   update the firewall rule with `add-firewall-rule.ps1 -Port <new>`.
+
+The loopback listener is expected alongside the LAN listener. If a CLI controller is already
+running with this data folder, **Start controller** in the GUI attaches to it after checking
+its pinned certificate and admin access. Closing that GUI leaves the CLI controller running.
+Its **Stop controller** button explicitly asks before shutting down the attached controller.
+Port-conflict errors include the owning PID and process name when Windows permits inspection.
 
 ## On the i7: firewall and network profile
 
@@ -123,7 +129,38 @@ while you need the laptop for something else.
   on a working connection.
 - **`git clone` asks for a password:** the repository is private. See [SETUP_I3.md](SETUP_I3.md#private-repository).
 
+## Direct Wi-Fi and offline updates
+
+See [WIFI_DIRECT.md](WIFI_DIRECT.md) for router-less setup. Missing WinRT support,
+unsupported adapters and publisher failures are reported by the Wi-Fi Direct tab;
+try a manually started Mobile Hotspot as the fallback. Hotspot without internet and
+concurrent home Wi-Fi depend on the hardware and Windows setup.
+
+For a Public/Unidentified direct network, use **Allow through firewall** on the direct
+tab. It adds a second rule restricted to that local IP and peer /24. Refresh the rule
+when the direct IP changes. Keep the ordinary LAN rule Private.
+
+If the controller's address changes, a paired worker searches known hosts and direct
+gateway candidates after three failed connection rounds. It refuses another certificate.
+Use **Find controller** or enter the new address manually when it is outside those
+candidates. Keep the existing controller certificate.
+
+An offline update fails with a message to reconnect to a normal network. Git fetch
+has a 30-second timeout. Install dependencies on both machines before going offline.
+
+## Nearby list is empty / joining fails (0.3.0)
+
+- "Discovery blocked? Use Find controller": announcements (UDP 8766) don't arrive. Usually the link is Public, a
+  firewall rule blocks Python, or the router isolates Wi-Fi clients. Click **Search** (outbound only) or type the
+  address and use **Find controller**.
+- "Discovery port busy": another program uses UDP 8766 on this PC. Search still works.
+- `join_disabled`: the requester requires pairing codes. Pair with a code, or ask its owner to change the policy.
+- `not_trusted`, `device_blocked`: the requester only accepts trusted devices, or blocked this one.
+- `wrong_requester`: the computer at that address has another certificate than the one announced. Nothing was sent.
+- Ask me: the window waits up to 2 minutes for the owner to click Accept.
+
 ## Reset
 
 To start fresh on one computer, stop everything and rename `%LOCALAPPDATA%\NetworkConnector`
 (for example to `NetworkConnector.old`). On the i7 this creates a new certificate, so all workers must re-pair.
+Since 0.3.0 this also creates a new device identity (`identity\`), so requesters see a new device ID.

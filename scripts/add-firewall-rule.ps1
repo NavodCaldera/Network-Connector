@@ -11,8 +11,40 @@
   Undo with scripts\remove-firewall-rule.ps1.
 #>
 #Requires -RunAsAdministrator
-param([int]$Port = 8765)
+param(
+    [ValidateRange(1, 65535)][int]$Port = 8765,
+    [switch]$WiFiDirect,
+    [string]$LocalAddress,
+    [string]$RemoteSubnet
+)
 $ErrorActionPreference = "Stop"
+if ($WiFiDirect) {
+    $parsed = $null
+    if ($LocalAddress -notmatch '^\d{1,3}(\.\d{1,3}){3}$' -or
+        -not [System.Net.IPAddress]::TryParse($LocalAddress, [ref]$parsed) -or
+        $parsed.ToString() -ne $LocalAddress) { throw "LocalAddress must be a canonical IPv4 address." }
+    $octets = @($LocalAddress.Split('.') | ForEach-Object { [int]$_ })
+    $private = $octets[0] -eq 10 -or ($octets[0] -eq 172 -and $octets[1] -ge 16 -and $octets[1] -le 31) -or
+        ($octets[0] -eq 192 -and $octets[1] -eq 168) -or ($octets[0] -eq 169 -and $octets[1] -eq 254)
+    if (-not $private -or $octets[3] -in @(0, 255)) { throw "Use a private or link-local controller address on the direct interface." }
+    $subnet = "{0}.{1}.{2}.0/24" -f $octets[0], $octets[1], $octets[2]
+    if ($RemoteSubnet -and $RemoteSubnet -cne $subnet) { throw "RemoteSubnet must match the LocalAddress /24: $subnet" }
+    if (-not (Get-NetIPAddress -AddressFamily IPv4 -IPAddress $LocalAddress -ErrorAction SilentlyContinue)) {
+        throw "LocalAddress is not assigned to this computer. Start the direct link first."
+    }
+    $directName = "Network Connector Controller (Wi-Fi Direct)"
+    if (Get-NetFirewallRule -DisplayName $directName -ErrorAction SilentlyContinue) {
+        Set-NetFirewallRule -DisplayName $directName -Direction Inbound -Profile Any -Enabled True -Action Allow -LocalAddress $LocalAddress -RemoteAddress $subnet
+        Get-NetFirewallRule -DisplayName $directName | Get-NetFirewallPortFilter | Set-NetFirewallPortFilter -LocalPort $Port -Protocol TCP
+    } else {
+        New-NetFirewallRule -DisplayName $directName -Direction Inbound -Protocol TCP -LocalPort $Port `
+            -Profile Any -LocalAddress $LocalAddress -RemoteAddress $subnet -Action Allow `
+            -Description "Paired workers on the direct Wi-Fi subnet only." | Out-Null
+    }
+    Write-Host "Allowed TCP $Port to $LocalAddress from $subnet on the direct link. The LAN rule is unchanged." -ForegroundColor Green
+    return
+}
+if ($LocalAddress -or $RemoteSubnet) { throw "LocalAddress and RemoteSubnet require -WiFiDirect." }
 $name = "Network Connector Controller (LAN only)"
 
 if (Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue) {

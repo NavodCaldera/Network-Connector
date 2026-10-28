@@ -11,7 +11,7 @@
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File .\scripts\setup-controller.ps1
 #>
-param([int]$Port = 8765)
+param([ValidateRange(1, 65535)][int]$Port = 8765, [switch]$WiFiDirect)
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 function Say($text, $color = "Cyan") { Write-Host $text -ForegroundColor $color }
@@ -31,7 +31,8 @@ if (-not (Test-Path "$repo\.venv\Scripts\python.exe")) {
     & $py[0] @($py | Select-Object -Skip 1) -m venv "$repo\.venv"
 }
 Say "Installing dependencies ..."
-& "$repo\.venv\Scripts\python.exe" -m pip install --quiet --disable-pip-version-check -e "$repo[test]"
+$extras = if ($WiFiDirect) { "test,wifidirect" } else { "test" }
+& "$repo\.venv\Scripts\python.exe" -m pip install --quiet --disable-pip-version-check -e "$repo[$extras]"
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 & "$repo\.venv\Scripts\python.exe" -m network_connector selftest
 
@@ -52,6 +53,13 @@ if ($rule) { Say "  Firewall rule: present" "Green" } else {
     Say "  Firewall rule: missing. Run once, as administrator:" "Yellow"
     Say "    powershell -ExecutionPolicy Bypass -File `"$repo\scripts\add-firewall-rule.ps1`" -Port $Port" "Yellow"
 }
+
+$directRule = Get-NetFirewallRule -DisplayName "Network Connector Controller (Wi-Fi Direct)" -ErrorAction SilentlyContinue
+if ($directRule) { Say "  Wi-Fi Direct firewall rule: present (verify its address matches the current link)" "Green" } else {
+    Say "  Wi-Fi Direct firewall rule: missing. After starting the direct group, use its actual IP:" "Yellow"
+    Say "    powershell -ExecutionPolicy Bypass -File `"$repo\scripts\add-firewall-rule.ps1`" -Port $Port -WiFiDirect -LocalAddress <controller-direct-IP>" "Yellow"
+}
+Say "Install both computers while online before using a router-free link. See docs\WIFI_DIRECT.md."
 
 $answer = Read-Host "Create a desktop shortcut for the controller window? (yes/no)"
 if ($answer.Trim().ToLower() -in @("y", "yes")) {

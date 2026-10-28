@@ -7,6 +7,7 @@ __pycache__/
 build/
 dist/
 .pytest_cache/
+.test-tmp*/
 
 # Secrets and runtime state (these normally live in %LOCALAPPDATA%\NetworkConnector anyway)
 .env

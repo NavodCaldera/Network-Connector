@@ -1,5 +1,9 @@
 # Submitting your first job and proving the i3 did the work
 
+For measured comparisons of each computer alone and both together, use the
+controller's **Benchmark** tab after checking the connection with the demo below.
+See [BENCHMARK.md](BENCHMARK.md) for repeated runs, shared worker results and export.
+
 ## The demo (start here)
 
 In the controller window open the **Demo** tab and click **Run demo**. It:
@@ -77,3 +81,16 @@ $nc = ".\.venv\Scripts\nc.exe"
 & $nc status --watch          # terminal dashboard
 & $nc controller shutdown     # stop the controller safely
 ```
+
+## Your own code: Wasm jobs (0.3.0)
+
+To run your own program instead of a built-in job, compile it to WebAssembly (stdin → stdout) and send it as a
+`wasm` job. Each helper runs it in a sandbox that is deleted afterwards. Set the sandbox up once on each helper:
+
+```powershell
+& $nc sandbox setup
+& $nc job submit wasm --module .\examples\wasm\primes\primes.wasm --input-text "0 1000000" --wait
+```
+
+See [SANDBOX.md](SANDBOX.md) for what the sandbox allows and [examples/wasm/primes](../examples/wasm/primes/README.md)
+for a complete example.

@@ -1,0 +1,15 @@
+[package]
+name = "primes"
+version = "0.1.0"
+edition = "2021"
+description = "Network Connector example: count primes in a range, stdin -> stdout, for the Wasm sandbox"
+license = "MIT"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
