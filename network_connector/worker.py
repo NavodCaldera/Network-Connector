@@ -23,6 +23,8 @@ import psutil
 from . import __version__, jobs, modules, sandbox
 from .client import ControllerError, controller_url, fetch_module, pinned_context, probe, raise_for_error
 from .config import WorkerConfig, load_config, save_config
+from .helper_policy import can_help
+from .helper_usage import HelperUsage
 from .security import constant_time_equal, fingerprint_pem_file
 from .sysinfo import hardware_info, live_metrics, prime_cpu_counter
 from .winlimits import limit_memory, release, peak_memory_mb
@@ -95,6 +97,7 @@ class WorkerAgent:
         self._revoked = False
         self.remote_closing = False  # the requester stopped handing out work (PLAN §13)
         self._leave = False
+        self._immediate_stop = False
         self.state = "starting"
         self.last_error = ""
         self.completed = 0
@@ -106,9 +109,11 @@ class WorkerAgent:
         self._rtt_ms: float | None = None
         self._link = "unknown"
         self.module_cache = modules.ModuleCache(wdir / "modules")
+        self.usage = HelperUsage(wdir / "helper_usage.db")
         # The requester's heartbeat can only make cfg.group_mode stricter, never looser.
         self._remote_group_mode = "closed"
         self._sandbox_note = ""
+        self._policy_note = ""
         self._info = hardware_info() | {
             "limits": {
                 "max_cpu_threads": cfg.max_cpu_threads,
@@ -133,6 +138,14 @@ class WorkerAgent:
         self._leave = True
         self.stop(wait)
 
+    def stop_helping(self) -> None:
+        """Owner emergency Stop: refuse new claims and kill active sandboxes immediately."""
+        self.pause()
+        self._immediate_stop = True
+        self._leave = self.cfg.group_mode == "open"
+        sandbox.stop_all()
+        self.stop_event.set()
+
     def pause(self) -> None:
         self.local_paused = True
         self._event("paused (no new jobs will be started)")
@@ -146,15 +159,31 @@ class WorkerAgent:
         return max(1, min(self.cfg.max_concurrent_jobs, self.cfg.max_cpu_threads))
 
     def snapshot(self) -> dict[str, Any]:
+        running = []
+        for j in list(self.running.values()):
+            pid = j.sandbox.pid if j.sandbox is not None else j.proc.pid if j.proc is not None else 0
+            cpu_percent = ram_mb = 0.0
+            if pid:
+                try:
+                    process = psutil.Process(pid)
+                    cpu_percent = process.cpu_percent(interval=None)
+                    ram_mb = process.memory_info().rss / (1024 * 1024)
+                except psutil.Error:
+                    pass
+            running.append({"id": j.id, "kind": j.kind, "progress": round(j.progress, 1),
+                            "elapsed": round(time.monotonic() - j.started, 1),
+                            "cpu_percent": round(cpu_percent, 1), "ram_mb": round(ram_mb, 1)}
+                           | ({"module_sha256": j.module_sha256} if j.module_sha256 else {}))
         return {
             "state": self.state, "paused": self.local_paused or self.remote_paused, "disabled": self.remote_disabled,
-            "running": [{"id": j.id, "kind": j.kind, "progress": round(j.progress, 1),
-                         "elapsed": round(time.monotonic() - j.started, 1)}
-                        | ({"module_sha256": j.module_sha256} if j.module_sha256 else {}) for j in self.running.values()],
+            "running": running,
             "completed": self.completed, "failed": self.failed, "last_error": self.last_error,
             "slots": self.slots, "metrics": live_metrics(), "name": self.cfg.name,
             "link": self._link, "controller_host": self.cfg.controller_host, "rtt_ms": self._rtt_ms,
             "group_mode": self.cfg.group_mode, "requester_name": self.cfg.requester_name, "closing": self.remote_closing,
+            "requester_id": (self.cfg.requester_device_id or self.cfg.controller_fingerprint)[:8],
+            "cpu_minutes_today": round(self.usage.seconds(self._requester_key()) / 60, 1),
+            "policy_reason": self._policy_note,
         }
 
     # ------------------------------------------------------------ main loop
@@ -326,7 +355,22 @@ class WorkerAgent:
             return False
         if len(self.running) >= self.slots or self.state in ("stopping", "offline", "connecting"):
             return False
+        allowed, reason = can_help(self.cfg)
+        if not allowed:
+            if reason != self._policy_note:
+                self._event(reason)
+            self._policy_note = reason
+            return False
+        if self.cfg.daily_cpu_min > 0 and self.usage.seconds(self._requester_key()) >= self.cfg.daily_cpu_min * 60:
+            if self._policy_note != "daily CPU limit reached":
+                self._event("daily CPU limit reached")
+            self._policy_note = "daily CPU limit reached"
+            return False
+        self._policy_note = ""
         return psutil.virtual_memory().percent < 92  # never start work when the laptop is nearly out of RAM
+
+    def _requester_key(self) -> str:
+        return self.cfg.requester_device_id or self.cfg.controller_fingerprint
 
     def claim_kinds(self) -> list[str]:
         """Job kinds this helper accepts right now: by group mode, and wasm only if the sandbox works."""
@@ -516,6 +560,7 @@ class WorkerAgent:
             body |= {"error": f"wasm {r.outcome}: {r.detail}"[:1900], "retryable": r.outcome in ("timeout", "crashed", "error")}
         if r is not None:
             body |= {"cpu_seconds": min(r.cpu_seconds, 86400), "peak_mem_mb": r.peak_mem_mb or None}
+            self.usage.add(self._requester_key(), max(0, r.cpu_seconds))
             if r.escape_signal:
                 self._event(f"job {rj.id} tried to start a process from inside the sandbox; it was blocked and killed")
         body["duration"] = round(elapsed, 3)
@@ -595,6 +640,7 @@ class WorkerAgent:
                     body = {"attempt": rj.attempt, "retryable": True, "duration": round(elapsed, 3),
                             "error": f"job process exited unexpectedly (code {exit_code}); it may have hit the memory limit"}
             body.update(duration=round(elapsed, 3), cpu_seconds=rj.cpu_seconds, peak_mem_mb=peak_memory_mb(rj.handle) or rj.peak_mem_mb or None)
+            self.usage.add(self._requester_key(), max(0, rj.cpu_seconds or 0))
             self._drop(rj)
             any_finished = True
             if action == "complete":
@@ -622,7 +668,7 @@ class WorkerAgent:
                 self._drop(rj)
         if self.running:
             self._event(f"waiting up to {self.cfg.shutdown_grace_s:.0f}s for {len(self.running)} running job(s)")
-        deadline = time.monotonic() + self.cfg.shutdown_grace_s
+        deadline = time.monotonic() + (0 if self._immediate_stop else self.cfg.shutdown_grace_s)
         while self.running and time.monotonic() < deadline:
             try:
                 self._poll_running()
@@ -678,6 +724,7 @@ class WorkerAgent:
                 self.resume()
             elif cmd == "stop":
                 self._event("stop requested")
+                self.stop_helping()
                 self.stop_event.set()
 
     def _event(self, msg: str) -> None:

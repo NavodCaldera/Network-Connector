@@ -1,5 +1,35 @@
 # Handoff: what is left to do
 
+## 2026-10-28 Codex partial update (work stopped at owner request)
+
+The owner asked to stop work and update GitHub. The following changes are on
+`integrate/0.3.0`; they are **partial Phase 9 work, not a completed 0.3.0 release**:
+
+- `network_connector/app.py` adds a single-window role chooser and embeds the existing
+  requester and helper interfaces as tabs. `network-connector` points to it; the old
+  `nc gui` and `nc worker-gui` entry points remain. Role switching after the views
+  are loaded, tray, autostart, and notifications are still pending.
+- Owner Stop now pauses the worker, calls `sandbox.stop_all()` immediately, and
+  leaves an open group. The GUI Stop and `nc worker stop` use this path. The
+  sub-second hardware acceptance check is still pending.
+- Helper settings now include AC-only, input-idle, allowed hours, daily CPU
+  minutes per requester, and local blocked device IDs. The helper checks these
+  before claiming. Finished CPU time is persisted in `helper_usage.db`. A running
+  chunk can finish after a limit is hit; a continuous in-flight quota display and
+  immediate-limit option are still pending.
+- The worker snapshot includes requester ID, CPU minutes today, policy reason,
+  and running-job CPU/RAM estimates. The helper window does not yet display all
+  of these details.
+- Focused tests: 7 passed for Stop, policy/usage, and app integration
+  (with identity creation and discovery mocked). `compileall` passed. A broader
+  `tests/test_e2e.py` run was blocked at setup by Windows `PermissionError` on
+  test certificate files; this did not exercise the changed worker code.
+- Temporary `.test-app/` and `.test-app2/` directories were created by tests.
+  Windows ACLs denied their removal. They are not project source and must not be
+  included in commits. Other pending work and hardware tests below remain pending.
+
+---
+
 Written 2026-10-28 (updated after the Phase 7 + 8 merge) for the next coding agent (for example Codex) or developer who continues this project. Read
 this file first, then [PLAN.md](PLAN.md) (the full design) and [AGENT.md](AGENT.md) (rules, security invariants,
 file ownership). Wherever they differ, this file describes the **current state**; PLAN/AGENT describe the **target**.

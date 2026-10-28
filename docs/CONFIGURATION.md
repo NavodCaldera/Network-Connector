@@ -38,6 +38,16 @@ does not change their connection. Remote workers still use the LAN address.
 | `poll_s` | `2` | How often to ask for work when slots are free |
 | `shutdown_grace_s` | `20` | On stop, how long to let running jobs finish before returning them to the queue |
 | `low_priority` | `true` | Run jobs at below-normal priority |
+| `ac_only` | `true` | Claim work only while plugged in; desktops with no battery are treated as plugged in |
+| `idle_min` | `0` | Claim work only after this many minutes without keyboard or mouse input; 0 disables the gate |
+| `allowed_hours` | empty | Local `HH:MM-HH:MM` window for claiming work; overnight windows are supported |
+| `daily_cpu_min` | `120` | Daily CPU-minute allowance per requester; 0 disables the cap |
+| `blocked_requesters` | empty | Device IDs this helper refuses to serve |
+
+The helper checks these settings before each claim. A running chunk can finish after a
+limit is reached. CPU usage is stored locally in `helper_usage.db` and counted by
+requester and local calendar day. **Stop** immediately pauses claims and kills active
+sandboxes; unfinished jobs return to the requester queue.
 
 Example: [examples/worker.example.json](../examples/worker.example.json) (without a token; a real
 token only ever comes from pairing).

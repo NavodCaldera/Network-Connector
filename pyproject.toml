@@ -35,7 +35,7 @@ nc-gui = "network_connector.gui:main"
 nc-worker-gui = "network_connector.worker_gui:main"
 
 [project.gui-scripts]
-network-connector = "network_connector.gui:main"
+network-connector = "network_connector.app:main"
 network-connector-worker = "network_connector.worker_gui:main"
 
 [tool.setuptools.dynamic]

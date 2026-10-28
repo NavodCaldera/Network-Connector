@@ -63,6 +63,11 @@ class WorkerConfig:
     discovery: bool = True  # listen for nearby announcements while the window is open (receive-only UDP)
     discovery_port: int = 8766
     auto_join_direct: bool = False  # join DIRECT-NC-* groups by itself; stays off until tested on the i3
+    ac_only: bool = True
+    idle_min: int = 0  # 0 disables the input-idle gate
+    allowed_hours: str = ""  # empty = any time; otherwise HH:MM-HH:MM in local time
+    daily_cpu_min: int = 120  # per requester
+    blocked_requesters: list[str] = field(default_factory=list)
 
 
 T = TypeVar("T")

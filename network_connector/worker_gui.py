@@ -85,6 +85,10 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
         self.v_mem = tk.IntVar(value=self.cfg.max_memory_mb)
         self.v_idle = tk.IntVar(value=self.cfg.idle_timeout_minutes)
         self.v_low = tk.BooleanVar(value=self.cfg.low_priority)
+        self.v_ac = tk.BooleanVar(value=self.cfg.ac_only)
+        self.v_idle_gate = tk.IntVar(value=self.cfg.idle_min)
+        self.v_hours = tk.StringVar(value=self.cfg.allowed_hours)
+        self.v_daily = tk.IntVar(value=self.cfg.daily_cpu_min)
         items = (("Max CPU threads", self.v_threads, 1, 128, f"This PC has {hw['cores_logical']}. Leave one free to stay smooth."),
                  ("Max jobs at once", self.v_jobs, 1, 64, "Each job uses one thread."),
                  ("Max memory per job (MB)", self.v_mem, 256, 65536, "A job using more is stopped."),
@@ -95,7 +99,14 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
             ttk.Label(lim, text=hint, foreground="#666").grid(row=r, column=2, sticky="w")
         ttk.Checkbutton(lim, text="Run jobs at low priority (recommended: your own apps always come first)",
                         variable=self.v_low).grid(row=4, column=0, columnspan=3, sticky="w")
-        ttk.Button(lim, text="Save limits", command=self.save_limits).grid(row=5, column=0, sticky="w", pady=4)
+        ttk.Checkbutton(lim, text="Help only while plugged in", variable=self.v_ac).grid(row=5, column=0, columnspan=3, sticky="w")
+        ttk.Label(lim, text="Help only after idle (minutes; 0 = off)").grid(row=6, column=0, sticky="w")
+        ttk.Spinbox(lim, from_=0, to=1440, textvariable=self.v_idle_gate, width=8).grid(row=6, column=1, sticky="w")
+        ttk.Label(lim, text="Allowed hours (HH:MM-HH:MM; blank = any)").grid(row=7, column=0, sticky="w")
+        ttk.Entry(lim, textvariable=self.v_hours, width=16).grid(row=7, column=1, sticky="w")
+        ttk.Label(lim, text="Daily CPU minutes per requester (0 = unlimited)").grid(row=8, column=0, sticky="w")
+        ttk.Spinbox(lim, from_=0, to=10080, textvariable=self.v_daily, width=8).grid(row=8, column=1, sticky="w")
+        ttk.Button(lim, text="Save limits", command=self.save_limits).grid(row=9, column=0, sticky="w", pady=4)
 
         # controls
         ctl = ttk.LabelFrame(root, text="3. Run", padding=8)
@@ -198,6 +209,10 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
         cfg.max_memory_mb = max(256, int(self.v_mem.get()))
         cfg.idle_timeout_minutes = max(0, int(self.v_idle.get()))
         cfg.low_priority = bool(self.v_low.get())
+        cfg.ac_only = bool(self.v_ac.get())
+        cfg.idle_min = max(0, int(self.v_idle_gate.get()))
+        cfg.allowed_hours = self.v_hours.get().strip()
+        cfg.daily_cpu_min = max(0, int(self.v_daily.get()))
         return cfg
 
     # ------------------------------------------------------------------ actions
@@ -275,7 +290,8 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
             return
         self.stop_btn.config(state="disabled")
         self.pause_btn.config(state="disabled")
-        self._write("Stopping gracefully (running jobs get a short time to finish) …")
+        self._write("Stopping helping now; active sandboxes are being killed …")
+        agent.stop_helping()
         self.bg.run(agent.stop, lambda _r: self._stopped())
 
     def _stopped(self) -> None:
