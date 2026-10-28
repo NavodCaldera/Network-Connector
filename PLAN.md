@@ -629,7 +629,8 @@ params: {
   "args":          ["<≤ 16 short strings>"],
   "limits": {"memory_mb": ≤ helper cap, "seconds": ≤ 3600, "fuel": optional}
 }
-result: {"stdout_b64": ≤ 1 MB, "exit_code": int, "fuel_used": int, "cpu_seconds": float}
+result: {"stdout_b64": ≤ 1 MB, "exit_code": int, "fuel_used": int | null, "cpu_seconds": float}
+        # fuel is only on when the requester sets limits.fuel (+8 % cost, Phase 6 spike)
 split:  the requester sends one job per chunk (each with its own input); the module is shared
 ```
 
@@ -665,6 +666,28 @@ Each job is a new child process: `python -m network_connector.sandbox_runner`. E
    **refuse open-group wasm jobs** rather than run them with less isolation, and say so in the UI.
 5. **Input/output limits:** module ≤ 10 MB and validated by `wasmtime.Module.validate` before use, input ≤ 8 MB,
    output ≤ 1 MB, stderr ≤ 64 KB (cut off). All sizes are checked by both the requester API and the helper.
+
+**Confirmed by the Phase 6 spike** ([spikes/0.3-sandbox/REPORT.md](spikes/0.3-sandbox/REPORT.md); all items GO, `wasmtime==50.0.1`):
+
+- **Time limit:** the time limit is the **helper's wall-clock kill** (`TerminateJobObject`, < 20 ms).
+  - Fuel and epoch can't stop a module that sleeps or does a lot of I/O.
+  - Epoch (one-shot deadline) is optional: it only gives a clean "time limit" message, at +17 % cost.
+  - Fuel is optional, on only with `limits.fuel`, at +8 % cost.
+- **Launch recipe:**
+  - Start the **base** `python.exe -I -S -B` directly, never the venv launcher (blocked by `ActiveProcessLimit=1`).
+  - Pass `LOCALAPPDATA` and `PROCESSOR_ARCHITECTURE` in the environment.
+  - Use `DETACHED_PROCESS`, plus `JOB_LIST` and `CHILD_PROCESS_POLICY` in `STARTUPINFOEX`.
+  - Set `platform.machine` before importing wasmtime. This cuts start-up from about 565 ms to about 295 ms. No pool is needed.
+- **Runtime folder:**
+  - The runner and wasmtime live in their own folder, `%LOCALAPPDATA%\NetworkConnector-runtime`.
+  - That folder gets the one ACL grant `ALL APPLICATION PACKAGES:(OI)(CI)(RX)` (no admin).
+  - **Never in `%LOCALAPPDATA%\NetworkConnector`**, which holds secrets and must stay unreadable from the sandbox.
+  - `sandbox.available()` checks the grant.
+- **Import allowlist:** `wasi_snapshot_preview1` only, without `path_open` or sockets. C code that uses `fopen` is refused; say so in SANDBOX.md.
+- **Honest limits for the docs:**
+  - Escaped code can bind a port, but nothing can reach it.
+  - It can read world-readable Windows files (for example `C:\Windows\win.ini`), but not user files.
+  - Stricter LPAC mode doesn't work with Python yet.
 
 ### 17.3 "Created per job, deleted after"
 
