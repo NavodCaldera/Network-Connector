@@ -17,6 +17,26 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ## 2026-10-29 · Claude Code (local, Windows) · `claude/great-davinci-bch39n`
 
+### Acceptance sections 1-2 on a third laptop (Ryzen), run as "i3"
+
+- **Asked:** clone/update the repo, read `docs/ACCEPTANCE_0.3.0.md`, do everything possible on this laptop, then update `main`.
+- **Done:** installed Git and Python 3.12.10 (winget), switched to this branch (commit `238819b`), built `.venv`
+  (`.[test,app,wifidirect]`, version 0.3.0, import path inside the checkout), ran
+  `collect-local.ps1 -PC i3 -FullTests`, then `nc sandbox setup --remove` in the isolated shell. No source changed.
+- **Machine:** AMD Ryzen 3 3250U, 4 threads, about 3.4 GB RAM. This is **not** the i3-1115G4; the "i3" label was chosen
+  by the owner so the script would run. It cannot count as the real i3 result.
+- **Verified:** full suite **342 passed, 0 failed, 0 skipped** (1 deprecation warning), 15 min 19 s. `sandbox setup`
+  and `status --check` OK (self-check 5140 ms, profile deleted); primes printed `78498` (0.70 s); bench printed digest
+  `f21b6b5f...cab6a` (1 unit, 1.76 s); leftover `NC-Sandbox-*` profiles: 0 before and after.
+- **Not done / open:** sections 3-7 (app/tray/notifications, join/consent, Stop <= 1 s timing, quotas, direct link and
+  hotspot, firewall rules, two-PC benchmark, listener checks) need the real i7 and i3 and a person at the screens.
+  Hardware acceptance is still pending; no tag was created. Result files stay local under
+  `spikes/0.3-windows/out` (git-ignored).
+
+---
+
+## 2026-10-29 · Claude Code (local, Windows) · `claude/great-davinci-bch39n`
+
 ### Windows validation, i7 checks and acceptance preparation (finishes Codex's interrupted work)
 
 - **Asked:** run the full suite on Windows (never done before), check the i7, fix real failures without weakening
