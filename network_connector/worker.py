@@ -429,8 +429,7 @@ class WorkerAgent:
         reason = self._limit_note()
         if not reason or not (self.cfg.limit_stop_now or reason.startswith("requester blocked")):
             return
-        sandbox.stop_all()
-        for rj in list(self.running.values()):
+        for rj in list(self.running.values()):  # only this requester's jobs; _kill stops each one's own sandbox
             used = self._job_cpu(rj)
             self._kill(rj)
             self._drop(rj)

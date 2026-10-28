@@ -89,7 +89,7 @@ adapters. Neither a successful mocked test nor an advertised SSID establishes su
 
 See [JOINING.md](JOINING.md). In an open group, safety must not depend on trusting the other computer: the helper is
 protected by the sandbox (see "Wasm sandbox" below; a helper joins automatically only when the sandbox is available),
-the requester by result checks (Phase 10), and both by device identities, pinned TLS and signatures.
+the requester by result checks (see "Result checks" below), and both by device identities, pinned TLS and signatures.
 
 | Threat | Protection |
 |---|---|
@@ -98,7 +98,7 @@ the requester by result checks (Phase 10), and both by device identities, pinned
 | A joined helper takes over a paired worker's name | The requester picks the name (`<name>-<first 8 of device ID>`) and refuses one already used by another device |
 | A helper changes its own group mode or identity later | The heartbeat can't change `device_id`, `device_name` or `group_mode`; they are kept from the join |
 | Fake or spoofed announcements | Signed by the device key; the device ID is the certificate's hash, so a trusted or blocked device's ID can't be claimed with another key. Size ≤ 1200 bytes, exact fields, age ≤ 10 s, no replay of older packets, the announced address must be the sender, private addresses only. Bad packets are dropped after a per-sender and overall rate limit |
-| Announcement makes the helper do something | It can only add a list line. Joining is a click (later: an explicit auto-accept setting) and then an **outbound** TLS connection whose certificate must hash to the announced ID. Nothing is sent to a mismatched certificate |
+| Announcement makes the helper do something | It can only add a list line, or, with the owner's *When a requester asks* setting and a working sandbox, an **outbound** TLS join whose certificate must hash to the announced ID. Nothing is sent to a mismatched certificate. Blocked requesters are never joined |
 | The discovery socket as an attack surface | Receive-only: one socket per interface address with `SO_EXCLUSIVEADDRUSE`, never a wildcard bind, no send path. A program squatting on port 8766 can only hide the list |
 | Flooding `/join` | Per-source and overall rate limits (429), a 32 KB body cap, bounded challenge and request tables |
 | A blocked device keeps working | Blocking revokes its tokens at once (running jobs are re-queued) and refuses its future joins |
@@ -106,8 +106,51 @@ the requester by result checks (Phase 10), and both by device identities, pinned
 | Leaving | `/worker/leave` drops the token on the requester; the helper forgets it too |
 | Announcements leak information | Everyone nearby sees the requester's name, short ID, helper count, queued work and optional label. Nothing else |
 
-The sandbox and "open groups run only `wasm` jobs" are in place (see the next section). Not protected yet: result
-checks (Phase 10), and a narrow firewall rule for UDP 8766 (pending approval). Joining `DIRECT-NC-*` groups automatically is off.
+### The Wi-Fi password is not the security boundary
+
+Open Wi-Fi Direct groups are named `DIRECT-NC-XXXX`, and their passphrase is derived from that name with PBKDF2 and a
+fixed app salt, so **every copy of the app can join them**. That is on purpose: anyone could also run the app. What
+protects people is the sandbox (helpers), result checks (requesters), signatures and pinned TLS (both). A closed group
+(pairing codes) keeps a random passphrase. Consequences:
+
+| Threat | Protection |
+|---|---|
+| A rogue `DIRECT-NC-XXXX` group lures helpers | Joining such groups by itself is **off** by default, happens only when the helper is on no other Wi-Fi, and then only leads to an outbound TLS join under the helper's own join policy, into the sandbox. While on Wi-Fi the helper only offers "Join (disconnects …)". Leave deletes the profile |
+| Auto-join drops the owner's home Wi-Fi | Never joins while connected to a Wi-Fi network (WinRT connection profiles; unknown state counts as connected) |
+| Discovery traffic blocked or opened too widely | The optional rule (`add-firewall-rule.ps1 -Discovery`) allows UDP 8766 only, for one `python.exe` only, Private from the local subnet, and Public only to the direct-link address from its /24. Never "allow python.exe" |
+
+### Owner control (helper side)
+
+| Threat | Protection |
+|---|---|
+| A requester uses the helper more than the owner wants | Limits enforced **on the helper**, before every claim and about once a second while jobs run: plugged in, idle, hours, a Job Object CPU-rate cap, and a daily CPU-minute limit per requester that counts running jobs. Optionally running jobs stop at once; blocking always stops them |
+| The owner can't stop the work | **Stop** in the tray or the message kills every sandbox (`sandbox.stop_all()`) and native job within 1 s (tested on a real cluster), releases the jobs and leaves an open group |
+| Being asked over and over, or a fake toast click | One open question per requester; no answer in 60 s = Decline. Toast buttons carry only `accept:`, `decline:` or `stop:` plus a 64-hex device ID; anything else is ignored. Accept only acts on a question this app asked |
+| Messages leak job contents | Messages show the requester's name, short ID and thread count only. "What is running" shows the batch label and module hash, never inputs or outputs |
+| Starting at login without consent | A per-user `HKCU\...\Run` value, with a visible **Start at login** switch and `nc app autostart off`; `nc app reset` removes it and the message registration |
+| Turning radios on or off | The app only asks Windows to turn **Wi-Fi on**, and only from the owner's click. It never turns a radio off |
+
+## Result checks (0.3.0, protects requesters)
+
+| # | Threat | Mitigation |
+|---|---|---|
+| R1 | A helper returns wrong results | In open groups a share (`redundancy_percent`, default 10 %) of `wasm` results is held until a twin on a **different** helper returns the same stdout and exit code. A mismatch goes to a third helper and the majority decides; the loser loses score. Optional requester-side Wasm verifier for every result, run in the requester's own sandbox, failing closed |
+| R2 | A lying helper keeps getting work | Reliability score per device: −5 per wrong result, −1 per lost job. Below 0 it gets one chunk at a time; at `block_score` (−10) its device is blocked and its tokens revoked |
+| R3 | A helper checks its own answer | Twins and tie-breaks exclude the workers that already answered; the requester sets `group_mode` and `device_id`, so a helper can't change which device it counts as |
+| R4 | Checks stall the requester | Checks start only when another helper is online; a twin nobody takes within 10 minutes is dropped and the result kept (marked *unchecked*); a disagreement nobody can settle fails the job instead of guessing |
+
+Residual risks: checking is sampled, so a lying helper is caught with a probability, not for sure (use 100 % or a
+verifier for important work). Someone can create many device identities (each needs its own key, and each starts with
+no trust); two colluding helpers could agree on the same wrong answer. Use **Trusted only** for work where that
+matters.
+
+## Certificate expiry
+
+Pinned TLS still checks the certificate's dates. New device certificates last 20 years. A controller certificate
+created by 0.2.0 or earlier lasts **2 years** and is kept as the device identity. From 90 days before it expires,
+`nc identity`, the controller log, the Devices tab and the helper's pairing status show a warning. Certificates are
+**never renewed silently**: the device ID is the certificate's hash, so a new certificate is a new identity. To renew,
+follow "rotate everything" in Good practice above; helpers then pair or join again (one click in an open group).
 
 ## Wasm sandbox (0.3.0)
 
@@ -132,6 +175,8 @@ layers, the test results and the honest limits.
 Residual risks for the sandbox: a wasmtime or Windows bug could break a layer (several independent layers, pinned
 wasmtime, Stop); escaped code could read world-readable OS files and could bind a port nobody can reach; job inputs
 are visible to the helper.
+
+The 0.3.0 review of all eleven invariants is in [SECURITY_REVIEW_0.3.0.md](SECURITY_REVIEW_0.3.0.md).
 
 ## Reporting a problem
 

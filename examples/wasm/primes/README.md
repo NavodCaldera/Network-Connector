@@ -25,8 +25,10 @@ cargo build --release --target wasm32-wasip1
 # the module is target\wasm32-wasip1\release\primes.wasm
 ```
 
-The Rust standard library imports a few WASI functions (`fd_write`, `environ_get`, `proc_exit`, …). All of them are
-on the sandbox's allowlist. Don't use `std::fs` or `std::net`: they need `path_open` or sockets, and a module that imports
+The Rust standard library imports a few WASI functions. Built on 2026-10-28 with Rust 1.97.0 for `wasm32-wasip1`,
+the module imports exactly `fd_read`, `fd_write`, `environ_get`, `environ_sizes_get` and `proc_exit` (41 KB,
+SHA-256 `f25403a5…`; your build's hash will differ by compiler version). All of them are on the sandbox's allowlist,
+and run under wasmtime it prints `78498` for `0 1000000`. Don't use `std::fs` or `std::net`: they need `path_open` or sockets, and a module that imports
 them is refused.
 
 ## Try it on this computer first

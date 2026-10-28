@@ -75,13 +75,18 @@ No sandbox can promise zero risk. These are the known limits:
 - **Escaped code could read world-readable Windows files**, for example `C:\Windows\win.ini` or files under
   `C:\Program Files`. It can't read your user files, your profile or the NetworkConnector data folder.
 - **Job inputs and outputs are visible to the helper's computer.** Don't send private data to people you don't trust.
-- **A helper can return wrong answers.** The sandbox protects the helper, not the requester. Result checks (redundancy)
-  are a separate feature.
+- **A helper can return wrong answers.** The sandbox protects the helper, not the requester. Result checks protect the
+  requester: see [Checking results](#checking-results-protects-the-requester) below.
 - The stricter "LPAC" app-container mode would also hide world-readable system files, but Python doesn't start under it
   yet, so it isn't used.
 - A bug in wasmtime or in Windows could in theory break a layer. That is why there are several layers, why wasmtime is
   pinned and updated quickly, and why the owner can stop everything at once.
 - Start-up costs about 0.15–0.3 s per job (a new profile and process each time). Make chunks at least a few seconds long.
+- **Progress** for a `wasm` job is elapsed time ÷ its time limit, not real progress: the wasmtime store can't be read
+  from another thread while the module runs. A job that finishes early jumps to 100 %.
+- **Owner limits.** The helper's CPU-rate cap (`cpu_rate_percent`) is set on each sandbox's Job Object; if Windows refuses
+  it, the job is refused rather than run without the cap. Hours, power, idle and the daily CPU limit are checked before
+  each claim and while the job runs.
 
 ## Writing a job
 
@@ -140,6 +145,26 @@ POST /admin/jobs/batch     {"jobs": [{"kind": "wasm", "params": {
 Result of a finished job: `{"stdout_b64", "exit_code", "fuel_used", "cpu_seconds", "stderr_b64"}`.
 A job fails (and is not retried) when the module is refused or invalid, traps, runs out of fuel or memory, or writes too
 much. A time-limit kill or a sandbox start-up problem is retried, up to the job's maximum attempts.
+
+## Checking results (protects the requester)
+
+A helper can't be stopped from lying, only caught (PLAN §18):
+
+- **Redundancy.** In open groups, `redundancy_percent` (default 10 %) of `wasm` results are held as *checking* while the
+  same job runs on a **different** helper. Stdout and exit code must match byte for byte. Write modules whose output
+  doesn't depend on the clock or random numbers, or checks will disagree.
+- **Majority.** On a mismatch a third helper runs it; the majority answer is kept and the helper that lost is marked.
+  With no third helper within 10 minutes the job fails ("results disagree"), and you can run it again.
+- **Reliability score** per helper device: +1 for a confirmed result, −5 for a wrong one, −1 for a lost or timed-out
+  job. Below 0 a helper gets one chunk at a time; at −10 it is dropped and blocked for this requester. See the Score
+  column in the Devices tab and `nc checks`.
+- **Verifier.** Submit with `--verifier <sha256>` (an uploaded module) and the requester runs that module on **its own
+  computer, in the same sandbox**, for every result. Its stdin is an 8-byte little-endian length of the job input, the
+  input, then the helper's output; exit code 0 accepts. A rejected result goes to another helper. If the requester's
+  sandbox can't run, the submission is refused (and a job whose check can't run fails rather than being accepted).
+
+A lone helper is never held up: checks start only when another helper is online. Benchmark jobs are not checked this
+way; benchmarks compare their own answers.
 
 ## How modules reach helpers
 

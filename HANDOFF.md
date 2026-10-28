@@ -1,5 +1,42 @@
 # Handoff: what is left to do
 
+## 2026-10-28 Claude Code update: phases 9–11 code complete (branch `claude/great-davinci-bch39n`)
+
+All remaining **code** items in this file are done, on top of `integrate/0.3.0` (merged as `b1a4943`). What is left
+is **hardware acceptance, which only the owner can run**, then merging and tagging. Owner decisions taken on
+2026-10-28: pystray **approved** (optional `[app]` extra), the `-Discovery` firewall rule **approved**, version
+bumped to **0.3.0 without merging to `main` or tagging**.
+
+Done (commits `476c7b1`, `1b9e5a1`, `c8cc5e4`, `c8751f1` and the docs commit after them):
+- **Phase 9:** `tray.py` (pystray, `run_detached`, queue polled by tk), `autostart.py` (HKCU Run), `notify.py`
+  (AUMID toasts → tray balloon → window; strict `accept:/decline:/stop:<id>`; 60 s Ask-me timeout to Decline),
+  `radio.py` (Wi-Fi on only from a click), `app.py` (tray, close to tray, `--background`, Start at login switch,
+  restart to change roles, sandbox setup offer, requester `wind_down` announces closing), helper consent flow in
+  `link_gui.py`, `HelperPolicy` contract object, limits checked while running (+ "stop at once" option), Job Object
+  CPU-rate cap (`cpu_rate_percent`), "what is running" view, `nc app open|autostart|reset`. Stop ≤ 1 s is tested on a
+  real TLS cluster (`tests/test_stop_helping.py`).
+- **Phase 7 leftovers:** `add-firewall-rule.ps1 -Discovery` (+ remove, + GUI button), open `DIRECT-NC-XXXX` groups with
+  PBKDF2-derived passphrase, helper auto-join rules from the spike (`wifidirect.AutoJoin`), certificate expiry warning.
+- **Phase 10:** store step 4, redundancy twins on a different helper, majority on a mismatch, reliability score,
+  auto-block, requester-side Wasm verifier (`verify.py`), helper-side reputation and Block. `tests/test_verify.py`:
+  a lying helper on a real cluster is caught, outvoted and dropped. Optional `python.wasm` (§17.6) **not done**.
+- **Phase 11:** `examples/wasm/bench` (Rust, built, pinned module in `network_connector/data`), `--engines native,wasm`
+  with a Wasm overhead column, `topN` scenarios, device names/short IDs, optional shared speed score; docs (README,
+  new `docs/SETUP.md`, JOINING, SANDBOX, SECURITY, CONFIGURATION, BENCHMARK, TROUBLESHOOTING, CHANGELOG 0.3.0);
+  security review in `docs/SECURITY_REVIEW_0.3.0.md` (4 findings fixed).
+- **2.1b:** the Rust primes example was built (Rust 1.97.0, `wasm32-wasip1`): imports `fd_read`, `fd_write`,
+  `environ_get`, `environ_sizes_get`, `proc_exit` (all allowed); prints `78498` under wasmtime. The committed
+  `primes.wasm` is still the WAT build.
+
+Verified here (Linux container, Python 3.12, Xvfb): 280+ tests pass; 3 `test_wifidirect.py` tests fail only because
+they need Windows (they failed the same way before this work), and the 43+ sandbox/firewall tests are skipped off
+Windows. Loopback-alias tests need `NO_PROXY=127.0.0.1,127.0.0.2,127.0.0.3` in a proxied environment.
+**Not verified:** anything Windows-only (AppContainer, Job Object CPU rate, toasts, tray on screen, WinRT Wi-Fi/radio,
+PowerShell firewall scripts). Run the full suite on Windows first.
+
+Next steps for the owner: section 2.3 hardware tests and `docs/SECURITY_REVIEW_0.3.0.md` "Still to run on Windows",
+then PLAN §22.3, then merge `release/0.2.0` and this branch to `main` and tag (2.7.5, 2.8).
+
 ## 2026-10-28 Codex partial update (work stopped at owner request)
 
 The owner asked to stop work and update GitHub. The following changes are on
@@ -138,7 +175,7 @@ Nothing below has been run on real hardware yet. Prepare the scripts and ask the
    - Full checklist: `docs/JOINING.md`.
 4. **Phase 8 on hardware:** `nc sandbox setup`, then run `examples/wasm/primes` on both PCs, run the escape suite on both, and check there are no leftover `NC-Sandbox-*` profiles.
 
-### 2.4 Phase 9 — one app, tray, messages, owner limits (not started)
+### 2.4 Phase 9 — one app, tray, messages, owner limits (code done 2026-10-28; on-screen checks pending)
 
 Spec: PLAN §13, §16.2, §21 (Phase 9). Ownership: the Link side does the UI/tray/messages, the Compute side does the quota enforcement.
 
@@ -180,7 +217,7 @@ Spec: PLAN §13, §16.2, §21 (Phase 9). Ownership: the Link side does the UI/tr
 - **Certificate expiry:** certificates migrated from 0.2.0 keep their 2-year expiry. Plan a renewal or a warning.
   Pinned certificates must not change silently, so warn early in the UI and docs.
 
-### 2.6 Phase 10 — check results and trust (not started; Compute side)
+### 2.6 Phase 10 — check results and trust (done 2026-10-28, except optional item 7)
 
 Spec: PLAN §18.
 1. **Redundancy:**
@@ -194,7 +231,7 @@ Spec: PLAN §18.
 6. **Tests:** a fake lying helper in a test `Cluster` must be caught and dropped. Results stay correct by majority.
 7. **Optional (§17.6):** ship a pinned, hash-checked CPython WASI build (`python.wasm`, about 25 MB) so requesters can send Python scripts as `wasm` jobs.
 
-### 2.7 Phase 11 — many-helper benchmarks, docs, security review, release 0.3.0
+### 2.7 Phase 11 — many-helper benchmarks, docs, security review, release 0.3.0 (items 1–3 done; 4–5 need the owner)
 
 Spec: PLAN §19, §22.
 1. **Benchmark extensions:**
@@ -247,10 +284,12 @@ Spec: PLAN §19, §22.
 | Issue | Where | What to do |
 |---|---|---|
 | ~~Open-group helpers could run native kinds~~ | controller claim + worker | **Fixed in the merge** (tests in `test_join.py`, `test_wasm_jobs.py`). Recheck on hardware |
-| Auto-accept UI isn't wired yet | `link_gui.sandbox_ready()` | `sandbox.available()` exists now; the auto-accept setting and messages come with Phase 9 |
-| Rust example never compiled | `examples/wasm/primes/src/main.rs` | See §2.1b |
-| Discovery may be blocked on Public / direct links | Windows Firewall (a Block rule beats Allow) | Firewall rule after approval; outbound probe fallback exists |
-| A 0.2.0 controller cert migrated as the identity keeps its 2-year expiry | `identity.py` | Plan renewal or warning (§2.5) |
+| ~~Auto-accept UI isn't wired yet~~ | `link_gui.py` | Done: auto-accept / Ask me / Trusted only with messages, gated on the sandbox |
+| ~~Rust example never compiled~~ | `examples/wasm/primes/src/main.rs` | Built once; imports all allowed (§2.1b) |
+| Toast buttons only work while the app runs | `notify.py` | By design (Phase 6 spike); the tray keeps the app running. COM activation after exit is not planned |
+| Optional CPython-in-Wasm (`python.wasm`) | PLAN §17.6 | Not done; needs a pinned, hash-checked ~25 MB download |
+| Discovery may be blocked on Public / direct links | Windows Firewall (a Block rule beats Allow) | `-Discovery` rule and button added; outbound probe fallback exists; a Block rule still wins |
+| A 0.2.0 controller cert migrated as the identity keeps its 2-year expiry | `identity.py` | Warning from 90 days before; renewal = rotate + re-join (SECURITY.md) |
 | An older `controller.json` becomes join policy "code" with announcements off | `config.py` | Intended (existing groups stay closed). Document it in the release notes |
 | LPAC (stricter sandbox) doesn't work with Python | sandbox | Not needed for 0.3.0. Revisit later |
 | C programs that use `fopen` are refused (`path_open` not allowed) | sandbox allowlist | Documented in SANDBOX.md. Jobs must use stdin/stdout |
@@ -293,12 +332,13 @@ Spec: PLAN §19, §22.
 - [x] 2.1 Merge `feat/identity-join` + `feat/sandbox` into `integrate/0.3.0`, all 280 tests green, worktrees removed
 - [x] 2.1 Open groups run `wasm` only (tested on the requester and helper side)
 - [ ] 2.1 Manual on the i7: `nc sandbox setup` / `status --check` / `run primes.wasm`
-- [ ] 2.1b Build the Rust example once; check its imports against the allowlist
-- [ ] 2.2 Ask the owner: pystray? discovery firewall rule?
+- [x] 2.1b Build the Rust example once; check its imports against the allowlist (all allowed)
+- [x] 2.2 Ask the owner: pystray? discovery firewall rule? (both approved 2026-10-28)
 - [ ] 2.3 Owner runs the hardware tests (Part 1 §9, Phase 6 network §6, Phase 7 join, Phase 8 sandbox) → record the results
-- [ ] 2.4 Phase 9: app.py, tray, autostart, messages, Stop ≤ 1 s, helper settings, quotas, "what is running", radio button
-- [ ] 2.5 Wi-Fi Direct auto-join (rules from the spike), firewall rule, certificate expiry warning
-- [ ] 2.6 Phase 10: redundancy, majority, reliability score, auto-block, verifier hook (optional python.wasm)
-- [ ] 2.7 Phase 11: many-helper + `wasm_bench` benchmarks, docs, security review, PLAN §22.3 acceptance, release 0.3.0
+- [x] 2.4 Phase 9: app.py, tray, autostart, messages, Stop ≤ 1 s, helper settings, quotas, "what is running", radio button (code; on-screen checks pending)
+- [x] 2.5 Wi-Fi Direct auto-join (rules from the spike), firewall rule, certificate expiry warning (code; Test B pending)
+- [x] 2.6 Phase 10: redundancy, majority, reliability score, auto-block, verifier hook — optional python.wasm not done
+- [x] 2.7 Phase 11: many-helper + `wasm_bench` benchmarks, docs, security review, version 0.3.0
+- [ ] 2.7 PLAN §22.3 acceptance on hardware, then merge to `main` and tag `v0.3.0` (owner)
 - [ ] 2.8 Release 0.2.0 to `main` after its acceptance (or earlier, if the owner says so)
 - [ ] Clean-up items in §4
