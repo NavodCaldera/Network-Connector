@@ -28,6 +28,11 @@ def running_summary(s: dict[str, Any]) -> str:
     limit = s.get("daily_cpu_min") or 0
     used = f"{s.get('cpu_minutes_today', 0):.1f}" + (f" of {limit}" if limit else "") + " CPU minutes used today"
     text = f"Working for {who} ({short}) · {len(s.get('running', []))} job(s) running · {used}."
+    rep = s.get("requester_reputation") or {}
+    killed = rep.get("limit", 0) + rep.get("oversized", 0) + rep.get("escape", 0)
+    if killed:
+        text += (f"  This requester's jobs were stopped {killed} time(s) here (limits {rep.get('limit', 0)}, "
+                 f"too much output {rep.get('oversized', 0)}, blocked escape attempts {rep.get('escape', 0)}).")
     if s.get("policy_reason"):
         text += f"  Not taking new work: {s['policy_reason']}."
     return text
@@ -156,6 +161,7 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
         ttk.Label(root, text="What is running", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=8)
         self.running_label = ttk.Label(root, text="", wraplength=860, foreground="#444")
         self.running_label.pack(anchor="w", padx=8)
+        ttk.Button(root, text="Block this requester", command=self.block_requester).pack(anchor="w", padx=8)
         self.jtree = make_tree(root, [("Job", 100), ("Kind", 70), ("Label", 150), ("Module SHA-256", 130), ("CPU", 60),
                                       ("RAM", 70), ("Progress", 70), ("Running for", 80)], height=4)
         perf = ttk.LabelFrame(root, text="Performance", padding=6)
@@ -351,6 +357,22 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
         self.agent = None
         self.update_btn.config(state="normal")
         self._refresh_paired()
+
+    def block_requester(self) -> None:
+        """One click: never help this requester again, and stop its work now."""
+        agent = self.agent
+        cfg = agent.cfg if agent else load_config(WorkerConfig, self.cfg_path)
+        device = cfg.requester_device_id or cfg.controller_fingerprint
+        if not device:
+            messagebox.showinfo("Block", "Not connected to a requester.")
+            return
+        name = cfg.requester_name or cfg.controller_host
+        if not messagebox.askyesno("Block", f"Block {name}? Its work stops now and this computer won't help it again "
+                                   "until you unblock it in the Nearby list."):
+            return
+        self.peers.set(device, blocked=True, trusted=False, name=cfg.requester_name or None)
+        if agent:
+            self.stop()
 
     def toggle_pause(self) -> None:
         if not self.agent:

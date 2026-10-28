@@ -5,6 +5,7 @@ A single connection guarded by a lock keeps claiming atomic (no job is handed ou
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 import sqlite3
@@ -67,7 +68,26 @@ def _m3_sandbox(c: sqlite3.Connection) -> None:
     c.execute("create table if not exists helper_usage(requester_id text not null, day text not null, cpu_seconds real not null default 0, primary key(requester_id, day))")
 
 
-MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _m1_measurement, 2: _m2_devices, 3: _m3_sandbox}
+def _m4_checks(c: sqlite3.Connection) -> None:
+    """0.3.0 Phase 10: result checks. Twins and tie-breaks are jobs with check_of set; excluded_workers keeps
+    them away from helpers that already answered; verifier is the requester's optional Wasm checker."""
+    existing = {r[1] for r in c.execute("pragma table_info(jobs)")}
+    for name in ("excluded_workers", "check_of", "verifier"):
+        if name not in existing:
+            c.execute(f"alter table jobs add column {name} text")
+    existing = {r[1] for r in c.execute("pragma table_info(job_checks)")}
+    for name, kind in {"third_job_id": "text", "state": "text", "created": "real", "decided": "real", "detail": "text"}.items():
+        if name not in existing:
+            c.execute(f"alter table job_checks add column {name} {kind}")
+    c.execute("create index if not exists job_checks_state on job_checks(state)")
+
+
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
+    1: _m1_measurement, 2: _m2_devices, 3: _m3_sandbox, 4: _m4_checks}
+
+# Reliability scores (PLAN §18): + for a confirmed result, − for a wrong one, a timeout or an abandoned job.
+SCORE_MATCH, SCORE_WRONG, SCORE_LOST = 1.0, -5.0, -1.0
+OPEN_CHECK_STATES = ("twin", "third")
 
 
 class Store:
@@ -83,6 +103,10 @@ class Store:
         self._migrate(Path(path), existed)
         self._last_prune = 0.0
         self.prune_samples()
+        # Result-check policy, set by the controller from its config (0 % = off, e.g. for plain Store users).
+        self.redundancy_percent = 0
+        self.block_score = -10.0  # at or below this a helper device is dropped and blocked for this requester
+        self.check_wait_s = 600.0  # a twin nobody else can take is given up after this; the result stays unchecked
 
     def _migrate(self, path: Path, existed: bool) -> None:
         self._conn.execute("create table if not exists meta(key text primary key, value text not null)")
@@ -238,7 +262,7 @@ class Store:
     def create_batch(
         self, kind: str, label: str | None, idem_key: str | None, jobs: list[tuple[str, dict[str, Any]]],
         timeout_s: int, max_attempts: int, target: str | None,
-        eligible_workers: list[str] | None = None,
+        eligible_workers: list[str] | None = None, verifier: str | None = None,
     ) -> tuple[str, bool]:
         """Insert a batch of jobs. A repeated idempotency key returns the original batch (duplicate prevention)."""
         with self._tx() as c:
@@ -254,10 +278,11 @@ class Store:
             )
             for idx, (job_kind, params) in enumerate(jobs):
                 c.execute(
-                    "insert into jobs(id,batch_id,idx,kind,params,status,max_attempts,timeout_s,target,created,eligible_workers)"
-                    " values(?,?,?,?,?,?,?,?,?,?,?)",
+                    "insert into jobs(id,batch_id,idx,kind,params,status,max_attempts,timeout_s,target,created,eligible_workers,verifier)"
+                    " values(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (secrets.token_hex(6), bid, idx, job_kind, json.dumps(params), "queued",
-                     max_attempts, timeout_s, target, now, json.dumps(eligible_workers) if eligible_workers else None),
+                     max_attempts, timeout_s, target, now, json.dumps(eligible_workers) if eligible_workers else None,
+                     verifier if job_kind == "wasm" else None),
                 )
             return bid, True
 
@@ -274,8 +299,10 @@ class Store:
                 "select id from jobs where status='queued' and (target is null or target=?)"
                 " and (eligible_workers is null or exists(select 1 from json_each(eligible_workers) where value=?))"
                 " and (? is null or kind in (select value from json_each(?)))"
+                " and (excluded_workers is null or not exists(select 1 from json_each(excluded_workers) where value=?))"
                 " order by created, idx limit ?",
-                (worker["name"], worker["name"], None if kinds is None else 1, json.dumps(list(kinds or [])), limit),
+                (worker["name"], worker["name"], None if kinds is None else 1, json.dumps(list(kinds or [])),
+                 worker["id"], min(limit, self._claim_limit(c, worker["id"]))),
             ).fetchall()
             claimed = []
             for r in rows:
@@ -321,22 +348,23 @@ class Store:
         now = time.time()
         with self._tx() as c:
             job = c.execute("select * from jobs where id=?", (job_id,)).fetchone()
-            if not job or job["worker_id"] != worker_id or job["attempt"] != attempt or job["status"] in TERMINAL:
+            if not job or job["worker_id"] != worker_id or job["attempt"] != attempt or job["status"] != "running":
                 return None
             if error is None and not cancelled and not job["cancel_requested"]:
-                status, outcome = "succeeded", "succeeded"
+                status, outcome = self._success_status(c, job, worker_id), "succeeded"
             elif cancelled or job["cancel_requested"]:
                 status, outcome = "cancelled", "cancelled"
             elif retryable and job["attempt"] < job["max_attempts"]:
                 status, outcome = "queued", "retry"
             else:
                 status, outcome = "failed", "failed"
+            ok = status in ("succeeded", "checking", "verifying")
             c.execute(
                 "update jobs set status=?, result=?, error=?, finished=?, duration=?, lease_expires=null,"
                 " progress=?, cpu_seconds=?, peak_mem_mb=? where id=?",
-                (status, json.dumps(result) if status == "succeeded" else None,
-                 error if status != "succeeded" else None, now if status != "queued" else None,
-                 duration, 100.0 if status == "succeeded" else job["progress"], cpu_seconds, peak_mem_mb, job_id),
+                (status, json.dumps(result) if ok else None,
+                 error if not ok else None, now if status in TERMINAL else None,
+                 duration, 100.0 if ok else job["progress"], cpu_seconds, peak_mem_mb, job_id),
             )
             if status == "queued":
                 c.execute("update jobs set worker_id=null, worker_name=null where id=?", (job_id,))
@@ -344,6 +372,9 @@ class Store:
                 "update attempts set ended=?, outcome=?, error=?, duration=?, cpu_seconds=?, peak_mem_mb=? where job_id=? and attempt=? and outcome is null",
                 (now, outcome, error, duration, cpu_seconds, peak_mem_mb, job_id, attempt),
             )
+            if status == "checking":
+                self._start_twin(c, job, worker_id)
+            self._resolve_checks(c)
             return status
 
     def release(self, job_id: str, worker_id: str, attempt: int) -> bool:
@@ -364,6 +395,9 @@ class Store:
         with self._tx() as c:
             cancelled = c.execute("update jobs set status='cancelled', finished=? where status='queued'", (time.time(),)).rowcount if "queued" in statuses else 0
             cancelling = c.execute("update jobs set cancel_requested=1 where status='running'").rowcount if "running" in statuses else 0
+            if "queued" in statuses:
+                cancelled += c.execute("update jobs set status='cancelled', finished=? where status in ('checking','verifying')", (time.time(),)).rowcount
+                self._resolve_checks(c)
         return {"cancelled": cancelled, "cancelling": cancelling}
     def cancel_job(self, job_id: str) -> str | None:
         with self._tx() as c:
@@ -376,6 +410,10 @@ class Store:
             if job["status"] == "running":
                 c.execute("update jobs set cancel_requested=1 where id=?", (job_id,))
                 return "cancelling"
+            if job["status"] in ("checking", "verifying"):
+                c.execute("update jobs set status='cancelled', finished=? where id=?", (time.time(), job_id))
+                self._resolve_checks(c)
+                return "cancelled"
             return job["status"]
 
     def cancel_batch(self, batch_id: str) -> int:
@@ -400,6 +438,7 @@ class Store:
     def _requeue_running(self, c: sqlite3.Connection, worker_id: str, reason: str) -> None:
         for job in c.execute("select * from jobs where status='running' and worker_id=?", (worker_id,)).fetchall():
             self._fail_or_requeue(c, job, reason)
+        self._resolve_checks(c)
 
     def _fail_or_requeue(self, c: sqlite3.Connection, job: sqlite3.Row, reason: str) -> None:
         now = time.time()
@@ -427,10 +466,13 @@ class Store:
             for job in c.execute("select * from jobs where status='running'").fetchall():
                 if job["lease_expires"] is not None and job["lease_expires"] < now:
                     self._fail_or_requeue(c, job, f"lease expired (worker {job['worker_name']} stopped responding)")
+                    self._score(c, job["worker_id"], SCORE_LOST)
                     count += 1
                 elif job["started"] and now > job["started"] + job["timeout_s"] + hard_timeout_grace_s:
                     self._fail_or_requeue(c, job, f"timed out after {job['timeout_s']}s")
+                    self._score(c, job["worker_id"], SCORE_LOST)
                     count += 1
+            self._resolve_checks(c)
         return count
 
     def recover_on_start(self, lease_s: int) -> int:
@@ -439,6 +481,188 @@ class Store:
             cur = c.execute(
                 "update jobs set lease_expires=? where status='running'", (time.time() + lease_s * 2,))
             return cur.rowcount
+
+    # ------------------------------------------------------------ result checks (PLAN §18)
+    @staticmethod
+    def _worker_device(c: sqlite3.Connection, worker_id: str | None) -> tuple[str, bool]:
+        """(device_id, open group) of a worker; ('', False) for paired workers without a device identity."""
+        row = c.execute("select info from workers where id=?", (worker_id,)).fetchone() if worker_id else None
+        try:
+            info = json.loads(row["info"]) if row else {}
+        except ValueError:
+            info = {}
+        device = info.get("device_id", "") if isinstance(info, dict) else ""
+        is_open = isinstance(info, dict) and info.get("group_mode") == "open"
+        return (device if isinstance(device, str) and len(device) == 64 else ""), is_open
+
+    def _claim_limit(self, c: sqlite3.Connection, worker_id: str) -> int:
+        """Helpers with a negative reliability score get one chunk at a time."""
+        device, _ = self._worker_device(c, worker_id)
+        if not device:
+            return 1_000_000
+        row = c.execute("select score from devices where device_id=?", (device,)).fetchone()
+        return 1 if row and row["score"] < 0 else 1_000_000
+
+    def _success_status(self, c: sqlite3.Connection, job: sqlite3.Row, worker_id: str) -> str:
+        """A reported success is final, or first checked by the requester's verifier or by a twin run."""
+        if job["check_of"]:
+            return "succeeded"  # twins and tie-breaks are judged in _resolve_checks
+        if job["verifier"]:
+            return "verifying"
+        _, is_open = self._worker_device(c, worker_id)
+        if is_open and job["kind"] == "wasm" and self.redundancy_percent > 0:
+            pick = int(hashlib.sha256(job["id"].encode()).hexdigest()[:8], 16) % 100
+            others = c.execute("select count(*) n from workers where id!=? and state='active' and last_seen>?",
+                               (worker_id, time.time() - 60)).fetchone()["n"]
+            if pick < self.redundancy_percent and others:  # a twin needs a different helper to run it
+                return "checking"
+        return "succeeded"
+
+    def _add_check_job(self, c: sqlite3.Connection, job: sqlite3.Row, excluded: list[str]) -> str:
+        jid = secrets.token_hex(6)
+        c.execute(
+            "insert into jobs(id,batch_id,idx,kind,params,status,max_attempts,timeout_s,created,excluded_workers,check_of)"
+            " values(?,?,?,?,?,?,?,?,?,?,?)",
+            (jid, "check-" + job["batch_id"], job["idx"], job["kind"], job["params"], "queued", job["max_attempts"],
+             job["timeout_s"], time.time(), json.dumps(sorted(set(excluded))), job["id"]))
+        return jid
+
+    def _start_twin(self, c: sqlite3.Connection, job: sqlite3.Row, worker_id: str) -> None:
+        twin = self._add_check_job(c, job, [worker_id])
+        c.execute("insert or replace into job_checks(job_id,twin_job_id,match,state,created) values(?,?,null,'twin',?)",
+                  (job["id"], twin, time.time()))
+
+    @staticmethod
+    def _answer(result: str | None) -> tuple[Any, ...] | None:
+        """What must be identical byte for byte: the output and exit code (not timings or fuel)."""
+        try:
+            data = json.loads(result) if result else None
+        except ValueError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        if "stdout_b64" in data:
+            return data.get("stdout_b64"), data.get("exit_code")
+        return (json.dumps({k: v for k, v in data.items() if k not in ("cpu_seconds", "fuel_used")}, sort_keys=True),)
+
+    def _score(self, c: sqlite3.Connection, worker_id: str | None, delta: float) -> None:
+        device, is_open = self._worker_device(c, worker_id)
+        if not device or not is_open:
+            return
+        c.execute("insert or ignore into devices(device_id,first_seen) values(?,?)", (device, time.time()))
+        c.execute("update devices set score=score+? where device_id=?", (delta, device))
+        score = c.execute("select score from devices where device_id=?", (device,)).fetchone()["score"]
+        if score <= self.block_score:
+            c.execute("update devices set blocked=1, trusted=0 where device_id=?", (device,))
+            for w in c.execute("select id, info from workers where state!='revoked'").fetchall():
+                if self._worker_device(c, w["id"])[0] == device:
+                    c.execute("update workers set state='revoked', token_hash='' where id=?", (w["id"],))
+                    for job in c.execute("select * from jobs where status='running' and worker_id=?", (w["id"],)).fetchall():
+                        self._fail_or_requeue(c, job, "helper dropped: too many wrong or lost results")
+
+    def _decide(self, c: sqlite3.Connection, check: sqlite3.Row, state: str, *, match: int | None = None,
+                result: str | None = None, error: str | None = None, detail: str = "") -> None:
+        now = time.time()
+        if error is not None:
+            c.execute("update jobs set status='failed', error=?, result=null, finished=? where id=? and status='checking'",
+                      (error, now, check["job_id"]))
+        elif result is not None:
+            c.execute("update jobs set status='succeeded', result=?, finished=? where id=? and status='checking'",
+                      (result, now, check["job_id"]))
+        c.execute("update job_checks set state=?, match=coalesce(?, match), decided=?, detail=? where job_id=?",
+                  (state, match, now, detail[:300], check["job_id"]))
+
+    def _resolve_checks(self, c: sqlite3.Connection) -> None:
+        """Move every open check forward: twin agreed, tie-break needed, majority decided, or given up."""
+        now = time.time()
+        for chk in c.execute("select * from job_checks where state in ('twin','third')").fetchall():
+            orig = c.execute("select * from jobs where id=?", (chk["job_id"],)).fetchone()
+            twin = c.execute("select * from jobs where id=?", (chk["twin_job_id"],)).fetchone()
+            third = c.execute("select * from jobs where id=?", (chk["third_job_id"],)).fetchone() if chk["third_job_id"] else None
+            if orig is None or twin is None or orig["status"] != "checking":
+                for j in (twin, third):  # the original was cancelled: stop its checks too
+                    if j is not None and j["status"] == "queued":
+                        c.execute("update jobs set status='cancelled', finished=? where id=?", (now, j["id"]))
+                    elif j is not None and j["status"] == "running":
+                        c.execute("update jobs set cancel_requested=1 where id=?", (j["id"],))
+                c.execute("update job_checks set state='cancelled', decided=? where job_id=?", (now, chk["job_id"]))
+                continue
+            if chk["state"] == "twin":
+                if twin["status"] == "queued" and now - (chk["created"] or now) > self.check_wait_s:
+                    c.execute("update jobs set status='cancelled', finished=? where id=?", (now, twin["id"]))
+                    self._decide(c, chk, "unchecked", result=orig["result"], detail="no other helper took the twin")
+                elif twin["status"] in TERMINAL and twin["status"] != "succeeded":
+                    self._decide(c, chk, "unchecked", result=orig["result"], detail=f"twin {twin['status']}")
+                elif twin["status"] == "succeeded":
+                    if self._answer(twin["result"]) == self._answer(orig["result"]):
+                        self._decide(c, chk, "match", match=1, result=orig["result"])
+                        self._score(c, orig["worker_id"], SCORE_MATCH)
+                        self._score(c, twin["worker_id"], SCORE_MATCH)
+                    else:
+                        tie = self._add_check_job(c, orig, [orig["worker_id"], twin["worker_id"]])
+                        c.execute("update job_checks set state='third', match=0, third_job_id=?, created=? where job_id=?",
+                                  (tie, now, chk["job_id"]))
+                continue
+            if third is None:
+                continue
+            if third["status"] == "queued" and now - (chk["created"] or now) > self.check_wait_s:
+                c.execute("update jobs set status='cancelled', finished=? where id=?", (now, third["id"]))
+                self._decide(c, chk, "split", error="two helpers returned different results and no third helper was "
+                             "available to decide; run it again", detail="no tie-break helper")
+            elif third["status"] in TERMINAL and third["status"] != "succeeded":
+                self._decide(c, chk, "split", error="two helpers returned different results and the tie-break run "
+                             f"{third['status']}; run it again", detail=f"tie-break {third['status']}")
+            elif third["status"] == "succeeded":
+                answer = self._answer(third["result"])
+                if answer == self._answer(orig["result"]):
+                    self._decide(c, chk, "majority", result=orig["result"], detail="twin was wrong")
+                    winners, loser = (orig["worker_id"], third["worker_id"]), twin["worker_id"]
+                elif answer == self._answer(twin["result"]):
+                    self._decide(c, chk, "majority", result=twin["result"], detail="first helper was wrong")
+                    winners, loser = (twin["worker_id"], third["worker_id"]), orig["worker_id"]
+                else:
+                    self._decide(c, chk, "split", error="three helpers returned three different results",
+                                 detail="no majority")
+                    continue
+                for w in winners:
+                    self._score(c, w, SCORE_MATCH)
+                self._score(c, loser, SCORE_WRONG)
+
+    def checks(self, limit: int = 200) -> list[dict[str, Any]]:
+        return [dict(r) for r in self._q("select * from job_checks order by created desc limit ?", (limit,))]
+
+    # ---- requester-side verifier
+    def next_verifying(self) -> dict[str, Any] | None:
+        rows = self._q("select * from jobs where status='verifying' order by finished, created limit 1")
+        return self._job(rows[0], params=True) | {"verifier": rows[0]["verifier"]} if rows else None
+
+    def verified(self, job_id: str, accepted: bool, detail: str = "", usable: bool = True) -> str | None:
+        """Record the verifier's verdict. A rejected result goes to another helper (an attempt is used up)."""
+        with self._tx() as c:
+            job = c.execute("select * from jobs where id=? and status='verifying'", (job_id,)).fetchone()
+            if not job:
+                return None
+            now = time.time()
+            if accepted:
+                c.execute("update jobs set status='succeeded', finished=? where id=?", (now, job_id))
+                self._score(c, job["worker_id"], SCORE_MATCH)
+                return "succeeded"
+            if not usable:
+                c.execute("update jobs set status='failed', result=null, error=?, finished=? where id=?",
+                          (f"the verifier could not run: {detail}"[:1900], now, job_id))
+                return "failed"
+            self._score(c, job["worker_id"], SCORE_WRONG)
+            excluded = json.loads(job["excluded_workers"] or "[]") + [job["worker_id"]]
+            c.execute("update attempts set outcome='rejected', error=? where job_id=? and attempt=?",
+                      (f"rejected by the verifier: {detail}"[:1900], job_id, job["attempt"]))
+            if job["attempt"] < job["max_attempts"]:
+                c.execute("update jobs set status='queued', result=null, worker_id=null, worker_name=null, progress=0,"
+                          " error=?, excluded_workers=? where id=?",
+                          (f"rejected by the verifier: {detail}"[:1900], json.dumps(sorted(set(excluded))), job_id))
+                return "queued"
+            c.execute("update jobs set status='failed', result=null, error=?, finished=?, excluded_workers=? where id=?",
+                      (f"rejected by the verifier: {detail}"[:1900], now, json.dumps(sorted(set(excluded))), job_id))
+            return "failed"
 
     # ------------------------------------------------------------ reading
     def _job(self, row: sqlite3.Row, params: bool = False) -> dict[str, Any]:

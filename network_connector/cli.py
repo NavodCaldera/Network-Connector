@@ -169,7 +169,8 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
     client = _admin()
     params = _parse_params(a.param, a.params_json)
     opts = {k: v for k, v in {"label": a.label, "idempotency_key": a.key, "timeout_s": a.timeout,
-                              "max_attempts": a.retries, "target": a.target}.items() if v is not None}
+                              "max_attempts": a.retries, "target": a.target,
+                              "verifier_sha256": a.verifier}.items() if v is not None}
     if a.kind == "wasm":
         res = client.submit_batch(_wasm_items(client, a, params), **opts)
         print(f"batch {res['batch_id']}  ({res['chunks']} job(s), {'created' if res['created'] else 'already existed: duplicate ignored'})")
@@ -461,7 +462,17 @@ def cmd_block(a: argparse.Namespace) -> int:
 
 
 def cmd_policy(a: argparse.Namespace) -> int:
-    print(json.dumps(join_policy(_admin(), join_policy=a.policy, announce=a.announce, announce_label=a.label), indent=2))
+    print(json.dumps(join_policy(_admin(), join_policy=a.policy, announce=a.announce, announce_label=a.label,
+                                 redundancy_percent=a.redundancy), indent=2))
+    return 0
+
+
+def cmd_checks(a: argparse.Namespace) -> int:
+    data = _admin()._call("GET", "/admin/checks", params={"limit": a.limit})
+    print(f"Redundancy: {data['redundancy_percent']} % of open-group wasm chunks are also run on a second helper.")
+    print("Totals: " + (", ".join(f"{k} {v}" for k, v in sorted(data["totals"].items())) or "no checks yet"))
+    _table([[c["job_id"], c["twin_job_id"], c.get("third_job_id") or "", c["state"] or "", c.get("detail") or ""]
+            for c in data["checks"]], ["JOB", "TWIN", "TIE-BREAK", "STATE", "DETAIL"])
     return 0
 
 
@@ -768,6 +779,8 @@ def build_parser() -> argparse.ArgumentParser:
     js.add_argument("--timeout", type=int)
     js.add_argument("--retries", type=int, help="maximum attempts")
     js.add_argument("--key", help="idempotency key: submitting the same key twice creates only one job")
+    js.add_argument("--verifier", metavar="SHA256",
+                    help="wasm: an uploaded checker module run on this computer, in its sandbox, for every result")
     js.add_argument("--label")
     js.add_argument("--wait", action="store_true")
     _wasm_options(js)
@@ -844,7 +857,12 @@ def build_parser() -> argparse.ArgumentParser:
     pol.add_argument("policy", nargs="?", choices=["anyone", "trusted", "ask", "code"])
     pol.add_argument("--announce", action=argparse.BooleanOptionalAction, default=None)
     pol.add_argument("--label", help="short text nearby helpers see (everyone nearby can read it)")
+    pol.add_argument("--redundancy", type=int, metavar="PERCENT",
+                     help="share of open-group wasm chunks also run on a second helper to catch wrong results (0-100)")
     pol.set_defaults(fn=cmd_policy)
+    chk = sub.add_parser("checks", help="result checks: twins, tie-breaks and their outcome")
+    chk.add_argument("--limit", type=int, default=50)
+    chk.set_defaults(fn=cmd_checks)
     dev = sub.add_parser("devices", help="devices known to this requester, join requests and Verify numbers")
     dev.add_argument("action", nargs="?", default="list", choices=["list", "accept", "decline"])
     dev.add_argument("id", nargs="?")

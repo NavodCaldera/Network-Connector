@@ -27,3 +27,17 @@ def test_worker_stops_claiming_at_daily_limit(tmp_path):
     agent.usage.add("requester-a", 60)
     assert agent._can_claim() is False
     agent._event.assert_called_with("daily CPU limit reached")
+
+
+def test_requester_reputation_counts_killed_jobs(tmp_path):
+    from network_connector.helper_usage import OUTCOME_KIND, HelperUsage
+
+    usage = HelperUsage(tmp_path / "u.db")
+    for outcome in ("memory", "timeout", "stdout_cap", "trap"):
+        kind = OUTCOME_KIND.get(outcome)
+        if kind:
+            usage.note("r1", kind)
+    usage.note("r1", "made-up")
+    usage.note("", "limit")
+    assert usage.reputation("r1") == {"limit": 2, "oversized": 1}
+    assert usage.reputation("r2") == {}

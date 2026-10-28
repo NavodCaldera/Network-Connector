@@ -377,7 +377,7 @@ def requester_identity(admin: AdminClient) -> dict[str, Any]:
 
 
 def join_policy(admin: AdminClient, **changes: Any) -> dict[str, Any]:
-    """Read the join policy, or change join_policy / announce / announce_label."""
+    """Read the join policy, or change join_policy / announce / announce_label / redundancy_percent."""
     changes = {k: v for k, v in changes.items() if v is not None}
     return admin._call("PUT", "/admin/policy", json=changes) if changes else admin._call("GET", "/admin/policy")
 

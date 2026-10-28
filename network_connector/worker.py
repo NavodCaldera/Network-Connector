@@ -24,7 +24,7 @@ from . import __version__, jobs, modules, sandbox
 from .client import ControllerError, controller_url, fetch_module, pinned_context, probe, raise_for_error
 from .config import WorkerConfig, load_config, save_config
 from .helper_policy import limit_reason
-from .helper_usage import HelperUsage
+from .helper_usage import OUTCOME_KIND, HelperUsage
 from .security import constant_time_equal, fingerprint_pem_file
 from .sysinfo import hardware_info, live_metrics, prime_cpu_counter
 from .winlimits import limit_memory, release, peak_memory_mb
@@ -186,6 +186,7 @@ class WorkerAgent:
             "requester_id": (self.cfg.requester_device_id or self.cfg.controller_fingerprint)[:8],
             "cpu_minutes_today": round(self._used_today() / 60, 1),
             "daily_cpu_min": self.cfg.daily_cpu_min,
+            "requester_reputation": self.usage.reputation(self._requester_key()),
             "policy_reason": self._policy_note,
         }
 
@@ -625,6 +626,9 @@ class WorkerAgent:
         if r is not None:
             body |= {"cpu_seconds": min(r.cpu_seconds, 86400), "peak_mem_mb": r.peak_mem_mb or None}
             self.usage.add(self._requester_key(), max(0, r.cpu_seconds))
+            kind = "escape" if r.escape_signal else OUTCOME_KIND.get(r.outcome)
+            if kind:
+                self.usage.note(self._requester_key(), kind)
             if r.escape_signal:
                 self._event(f"job {rj.id} tried to start a process from inside the sandbox; it was blocked and killed")
         body["duration"] = round(elapsed, 3)

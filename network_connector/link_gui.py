@@ -270,20 +270,25 @@ class ControllerJoinControls:
         ttk.Checkbutton(box, text="Announce to nearby computers", variable=self.announce_var).grid(row=0, column=1, padx=10)
         ttk.Label(box, text="Label").grid(row=0, column=2)
         ttk.Entry(box, textvariable=self.announce_label_var, width=24).grid(row=0, column=3, padx=4)
+        self.redundancy_var = tk.IntVar(value=getattr(self.cfg, "redundancy_percent", 10))
+        ttk.Label(box, text="Double-check").grid(row=0, column=5, padx=(10, 2))
+        ttk.Spinbox(box, from_=0, to=100, textvariable=self.redundancy_var, width=5).grid(row=0, column=6)
+        ttk.Label(box, text="% of results").grid(row=0, column=7, padx=(2, 0))
         ttk.Button(box, text="Save", command=self._policy_save).grid(row=0, column=4, padx=4)
         ttk.Label(box, text="Anyone nearby: helpers join in one click. Everyone on this network can see the name and label "
                   "you announce, and joined helpers see the inputs of the jobs they run, so don't send private data to "
-                  "helpers you don't trust. 'Require pairing code' keeps the Part 1 closed group.",
-                  wraplength=950, foreground="#555").grid(row=1, column=0, columnspan=5, sticky="w", pady=(6, 0))
+                  "helpers you don't trust. 'Require pairing code' keeps the Part 1 closed group. Double-checked results "
+                  "also run on a second helper; a helper caught returning wrong results loses score and is dropped.",
+                  wraplength=950, foreground="#555").grid(row=1, column=0, columnspan=8, sticky="w", pady=(6, 0))
         self.policy_status = ttk.Label(box, text="")
-        self.policy_status.grid(row=2, column=0, columnspan=5, sticky="w")
+        self.policy_status.grid(row=2, column=0, columnspan=8, sticky="w")
         from .gui_common import make_tree
 
         ttk.Label(tab, text="Waiting to join, and Verify numbers", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(6, 2))
         self.requests_tree = make_tree(tab, [("What", 140), ("Name", 200), ("ID", 110), ("Number", 120)], height=3)
         ttk.Label(tab, text="Devices", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(6, 2))
         self.devices_tree = make_tree(tab, [("Name", 200), ("ID", 110), ("Trusted", 70), ("Blocked", 70),
-                                            ("Workers", 260), ("Last seen", 140)], height=8)
+                                            ("Score", 60), ("Workers", 220), ("Last seen", 140)], height=8)
         buttons = ttk.Frame(tab)
         buttons.pack(fill="x", pady=4)
         for label, action in (("Accept", "accept"), ("Decline", "decline"), ("Trust", "trust"), ("Untrust", "untrust"),
@@ -309,13 +314,20 @@ class ControllerJoinControls:
             return
         policy = next(k for k, v in POLICY_LABELS.items() if v == self.policy_var.get())
         announce, label = self.announce_var.get(), self.announce_label_var.get().strip()[:60]
-        self.bg.run(lambda: join_policy(admin, join_policy=policy, announce=announce, announce_label=label),
+        try:
+            redundancy = max(0, min(100, int(self.redundancy_var.get())))
+        except (tk.TclError, ValueError):
+            messagebox.showerror("Join policy", "Double-check must be a whole percent from 0 to 100.")
+            return
+        self.bg.run(lambda: join_policy(admin, join_policy=policy, announce=announce, announce_label=label,
+                                        redundancy_percent=redundancy),
                     self._policy_render, lambda e: messagebox.showerror("Join policy", str(e)))
 
     def _policy_render(self, data: dict[str, Any]) -> None:
         self.policy_status.config(text=f"Now: {POLICY_LABELS.get(data['join_policy'], data['join_policy'])}, "
                                   f"{'announcing' if data.get('announcing') else 'not announcing'}"
-                                  f"{', closing' if data.get('closing') else ''}.")
+                                  f"{', closing' if data.get('closing') else ''}; "
+                                  f"{data.get('redundancy_percent', 0)} % of open-group results are double-checked.")
 
     def _device_action(self, action: str) -> None:
         from .client import device_action
@@ -365,7 +377,7 @@ class ControllerJoinControls:
         fill_tree(self.requests_tree, rows)
         fill_tree(self.devices_tree, [(d["device_id"], [
             d["name"] or "(not seen yet)", d["short_id"], "yes" if d["trusted"] else "", "yes" if d["blocked"] else "",
-            ", ".join(d["workers"]), time.strftime("%Y-%m-%d %H:%M", time.localtime(d["last_seen"])) if d["last_seen"] else ""])
+            f"{d.get('score', 0):g}", ", ".join(d["workers"]), time.strftime("%Y-%m-%d %H:%M", time.localtime(d["last_seen"])) if d["last_seen"] else ""])
             for d in devices["devices"]])
 
 

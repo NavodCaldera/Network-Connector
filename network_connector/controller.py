@@ -171,6 +171,7 @@ class PolicyUpdate(BaseModel):
     join_policy: Literal["anyone", "trusted", "ask", "code"] | None = None
     announce: bool | None = None
     announce_label: str | None = Field(default=None, max_length=60)
+    redundancy_percent: int | None = Field(default=None, ge=0, le=100)
 
 
 class CloseRequest(BaseModel):
@@ -186,6 +187,7 @@ class SubmitRequest(BaseModel):
     timeout_s: int | None = Field(default=None, ge=1, le=86_400)
     max_attempts: int | None = Field(default=None, ge=1, le=5)
     target: str | None = Field(default=None, pattern=NAME_PATTERN)
+    verifier_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class BatchItem(BaseModel):
@@ -200,6 +202,7 @@ class BatchSubmitRequest(BaseModel):
     timeout_s: int | None = Field(default=None, ge=1, le=86_400)
     max_attempts: int | None = Field(default=None, ge=1, le=5)
     target: str | None = Field(default=None, pattern=NAME_PATTERN)
+    verifier_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 # ------------------------------------------------------------------ pairing
@@ -377,6 +380,7 @@ def create_app(state: ControllerState) -> FastAPI:
     app = FastAPI(title="Network Connector Controller", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
     store, cfg = state.store, state.cfg
     state.benchmarks = BenchmarkRunner(store, cfg.worker_offline_after_s)
+    store.redundancy_percent, store.block_score = cfg.redundancy_percent, cfg.block_score
 
     @app.exception_handler(ApiError)
     async def _api_error(_: Request, exc: ApiError) -> JSONResponse:
@@ -702,6 +706,19 @@ def create_app(state: ControllerState) -> FastAPI:
     def admin_modules() -> dict[str, Any]:
         return {"modules": store.list_modules()}
 
+    def _check_verifier(sha: str | None, kinds: set[str]) -> None:
+        if not sha:
+            return
+        if kinds != {jobs.WASM}:
+            raise ApiError(422, "invalid_verifier", "A verifier checks wasm results only; every job must be wasm.")
+        if not store.module_exists(sha):
+            raise ApiError(422, "unknown_module", "Upload the verifier module first (POST /admin/modules).")
+        from . import sandbox
+
+        ok, reason = sandbox.available()
+        if not ok:
+            raise ApiError(422, "verifier_unavailable", f"The verifier runs in this computer's sandbox: {reason}")
+
     def _defaults(timeout_s: int | None, max_attempts: int | None) -> tuple[int, int]:
         return timeout_s or cfg.default_timeout_s, max_attempts or cfg.default_max_attempts
 
@@ -756,10 +773,11 @@ def create_app(state: ControllerState) -> FastAPI:
         except jobs.JobError as exc:
             raise ApiError(422, "invalid_job", str(exc)) from exc
         _check_job(req.kind, chunk_params[0])
+        _check_verifier(req.verifier_sha256, {req.kind})
         timeout_s, attempts = _defaults(req.timeout_s, req.max_attempts)
         bid, created = store.create_batch(
             req.kind, req.label, req.idempotency_key, [(req.kind, p) for p in chunk_params],
-            timeout_s, attempts, req.target)
+            timeout_s, attempts, req.target, verifier=req.verifier_sha256)
         return {"batch_id": bid, "created": created, "chunks": len(chunk_params)}
 
     @app.post("/admin/jobs/batch", dependencies=[Depends(require_admin)])
@@ -771,9 +789,10 @@ def create_app(state: ControllerState) -> FastAPI:
             items.append((item.kind, jobs.validate(item.kind, item.params)))
         timeout_s, attempts = _defaults(req.timeout_s, req.max_attempts)
         kinds = {k for k, _ in items}
+        _check_verifier(req.verifier_sha256, kinds)
         bid, created = store.create_batch(
             kinds.pop() if len(kinds) == 1 else "mixed", req.label, req.idempotency_key, items,
-            timeout_s, attempts, req.target)
+            timeout_s, attempts, req.target, verifier=req.verifier_sha256)
         return {"batch_id": bid, "created": created, "chunks": len(items)}
 
     @app.get("/admin/jobs", dependencies=[Depends(require_admin)])
@@ -832,7 +851,8 @@ def create_app(state: ControllerState) -> FastAPI:
         announcer = getattr(state.direct_runtime, "announcer", None)
         return {"join_policy": cfg.join_policy, "announce": cfg.announce, "announce_label": cfg.announce_label,
                 "closing": state.closing, "announcing": bool(announcer and announcer.running),
-                "group_mode": "closed" if cfg.join_policy == "code" else "open"}
+                "group_mode": "closed" if cfg.join_policy == "code" else "open",
+                "redundancy_percent": cfg.redundancy_percent}
 
     @app.get("/admin/policy", dependencies=[Depends(require_admin)])
     def admin_policy() -> dict[str, Any]:
@@ -843,6 +863,7 @@ def create_app(state: ControllerState) -> FastAPI:
         for key, value in req.model_dump(exclude_none=True).items():
             setattr(cfg, key, value)
         validate_join_settings(cfg)
+        store.redundancy_percent = cfg.redundancy_percent
         if state.save_cfg:
             state.save_cfg()
         if state.on_policy_change:
@@ -870,6 +891,14 @@ def create_app(state: ControllerState) -> FastAPI:
 
     def _workers_of(device_id: str) -> list[dict[str, Any]]:
         return [w for w in store.list_workers() if w["info"].get("device_id") == device_id]
+
+    @app.get("/admin/checks", dependencies=[Depends(require_admin)])
+    def admin_checks(limit: int = 200) -> dict[str, Any]:
+        rows = store.checks(min(max(limit, 1), 1000))
+        totals: dict[str, int] = defaultdict(int)
+        for r in rows:
+            totals[r["state"] or "unknown"] += 1
+        return {"checks": rows, "totals": dict(totals), "redundancy_percent": cfg.redundancy_percent}
 
     @app.get("/admin/devices", dependencies=[Depends(require_admin)])
     def admin_devices() -> dict[str, Any]:
@@ -969,6 +998,9 @@ class ControllerRuntime:
             log.warning("the controller certificate differs from the device identity; helpers see the controller certificate")
         self.announcer: Announcer | None = None
         self.store = Store(self.dir / "state.db")
+        from .verify import VerifierRunner
+
+        self.verifier = VerifierRunner(self.store)
         self.stop_event = threading.Event()
         self.state = ControllerState(
             cfg=self.cfg, store=self.store, fingerprint=self.fingerprint, admin_token=self.admin_token,
@@ -1099,6 +1131,7 @@ class ControllerRuntime:
         reaper = threading.Thread(target=self._reap, name="controller-reaper", daemon=True)
         self._threads.append(reaper)
         reaper.start()
+        self.verifier.start()
         self._refresh_direct_subnets()
         self.state.closing = False
         self._sync_announcer()
@@ -1215,6 +1248,7 @@ class ControllerRuntime:
         benchmarks = getattr(self.state, "benchmarks", None)
         if benchmarks:
             benchmarks.stop()
+        self.verifier.stop()
         try:
             self.direct_group.stop()
         except DirectLinkError:
