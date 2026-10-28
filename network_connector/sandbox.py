@@ -45,6 +45,7 @@ RUNTIME_OVERHEAD_MB = 160  # Python + wasmtime + compiled code, on top of the mo
 COMPILE_GRACE_S = 15.0  # time allowed for start-up and compiling before the module starts running
 MAPPINGS = r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppContainer\Mappings"
 _NAME_RE = re.compile(r"^nc-sandbox-(\d+)-[0-9a-f]{12}$", re.IGNORECASE)
+_SAFE_FOLDER_RE = re.compile(r"^nc-sandbox-[a-z0-9-]{1,48}$")  # only these are ever removed by name
 
 EXIT_KILLED = {"memory": 0xE0000009, "timeout": 0xE0000102, "stopped": 0xE0000100, "cancelled": 0xE0000101,
                "stdout_cap": 0xE0000103, "stderr_cap": 0xE0000104, "escape": 0xE0000105}
@@ -134,19 +135,29 @@ def setup_runtime(home: Path | None = None) -> Path:
                               capture_output=True, text=True, timeout=60, check=False)
         if proc.returncode != 0:
             raise SandboxUnavailable(f"Could not grant sandbox read access on {home}: {proc.stdout.strip() or proc.stderr.strip()}")
-    expected = _expected_manifest()
     try:
         current = json.loads((home / MANIFEST).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         current = {}
+    _copy_runtime(home, current, _expected_manifest())
+    available(refresh=True)
+    return home
+
+
+def _runtime_current(home: Path, manifest: dict[str, str], expected: dict[str, str]) -> bool:
+    runner = home / RUNNER_NAME
+    return (manifest == expected and runner.is_file() and (home / "site" / "wasmtime").is_dir()
+            and hashlib.sha256(runner.read_bytes()).hexdigest() == expected["runner_sha256"])
+
+
+def _copy_runtime(home: Path, current: dict[str, str], expected: dict[str, str]) -> None:
+    """Copy the runner and wasmtime into the (already granted) runtime folder."""
     site = home / "site"
     if current.get("wasmtime") != expected["wasmtime"] or not (site / "wasmtime").is_dir():
         shutil.rmtree(site / "wasmtime", ignore_errors=True)
         shutil.copytree(_wasmtime_package(), site / "wasmtime", ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copyfile(_runner_source(), home / RUNNER_NAME)
     (home / MANIFEST).write_text(json.dumps(expected), encoding="utf-8")
-    available(refresh=True)
-    return home
 
 
 def remove_runtime(home: Path | None = None) -> None:
@@ -413,10 +424,13 @@ def _check_available() -> tuple[bool, str]:
         manifest = json.loads((home / MANIFEST).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False, "The sandbox is not set up yet. Run:  nc sandbox setup"
-    if manifest != expected or not (home / RUNNER_NAME).is_file() or not (home / "site" / "wasmtime").is_dir():
-        return False, "The sandbox runtime is out of date. Run:  nc sandbox setup"
     if not has_grant(home, inherit=True):
         return False, f"The sandbox runtime folder {home} lacks its read grant. Run:  nc sandbox setup"
+    if not _runtime_current(home, manifest, expected):
+        try:  # after an update: refresh our own files; the existing grant is reused, nothing new is granted
+            _copy_runtime(home, manifest, expected)
+        except OSError as exc:
+            return False, f"The sandbox runtime is out of date and could not be refreshed ({exc}). Run:  nc sandbox setup"
     name = _new_name()
     try:
         psid = _create_profile(name)
@@ -854,8 +868,8 @@ def sweep() -> int:
             continue
         _delete_profile(name)
         folder = packages / name
-        if folder.exists():
-            shutil.rmtree(folder, ignore_errors=True)
+        if _SAFE_FOLDER_RE.match(name) and folder.exists():
+            shutil.rmtree(folder, ignore_errors=True)  # Python >= 3.8 removes junctions without following them
         removed += 1
     if removed:
         log.info("sandbox sweep removed %d leftover profile(s)", removed)

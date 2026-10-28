@@ -54,6 +54,36 @@ def alloc(mb: int) -> str:
     return f"allocated {got} MB"
 
 
+def junction(link: str, target: str) -> str:
+    """Make `link` a mount point to `target` with FSCTL_SET_REPARSE_POINT. Needs no access to the target."""
+    import struct
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+                                wintypes.DWORD, wintypes.HANDLE]
+    k32.DeviceIoControl.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p,
+                                    wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    os.mkdir(link)
+    handle = k32.CreateFileW(link, 0x40000000, 0, None, 3, 0x02000000 | 0x00200000, None)  # GENERIC_WRITE, backup|reparse
+    if handle in (None, wintypes.HANDLE(-1).value):
+        raise OSError(f"open own folder: {ctypes.WinError(ctypes.get_last_error())}")
+    try:
+        sub = ("\\??\\" + target).encode("utf-16-le")
+        printable = target.encode("utf-16-le")
+        path = sub + b"\0\0" + printable + b"\0\0"
+        body = struct.pack("<HHHH", 0, len(sub), len(sub) + 2, len(printable)) + path
+        data = struct.pack("<IHH", 0xA0000003, len(body), 0) + body  # IO_REPARSE_TAG_MOUNT_POINT
+        buf = ctypes.create_string_buffer(data)
+        done = wintypes.DWORD()
+        if not k32.DeviceIoControl(handle, 0x000900A4, buf, len(data), None, 0, ctypes.byref(done), None):
+            raise OSError(f"set mount point: {ctypes.WinError(ctypes.get_last_error())}")
+    finally:
+        k32.CloseHandle(handle)
+    return f"made; listing through it: {attempt(lambda: len(os.listdir(link)))}"
+
+
 def token() -> dict:
     adv = ctypes.WinDLL("advapi32", use_last_error=True)
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -89,6 +119,8 @@ def main(argv: list[str]) -> int:
         elif op == "--child":
             out["child"] = attempt(lambda: subprocess.run([sys.executable, "-c", "pass"], timeout=10).returncode)
             out["child cmd"] = attempt(lambda: subprocess.run(["cmd.exe", "/c", "exit 0"], timeout=10).returncode)
+        elif op == "--junction":  # a trap for the helper's cleanup: own-folder link to a folder outside
+            out["junction"] = attempt(lambda: junction(os.path.abspath("trap-junction"), arg))
         elif op == "--alloc-mb":
             out["alloc"] = attempt(lambda: alloc(int(arg)))
     sys.stdout.write("PROBE " + json.dumps(out) + "\n")

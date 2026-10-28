@@ -221,6 +221,25 @@ def test_escaped_code_cannot_read_user_files_or_write_outside(box, tmp_path):
     assert probe["write own-folder.tmp"].startswith("OK")  # its own AppContainer folder, deleted afterwards
 
 
+def test_cleanup_does_not_follow_a_junction_planted_by_escaped_code(box, tmp_path):
+    keep = tmp_path / "keep"
+    keep.mkdir()
+    (keep / "precious.txt").write_text("must survive", encoding="utf-8")
+    r, probe = _probe("--junction", str(keep))
+    assert probe, r.detail
+    # Whether or not the junction could be made, deleting the sandbox must leave the target alone.
+    assert (keep / "precious.txt").read_text(encoding="utf-8") == "must survive"
+    assert r.profile.lower() not in sandbox.leftovers()
+
+
+def test_runtime_refreshes_itself_after_an_update(sandbox_runtime):
+    runner = sandbox_runtime / sandbox.RUNNER_NAME
+    good = runner.read_bytes()
+    runner.write_bytes(good + b"\n# stale copy from an older version\n")
+    assert sandbox.available(refresh=True) == (True, "")
+    assert runner.read_bytes() == good
+
+
 def test_escaped_code_cannot_start_a_child_process(box):
     r, probe = _probe("--child", "1")
     # Either the child-process policy refused it inside the probe, or the job's limit message got it killed.
