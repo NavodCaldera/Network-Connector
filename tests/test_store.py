@@ -1,8 +1,10 @@
+import sqlite3
 import time
 
 import pytest
 
-from network_connector.store import Store
+from network_connector import store as store_mod
+from network_connector.store import LATEST_SCHEMA, MIGRATIONS, SCHEMA, Store
 
 
 @pytest.fixture
@@ -130,3 +132,85 @@ def test_state_survives_reopen(tmp_path):
     s2 = Store(tmp_path / "x.db")
     assert s2.summary()["queued"] == 3
     s2.close()
+
+
+# ------------------------------------------------------------ migrations (0.3.0)
+def _meta(s, key):
+    rows = s._q("select value from meta where key=?", (key,))
+    return rows[0][0] if rows else None
+
+
+def test_migration_steps_are_numbered():
+    assert 1 in MIGRATIONS and 3 in MIGRATIONS  # step 2 (devices) belongs to the Link agent
+    assert LATEST_SCHEMA == max(MIGRATIONS)
+
+
+def test_0_1_0_database_upgrades_to_latest_and_keeps_rows(tmp_path):
+    path = tmp_path / "state.db"
+    with sqlite3.connect(path) as conn:
+        conn.executescript(SCHEMA)
+        conn.execute("insert into workers(id,name,token_hash,created) values('old','old-worker','hash',1)")
+    s = Store(path)
+    assert s.get_worker("old")["name"] == "old-worker"
+    assert _meta(s, "schema_version") == str(LATEST_SCHEMA)
+    assert _meta(s, "applied_steps") == ",".join(map(str, sorted(MIGRATIONS)))
+    assert s.list_modules() == []
+    assert path.with_name("state.db.bak-0.1.0").is_file()
+    s.close()
+
+
+def test_version_1_database_backs_up_once_and_gets_step_3(tmp_path):
+    path = tmp_path / "state.db"
+    s = Store(path)
+    with s._tx() as c:  # turn it back into a 0.2.0 (version 1) database
+        c.execute("drop table modules")
+        c.execute("delete from meta where key='applied_steps'")
+        c.execute("update meta set value='1' where key='schema_version'")
+    s.close()
+    s = Store(path)
+    assert s.add_module("ab" * 32, b"\0asm", "x")
+    assert _meta(s, "schema_version") == str(LATEST_SCHEMA)
+    s.close()
+    backup = path.with_name("state.db.bak-v1")
+    assert backup.is_file()
+    with sqlite3.connect(backup) as conn:
+        assert conn.execute("select value from meta where key='schema_version'").fetchone()[0] == "1"
+    stamp = backup.stat().st_mtime_ns
+    Store(path).close()  # nothing missing: no new backup, no error
+    assert backup.stat().st_mtime_ns == stamp
+
+
+def test_gap_filled_later_still_runs(tmp_path, monkeypatch):
+    """A database already at step 3 must still get step 2 when that step is merged in later."""
+    path = tmp_path / "state.db"
+    Store(path).close()
+    ran = []
+    monkeypatch.setitem(store_mod.MIGRATIONS, 2, lambda c: ran.append(2))
+    s = Store(path)
+    assert ran == [2]
+    assert _meta(s, "applied_steps") == ",".join(map(str, sorted(store_mod.MIGRATIONS)))
+    s.close()
+    Store(path).close()
+    assert ran == [2]  # applied once only
+
+
+def test_claim_kind_filter(store):
+    store.create_batch("mixed", None, None, [("number_batch", {"start": 1, "count": 3}), ("wasm", {"module_sha256": "ab" * 32})],
+                       60, 1, None)
+    w = _worker(store)
+    assert store.claim(w, 5, 60, kinds=["prime_range"]) == []
+    got = store.claim(w, 5, 60, kinds=["wasm"])
+    assert [j["kind"] for j in got] == ["wasm"]
+    assert store.worker_may_fetch_module(w["id"], "ab" * 32)
+    assert not store.worker_may_fetch_module(w["id"], "cd" * 32)
+    assert not store.worker_may_fetch_module("someone-else", "ab" * 32)
+    assert [j["kind"] for j in store.claim(w, 5, 60)] == ["number_batch"]
+
+
+def test_modules_are_stored_once(store):
+    assert store.add_module("ab" * 32, b"\0asm\1\0\0\0", "first")
+    assert not store.add_module("ab" * 32, b"\0asm\1\0\0\0", "again")
+    assert store.module_data("ab" * 32) == b"\0asm\1\0\0\0"
+    assert store.module_data("cd" * 32) is None
+    assert [m["label"] for m in store.list_modules()] == ["first"]
+    assert "data" not in store.list_modules()[0]

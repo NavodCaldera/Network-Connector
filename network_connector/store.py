@@ -13,7 +13,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 SCHEMA = """
 create table if not exists workers(
@@ -38,6 +38,35 @@ create table if not exists attempts(
 TERMINAL = ("succeeded", "failed", "cancelled")
 
 
+# ------------------------------------------------------------ schema migrations
+def _m1_measurement(c: sqlite3.Connection) -> None:
+    """0.2.0: per-job metrics, persisted samples and benchmarks."""
+    for table, columns in {
+        "jobs": {"cpu_seconds": "real", "peak_mem_mb": "real", "queue_wait_s": "real", "link": "text", "eligible_workers": "text"},
+        "attempts": {"duration": "real", "cpu_seconds": "real", "peak_mem_mb": "real"},
+    }.items():
+        existing = {r[1] for r in c.execute(f"pragma table_info({table})")}
+        for name, kind in columns.items():
+            if name not in existing:
+                c.execute(f"alter table {table} add column {name} {kind}")
+    c.execute("create table if not exists worker_samples(worker_id text, ts real, cpu_percent real, mem_percent real, running_jobs integer, rtt_ms real)")
+    c.execute("create index if not exists samples_worker_ts on worker_samples(worker_id,ts)")
+    c.execute("create table if not exists benchmarks(id text primary key, created real, label text, spec text, status text, result text, error text, idem_key text unique)")
+    c.execute("create table if not exists benchmark_runs(benchmark_id text, scenario text, repeat integer, batch_id text, started real, finished real, wall_s real, settings text, per_worker text, answer text, valid integer)")
+
+
+def _m3_sandbox(c: sqlite3.Connection) -> None:
+    """0.3.0: Wasm modules (bytes kept in the database), result checks and helper usage."""
+    c.execute("create table if not exists modules(sha256 text primary key, size integer not null, uploaded real not null, label text, data blob not null)")
+    c.execute("create table if not exists job_checks(job_id text primary key, twin_job_id text not null, match integer)")
+    c.execute("create table if not exists helper_usage(requester_id text not null, day text not null, cpu_seconds real not null default 0, primary key(requester_id, day))")
+
+
+# Step 2 belongs to the Link agent (devices). Steps run in sorted order; gaps are allowed.
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _m1_measurement, 3: _m3_sandbox}
+LATEST_SCHEMA = max(MIGRATIONS)
+
+
 class Store:
     def __init__(self, path: str | Path) -> None:
         existed = Path(path).is_file()
@@ -53,30 +82,30 @@ class Store:
         self.prune_samples()
 
     def _migrate(self, path: Path, existed: bool) -> None:
+        """Apply every numbered step not applied yet, in order, each in its own transaction.
+
+        Steps are idempotent. `applied_steps` records exactly which ran, so a step number added
+        later below the current maximum (a gap filled by a parallel branch) still runs.
+        """
         self._conn.execute("create table if not exists meta(key text primary key, value text not null)")
         row = self._conn.execute("select value from meta where key='schema_version'").fetchone()
         version = int(row[0]) if row else 0
-        if version >= 1:
+        row = self._conn.execute("select value from meta where key='applied_steps'").fetchone()
+        applied = {int(s) for s in row[0].split(",") if s} if row else set(range(1, version + 1))
+        missing = [step for step in sorted(MIGRATIONS) if step not in applied]
+        if not missing:
             return
         if existed:
-            backup = path.with_name(path.name + ".bak-0.1.0")
+            backup = path.with_name(path.name + (".bak-0.1.0" if version == 0 else f".bak-v{version}"))
             if not backup.exists():
                 with sqlite3.connect(str(backup)) as dest:
                     self._conn.backup(dest)
-        with self._tx() as c:
-            for table, columns in {
-                "jobs": {"cpu_seconds": "real", "peak_mem_mb": "real", "queue_wait_s": "real", "link": "text", "eligible_workers": "text"},
-                "attempts": {"duration": "real", "cpu_seconds": "real", "peak_mem_mb": "real"},
-            }.items():
-                existing = {r[1] for r in c.execute(f"pragma table_info({table})")}
-                for name, kind in columns.items():
-                    if name not in existing:
-                        c.execute(f"alter table {table} add column {name} {kind}")
-            c.execute("create table if not exists worker_samples(worker_id text, ts real, cpu_percent real, mem_percent real, running_jobs integer, rtt_ms real)")
-            c.execute("create index if not exists samples_worker_ts on worker_samples(worker_id,ts)")
-            c.execute("create table if not exists benchmarks(id text primary key, created real, label text, spec text, status text, result text, error text, idem_key text unique)")
-            c.execute("create table if not exists benchmark_runs(benchmark_id text, scenario text, repeat integer, batch_id text, started real, finished real, wall_s real, settings text, per_worker text, answer text, valid integer)")
-            c.execute("insert or replace into meta values('schema_version','1')")
+        for step in missing:
+            with self._tx() as c:
+                MIGRATIONS[step](c)
+                applied.add(step)
+                c.execute("insert or replace into meta values('schema_version',?)", (str(max(applied)),))
+                c.execute("insert or replace into meta values('applied_steps',?)", (",".join(map(str, sorted(applied))),))
 
     def prune_samples(self) -> None:
         now = time.time()
@@ -205,7 +234,8 @@ class Store:
             return bid, True
 
     # ------------------------------------------------------------ worker protocol
-    def claim(self, worker: dict[str, Any], limit: int, lease_s: int) -> list[dict[str, Any]]:
+    def claim(self, worker: dict[str, Any], limit: int, lease_s: int, kinds: list[str] | None = None) -> list[dict[str, Any]]:
+        """Hand out queued jobs. `kinds`, when given, limits the job kinds this worker may receive."""
         now = time.time()
         with self._tx() as c:
             saved_worker = c.execute("select metrics from workers where id=?", (worker["id"],)).fetchone()
@@ -215,8 +245,9 @@ class Store:
             rows = c.execute(
                 "select id from jobs where status='queued' and (target is null or target=?)"
                 " and (eligible_workers is null or exists(select 1 from json_each(eligible_workers) where value=?))"
+                " and (? is null or kind in (select value from json_each(?)))"
                 " order by created, idx limit ?",
-                (worker["name"], worker["name"], limit),
+                (worker["name"], worker["name"], None if kinds is None else 1, json.dumps(list(kinds or [])), limit),
             ).fetchall()
             claimed = []
             for r in rows:
@@ -504,3 +535,28 @@ class Store:
     def latest_participant_benchmark(self, worker_name: str) -> dict[str, Any] | None:
         rows = self._q("select b.id from benchmarks b where b.status='finished' and exists(select 1 from benchmark_runs r, json_each(r.per_worker) w where r.benchmark_id=b.id and w.key=? and json_extract(w.value,'$.chunks')>0) order by b.created desc limit 1", (worker_name,))
         return self.benchmark(rows[0]["id"]) if rows else None
+
+    # ------------------------------------------------------------ wasm modules
+    def add_module(self, sha256: str, data: bytes, label: str | None) -> bool:
+        """Store a module by its hash. Returns False when it was already stored."""
+        with self._tx() as c:
+            if c.execute("select 1 from modules where sha256=?", (sha256,)).fetchone():
+                return False
+            c.execute("insert into modules(sha256,size,uploaded,label,data) values(?,?,?,?,?)", (sha256, len(data), time.time(), label, data))
+            return True
+
+    def module_exists(self, sha256: str) -> bool:
+        return bool(self._q("select 1 from modules where sha256=?", (sha256,)))
+
+    def module_data(self, sha256: str) -> bytes | None:
+        rows = self._q("select data from modules where sha256=?", (sha256,))
+        return bytes(rows[0]["data"]) if rows else None
+
+    def list_modules(self) -> list[dict[str, Any]]:
+        return [dict(r) for r in self._q("select sha256, size, uploaded, label from modules order by uploaded desc")]
+
+    def worker_may_fetch_module(self, worker_id: str, sha256: str) -> bool:
+        """A worker may download a module only while it runs a wasm job that uses it."""
+        return bool(self._q(
+            "select 1 from jobs where worker_id=? and status='running' and kind='wasm'"
+            " and json_extract(params,'$.module_sha256')=? limit 1", (worker_id, sha256)))
