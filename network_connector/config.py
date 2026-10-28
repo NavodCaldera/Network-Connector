@@ -36,6 +36,10 @@ class ControllerConfig:
     announce: bool = True  # signed nearby announcements while the group is open
     announce_label: str = ""  # optional text shown to nearby helpers (everyone nearby can read it)
     discovery_port: int = 8766
+    # Result checks (PLAN §18): share of open-group wasm chunks also run on a second helper, and the
+    # reliability score at which a helper device is dropped and blocked for this requester.
+    redundancy_percent: int = 10
+    block_score: float = -10.0
 
 
 @dataclass
@@ -68,6 +72,9 @@ class WorkerConfig:
     allowed_hours: str = ""  # empty = any time; otherwise HH:MM-HH:MM in local time
     daily_cpu_min: int = 120  # per requester
     blocked_requesters: list[str] = field(default_factory=list)
+    cpu_rate_percent: int = 0  # 0 = no cap; otherwise jobs together may use at most this % of the whole CPU
+    limit_stop_now: bool = False
+    share_speed_score: bool = False  # tell requesters this PC's measured speed (PLAN §19); off unless the owner allows  # when a limit is hit: False = let the running chunk finish, True = stop it at once
 
 
 T = TypeVar("T")
@@ -135,6 +142,10 @@ def validate_join_settings(cfg: ControllerConfig) -> None:
     if not isinstance(cfg.discovery_port, int) or not 1024 <= cfg.discovery_port <= 65535 or cfg.discovery_port == cfg.port:
         raise ConfigError("discovery_port must be a free UDP port between 1024 and 65535, different from the TCP port.")
     cfg.announce_label = "".join(ch for ch in str(cfg.announce_label) if ch.isprintable())[:60]
+    if isinstance(cfg.redundancy_percent, bool) or not isinstance(cfg.redundancy_percent, int) or not 0 <= cfg.redundancy_percent <= 100:
+        raise ConfigError("redundancy_percent must be a whole number from 0 to 100.")
+    if isinstance(cfg.block_score, bool) or not isinstance(cfg.block_score, (int, float)) or not -1000 <= cfg.block_score <= -1:
+        raise ConfigError("block_score must be a number from -1000 to -1.")
 
 
 def save_config(cfg: Any, path: Path) -> None:

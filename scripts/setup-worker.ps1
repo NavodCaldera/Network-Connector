@@ -13,16 +13,24 @@
   No administrator rights are needed. Nothing outside %LOCALAPPDATA%\NetworkConnector is
   changed, except an optional desktop shortcut that you are asked about.
 
+  -App (0.3.0, any role): installs the one app with its tray and message extras instead, skips
+  pairing (helpers join nearby requesters with one click), offers to set up the Wasm sandbox
+  (no admin) and opens the app, where you choose Give performance, Ask for performance or Both.
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File .\setup-worker.ps1 -RepoUrl https://github.com/NavodCaldera/Network-Connector.git
+.EXAMPLE
+  powershell -ExecutionPolicy Bypass -File .\setup-worker.ps1 -App
 #>
 param(
     [string]$RepoUrl = "",
     [string]$InstallDir = "$env:LOCALAPPDATA\NetworkConnector\app",
     [string]$ControllerAddress = "",
     [string]$WorkerName = "",
-    [switch]$SkipPairing
+    [switch]$SkipPairing,
+    [switch]$App
 )
+if ($App) { $SkipPairing = $true }
 $ErrorActionPreference = "Stop"
 
 # Edit this line before publishing so people do not have to type the URL:
@@ -118,7 +126,8 @@ if (-not (Test-Path $venvPy)) {
     if ($LASTEXITCODE -ne 0) { throw "Could not create the virtual environment." }
 }
 Say "Installing dependencies (this can take a minute) ..."
-& $venvPy -m pip install --quiet --disable-pip-version-check -e $InstallDir
+$target = if ($App) { "$InstallDir[app]" } else { $InstallDir }
+& $venvPy -m pip install --quiet --disable-pip-version-check -e $target
 if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed. See docs\TROUBLESHOOTING.md." }
 & $venvPy -m network_connector selftest
 if ($LASTEXITCODE -ne 0) { throw "Self-test failed." }
@@ -136,6 +145,27 @@ if (-not $SkipPairing) {
     }
     & $nc worker pair --controller $ControllerAddress --code $code --name $WorkerName
     if ($LASTEXITCODE -ne 0) { throw "Pairing failed. See docs\TROUBLESHOOTING.md (firewall, address, expired code)." }
+}
+
+# ---------------------------------------------------------------- The one app (any role)
+if ($App) {
+    if (Ask-YesNo "Set up the Wasm sandbox now? Needed to help others; no administrator rights") {
+        & $nc sandbox setup
+        if ($LASTEXITCODE -ne 0) { Say "Sandbox setup did not finish; the app offers it again when you choose Give performance." "Yellow" }
+    }
+    if (Ask-YesNo "Create a desktop shortcut for Network Connector?") {
+        $shell = New-Object -ComObject WScript.Shell
+        $lnk = $shell.CreateShortcut([Environment]::GetFolderPath("Desktop") + "\Network Connector.lnk")
+        $lnk.TargetPath = "$InstallDir\.venv\Scripts\pythonw.exe"
+        $lnk.Arguments = "-m network_connector.app"
+        $lnk.WorkingDirectory = $InstallDir
+        $lnk.Save()
+        Say "Shortcut created."
+    }
+    Say "Installed version: $(& $nc version)" "Green"
+    Say "Opening Network Connector: choose Give performance, Ask for performance or Both." "Green"
+    Start-Process "$InstallDir\.venv\Scripts\pythonw.exe" -ArgumentList "-m", "network_connector.app"
+    return
 }
 
 # ---------------------------------------------------------------- Shortcut (optional)

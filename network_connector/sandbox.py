@@ -471,11 +471,12 @@ class Sandbox:
     def __init__(self, module: bytes, stdin: bytes | bytearray = b"", args: list[str] | None = None, *,
                  memory_mb: int = 256, seconds: float = 60, fuel: int | None = None,
                  clean_timeout: bool = False, command: list[str] | None = None,
-                 stdout_cap: int = STDOUT_CAP, stderr_cap: int = STDERR_CAP) -> None:
+                 stdout_cap: int = STDOUT_CAP, stderr_cap: int = STDERR_CAP, cpu_rate_percent: int = 0) -> None:
         self.module, self.stdin = module, bytearray(stdin)
         self.args, self.memory_mb, self.seconds, self.fuel = list(args or []), memory_mb, seconds, fuel
         self.clean_timeout, self.stdout_cap, self.stderr_cap = clean_timeout, stdout_cap, stderr_cap
         self.command = command  # tests only: a native program launched in the same container + job
+        self.cpu_rate_percent = cpu_rate_percent  # owner's CPU-rate cap (PLAN §17.2 layer 3); 0 = no cap
         self.name = _new_name()
         self.pid = 0
         self._lock = threading.Lock()
@@ -563,6 +564,10 @@ class Sandbox:
         ui = wintypes.DWORD(0xFF)  # JOB_OBJECT_UILIMIT_ALL: desktop, clipboard, global atoms, handles, exit windows
         if not _k32.SetInformationJobObject(job, 4, ctypes.byref(ui), 4):
             raise SandboxUnavailable("Job Object UI limits could not be set")
+        if self.cpu_rate_percent:
+            # The owner's limit is enforced here, not trusted to the requester: if it can't be set, refuse.
+            if not set_cpu_rate(job, self.cpu_rate_percent):
+                raise SandboxUnavailable("the CPU-rate limit could not be set on the Job Object")
         return job
 
     def _watch(self, port: int, stop: threading.Event) -> None:
@@ -785,6 +790,13 @@ class Sandbox:
             shutil.rmtree(folder, ignore_errors=True)
         if hr != 0 or folder.exists():
             log.warning("sandbox profile %s not fully removed (hr %#x); the start-up sweep will retry", self.name, hr & 0xFFFFFFFF)
+
+
+def set_cpu_rate(job: Any, percent: int) -> bool:
+    """Hard-cap a Job Object at `percent` of the whole machine's CPU (JobObjectCpuRateControlInformation)."""
+    from .winlimits import set_cpu_rate as cap
+
+    return cap(job, percent)
 
 
 def run(module: bytes, stdin: bytes = b"", args: list[str] | None = None, **limits: Any) -> SandboxResult:

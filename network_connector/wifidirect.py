@@ -513,3 +513,110 @@ class DirectGroup:
         if info.mode == "B" and not (iface and iface.is_owner):
             info.running, info.status = False, "Windows hotspot is no longer active"
         return info
+
+
+# ------------------------------------------------------------------ open groups without a router (PLAN §15.3)
+DIRECT_NC_RE = re.compile(r"^DIRECT-NC-[A-Z0-9]{4}$")
+# Not a secret: every copy of the app derives the same passphrase, so anyone with the app can join in one
+# click. The Wi-Fi password is not the security boundary (sandbox, signatures, TLS and result checks are).
+_APP_SALT = b"network-connector/open-direct-group/v1"
+SCAN_INTERVAL_S = 30.0
+
+
+def open_group_ssid(device_id: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{64}", device_id or ""):
+        raise DirectLinkError("A full device ID is required for an open direct group.")
+    return f"DIRECT-NC-{device_id[:4].upper()}"
+
+
+def derived_passphrase(ssid: str) -> str:
+    """PBKDF2(ssid, app salt): the same on every copy of the app, 24 URL-safe characters."""
+    import base64
+    import hashlib
+
+    if not DIRECT_NC_RE.fullmatch(ssid or ""):
+        raise DirectLinkError("Only DIRECT-NC-XXXX groups use the derived passphrase.")
+    raw = hashlib.pbkdf2_hmac("sha256", ssid.encode("ascii"), _APP_SALT, 100_000, dklen=18)
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def connected_wlan_ssids() -> list[str] | None:
+    """SSIDs this PC's Wi-Fi is connected to now (WinRT NetworkInformation, not localized netsh text).
+    None when it can't be told; callers then assume "connected" and never join by themselves."""
+    if sys.platform != "win32":
+        return None
+    try:
+        from winrt.windows.networking.connectivity import NetworkInformation
+
+        out = []
+        for profile in NetworkInformation.get_connection_profiles():
+            if profile.is_wlan_connection_profile:
+                ssid = profile.wlan_connection_profile_details.get_connected_ssid()
+                if ssid:
+                    out.append(str(ssid))
+        return out
+    except Exception:  # noqa: BLE001 - missing package or API error: unknown
+        return None
+
+
+def scan_direct_groups() -> list[str]:
+    """Visible DIRECT-NC-XXXX networks (WinRT WiFiAdapter scan). Empty when scanning is not possible."""
+    if sys.platform != "win32":
+        return []
+    import asyncio
+
+    async def work() -> list[str]:
+        from winrt.windows.devices.wifi import WiFiAccessStatus, WiFiAdapter
+
+        if await WiFiAdapter.request_access_async() != WiFiAccessStatus.ALLOWED:
+            raise DirectLinkError("Windows did not allow a Wi-Fi scan. Check location access in Privacy settings.")
+        found: set[str] = set()
+        for adapter in await WiFiAdapter.find_all_adapters_async():
+            await adapter.scan_async()
+            found.update(n.ssid for n in adapter.network_report.available_networks if DIRECT_NC_RE.fullmatch(n.ssid or ""))
+        return sorted(found)
+
+    try:
+        return asyncio.run(work())
+    except DirectLinkError:
+        raise
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def join_open_group(ssid: str) -> InterfaceInfo:
+    """One-click join of an open DIRECT-NC-XXXX group with the derived passphrase. leave(ssid) deletes the profile."""
+    return join(ssid, derived_passphrase(ssid))
+
+
+@dataclass
+class AutoJoin:
+    """When may a helper join a nearby DIRECT-NC group by itself? (Phase 6 report §2.)
+
+    - Only when it is on no Wi-Fi network at all: the i7's adapter supports no second station, so
+      joining would drop the owner's home Wi-Fi. Unknown connection state counts as connected.
+    - While on Wi-Fi it only *offers* the join: "Join (disconnects <SSID>)".
+    - Scans at most every 30 s.
+    """
+    interval_s: float = SCAN_INTERVAL_S
+    _last_scan: float = -1e9
+
+    def due(self, now: float) -> bool:
+        if now - self._last_scan < self.interval_s:
+            return False
+        self._last_scan = now
+        return True
+
+    @staticmethod
+    def decide(visible: list[str], connected: list[str] | None, own_ssid: str = "") -> tuple[str, str, str] | None:
+        """('join', ssid, '') / ('offer', ssid, current SSID) / None."""
+        groups = [s for s in visible if DIRECT_NC_RE.fullmatch(s) and s != own_ssid]
+        if not groups:
+            return None
+        if connected is None:
+            return ("offer", groups[0], "your current Wi-Fi")
+        if any(DIRECT_NC_RE.fullmatch(s) for s in connected):
+            return None  # already on a group
+        if connected:
+            return ("offer", groups[0], connected[0])
+        return ("join", groups[0], "")

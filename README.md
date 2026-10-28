@@ -11,6 +11,26 @@ The controller computer can run a worker too, so **every machine works at the sa
 > CPU and memory. A job that needs 20 GB of RAM in one piece will not fit on a 16 GB laptop.
 > See [What kind of work benefits](#what-kind-of-work-benefits).
 
+## New in 0.3.0: one app, one click, sandboxed
+
+- **Any PC can ask for or give performance.** One app (`network-connector`) with three buttons on first start:
+  **Give performance**, **Ask for performance**, **Both**. It lives in the tray and starts at login (you can turn
+  that off). See [docs/SETUP.md](docs/SETUP.md).
+- **No pairing codes.** Nearby requesters appear in a list like Wi-Fi networks; a helper joins with one click, or by
+  itself with a message and a **Stop** button, or after you click **Accept**. Trusted and blocked devices, signed
+  announcements, and Wi-Fi Direct groups without a router. See [docs/JOINING.md](docs/JOINING.md).
+- **Other people's code runs only in a sandbox:** WebAssembly in a fresh AppContainer + Job Object per job, with no
+  network and no access to your files, deleted afterwards. See [docs/SANDBOX.md](docs/SANDBOX.md).
+- **You stay in control:** only while plugged in, only when idle, hours, a CPU cap and a daily CPU limit per
+  requester, enforced on the helper; **Stop** ends everything within a second.
+- **Wrong results are caught:** a share of results is double-checked on a second helper, the majority wins, and
+  lying helpers lose score and are dropped. Optional verifier modules.
+- **Benchmarks for many helpers**, with a native vs Wasm sandbox column.
+
+**Honest limits:** no sandbox makes the risk zero (it is very low, and Stop is instant); job inputs are visible to the
+helpers that run them, so don't send private data to people you don't trust; escaped code could read world-readable
+Windows files, but not your files. Pairing codes and closed groups from 0.2.0 still work.
+
 ## Features
 
 - **Measured comparisons:** run identical fixed work on each computer and all together,
@@ -68,7 +88,8 @@ To add your own job type, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#adding
 
 | Step | Guide |
 |---|---|
-| 1. Set up the main computer (i7) | [docs/SETUP_I7.md](docs/SETUP_I7.md) |
+| **0.3.0: install on any PC, choose a role, join with one click** | [docs/SETUP.md](docs/SETUP.md), [docs/JOINING.md](docs/JOINING.md) |
+| 1. Set up the main computer (i7) (closed group with pairing codes) | [docs/SETUP_I7.md](docs/SETUP_I7.md) |
 | 2. Set up the helper computer (i3) | [docs/SETUP_I3.md](docs/SETUP_I3.md) |
 | 3. Pair them | [docs/PAIRING.md](docs/PAIRING.md) |
 | 4. Submit your first job and run the demo | [docs/FIRST_JOB.md](docs/FIRST_JOB.md) |
@@ -79,7 +100,14 @@ To add your own job type, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#adding
 | Settings reference | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
 | Publishing this repo to GitHub | [docs/PUBLISHING.md](docs/PUBLISHING.md) |
 
-Shortest path, in PowerShell, on the i7 inside the cloned folder:
+Shortest path for 0.3.0, on any PC:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/NavodCaldera/Network-Connector/main/scripts/setup-worker.ps1 -OutFile setup-worker.ps1
+powershell -ExecutionPolicy Bypass -File .\setup-worker.ps1 -App
+```
+
+The Part 1 path with pairing codes, in PowerShell, on the i7 inside the cloned folder:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\setup-controller.ps1
@@ -127,6 +155,12 @@ network_connector/
   winlimits.py    Windows Job Object memory cap + low priority
   updater.py      release-tag updates with self-test and rollback
   gui.py          controller window        worker_gui.py  worker window
+  app.py          the one app: role buttons, tabs, tray, start at login
+  tray.py, notify.py, autostart.py, radio.py   tray icon, owner messages, login entry, Wi-Fi radio
+  identity.py, discovery.py   device identity, signed nearby announcements
+  helper_policy.py, helper_usage.py   owner limits and per-requester usage on the helper
+  verify.py       requester-side Wasm verifier; result checks live in store.py
+  benchmark.py    benchmarks (native and wasm_bench)
   cli.py          `nc` command line        demo.py        proof-of-work demo
 scripts/          setup-controller.ps1, setup-worker.ps1, add/remove-firewall-rule.ps1
 docs/             all guides        examples/   configuration examples
@@ -141,8 +175,9 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Requirements: Windows 10/11 (other OSes work, minus the Windows memory cap), and Python 3.10+.
-Dependencies: fastapi, uvicorn, httpx, psutil, pillow, cryptography.
+Requirements: Windows 10/11 (other OSes work for closed groups, minus the Windows limits and the sandbox), and
+Python 3.10+. Dependencies: fastapi, uvicorn, httpx, psutil, pillow, cryptography, wasmtime (pinned). Optional extras:
+`[app]` (pystray, LGPL-3.0, used unmodified; WinRT packages for messages, Wi-Fi and radio) and `[wifidirect]`.
 
 ## Assumptions
 

@@ -164,3 +164,16 @@ has a 30-second timeout. Install dependencies on both machines before going offl
 To start fresh on one computer, stop everything and rename `%LOCALAPPDATA%\NetworkConnector`
 (for example to `NetworkConnector.old`). On the i7 this creates a new certificate, so all workers must re-pair.
 Since 0.3.0 this also creates a new device identity (`identity\`), so requesters see a new device ID.
+
+## 0.3.0: the app, messages and checks
+
+| Symptom | What to do |
+|---|---|
+| No tray icon | Install the app extras: `pip install -e .[app]` (or rerun `setup-worker.ps1 -App`). Without pystray the app still works, without a tray |
+| No Windows notifications | Check Settings → System → Notifications → Network Connector. Messages then appear as tray balloons or in the app window. `nc app reset` removes the registration; the next start adds it again |
+| The helper never joins by itself | Joining by itself needs a working sandbox: `nc sandbox status --check`. Check *When a requester asks* and that the requester isn't Blocked |
+| "Not taking new work: …" under What is running | A helper limit applies: power, idle, hours or the daily CPU limit. Change it in section 2 and **Save limits**; it applies at once |
+| A job stays **checking** | It waits for a second helper to confirm it. With no other helper it is accepted after 10 minutes. `nc checks` shows the state |
+| A job failed with "results disagree" | Two helpers returned different output and no third helper could decide. Run it again; if it repeats, the module may print the time or random numbers |
+| "The certificate expires on …" | See [SECURITY.md](SECURITY.md#certificate-expiry). Plan the renewal; helpers must pair or join again afterwards |
+| Wasm benchmark refused: "can't run sandboxed wasm jobs" | Set up the sandbox on the named helpers (`nc sandbox setup`), or run the native engine only |

@@ -169,7 +169,8 @@ def cmd_job_submit(a: argparse.Namespace) -> int:
     client = _admin()
     params = _parse_params(a.param, a.params_json)
     opts = {k: v for k, v in {"label": a.label, "idempotency_key": a.key, "timeout_s": a.timeout,
-                              "max_attempts": a.retries, "target": a.target}.items() if v is not None}
+                              "max_attempts": a.retries, "target": a.target,
+                              "verifier_sha256": a.verifier}.items() if v is not None}
     if a.kind == "wasm":
         res = client.submit_batch(_wasm_items(client, a, params), **opts)
         print(f"batch {res['batch_id']}  ({res['chunks']} job(s), {'created' if res['created'] else 'already existed: duplicate ignored'})")
@@ -240,7 +241,8 @@ def cmd_bench(a: argparse.Namespace) -> int:
 
     client = _admin()
     if a.sub == "run":
-        spec = {"workload": a.workload, "size": a.size, "scenarios": a.scenarios.split(","), "repeats": a.repeats, "order": a.order, "label": a.label}
+        spec = {"workload": a.workload, "size": a.size, "scenarios": a.scenarios.split(","), "repeats": a.repeats, "order": a.order, "label": a.label,
+                "engines": a.engines.split(",")}
         if a.units is not None:
             spec["units"] = a.units
         ident = client.start_benchmark(spec)["id"]
@@ -261,7 +263,9 @@ def cmd_bench(a: argparse.Namespace) -> int:
         item = client.benchmark(a.id)
         print(f"Benchmark {a.id}: {item['status']}")
         rows = (item.get("result") or {}).get("scenarios", [])
-        _table([[r["scenario"], f"{r['wall_s']:.3f}", f"{r['min_s']:.3f}-{r['max_s']:.3f}", f"{r['units_per_s']:.3f}", r["speedup"]] for r in rows], ["SCENARIO", "WALL MEDIAN (s)", "RANGE (s)", "UNITS/S", "SPEEDUP"])
+        _table([[r["scenario"], f"{r['wall_s']:.3f}", f"{r['min_s']:.3f}-{r['max_s']:.3f}", f"{r['units_per_s']:.3f}", r["speedup"],
+                 f"{r['wasm_overhead']:.2f}x" if r.get("wasm_overhead") else ""] for r in rows],
+               ["SCENARIO", "WALL MEDIAN (s)", "RANGE (s)", "UNITS/S", "SPEEDUP", "WASM OVERHEAD"])
         print(json.dumps(item.get("result") or {"error": item.get("error")}, indent=2))
     elif a.sub == "export":
         content = export_benchmark(client.benchmark(a.id), a.format)
@@ -392,7 +396,13 @@ def cmd_identity(a: argparse.Namespace) -> int:
 
     ident = identity.set_name(a.name) if a.name else identity.current()
     print(f"Name:       {ident.name}\nShort ID:   {ident.short_id}\nDevice ID:  {ident.device_id}\n"
-          f"Folder:     {ident.cert_path.parent}")
+          f"Folder:     {ident.cert_path.parent}\nExpires:    {identity.cert_expires(ident.cert_path):%Y-%m-%d}")
+    from .paths import controller_dir
+
+    for label, path in (("Device certificate", ident.cert_path), ("Requester certificate", controller_dir() / "server.crt")):
+        warning = identity.expiry_warning(path) if path.is_file() else ""
+        if warning:
+            print(f"Warning ({label}): {warning}")
     return 0
 
 
@@ -455,7 +465,17 @@ def cmd_block(a: argparse.Namespace) -> int:
 
 
 def cmd_policy(a: argparse.Namespace) -> int:
-    print(json.dumps(join_policy(_admin(), join_policy=a.policy, announce=a.announce, announce_label=a.label), indent=2))
+    print(json.dumps(join_policy(_admin(), join_policy=a.policy, announce=a.announce, announce_label=a.label,
+                                 redundancy_percent=a.redundancy), indent=2))
+    return 0
+
+
+def cmd_checks(a: argparse.Namespace) -> int:
+    data = _admin()._call("GET", "/admin/checks", params={"limit": a.limit})
+    print(f"Redundancy: {data['redundancy_percent']} % of open-group wasm chunks are also run on a second helper.")
+    print("Totals: " + (", ".join(f"{k} {v}" for k, v in sorted(data["totals"].items())) or "no checks yet"))
+    _table([[c["job_id"], c["twin_job_id"], c.get("third_job_id") or "", c["state"] or "", c.get("detail") or ""]
+            for c in data["checks"]], ["JOB", "TWIN", "TIE-BREAK", "STATE", "DETAIL"])
     return 0
 
 
@@ -672,6 +692,39 @@ def cmd_worker_gui(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_app_open(args: argparse.Namespace) -> int:
+    from .app import main as run
+
+    run(["--background"] if args.background else [])
+    return 0
+
+
+def cmd_app_autostart(args: argparse.Namespace) -> int:
+    from . import autostart
+
+    if not autostart.supported():
+        print("Starting at login is supported only on Windows.")
+        return 1
+    if args.state != "status":
+        autostart.set_enabled(args.state == "on")
+    print(f"Start at login: {'on' if autostart.enabled() else 'off'}")
+    return 0
+
+
+def cmd_app_reset(_: argparse.Namespace) -> int:
+    """Undo what the app registered for this user: the login entry and the toast AppUserModelID."""
+    from . import autostart, notify
+
+    if autostart.supported():
+        autostart.set_enabled(False)
+    notify.unregister_aumid()
+    from .paths import data_home
+
+    (data_home() / "app.json").unlink(missing_ok=True)
+    print("Removed the login entry and the message registration. Your identity, pairings and settings are kept.")
+    return 0
+
+
 def _wasm_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--input", dest="inputs", action="append", metavar="FILE",
                    help="wasm: a file given to the module on stdin; repeat for one job per file")
@@ -691,6 +744,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("selftest", help="quick check that the install works").set_defaults(fn=cmd_selftest)
     sub.add_parser("gui", help="open the controller window (i7)").set_defaults(fn=cmd_gui)
     sub.add_parser("worker-gui", help="open the worker window (i3)").set_defaults(fn=cmd_worker_gui)
+
+    ap = sub.add_parser("app", help="the one app: open it, start at login, reset").add_subparsers(dest="sub", required=True)
+    ao = ap.add_parser("open", help="open the app (role buttons, tray icon)")
+    ao.add_argument("--background", action="store_true", help="start in the tray")
+    ao.set_defaults(fn=cmd_app_open)
+    aa = ap.add_parser("autostart", help="start the app in the tray when you log in (this user only)")
+    aa.add_argument("state", choices=("on", "off", "status"))
+    aa.set_defaults(fn=cmd_app_autostart)
+    ap.add_parser("reset", help="remove the login entry and message registration").set_defaults(fn=cmd_app_reset)
 
     c = sub.add_parser("controller", help="run or stop the controller").add_subparsers(dest="sub", required=True)
     s = c.add_parser("start", help="start the controller (foreground)")
@@ -720,6 +782,8 @@ def build_parser() -> argparse.ArgumentParser:
     js.add_argument("--timeout", type=int)
     js.add_argument("--retries", type=int, help="maximum attempts")
     js.add_argument("--key", help="idempotency key: submitting the same key twice creates only one job")
+    js.add_argument("--verifier", metavar="SHA256",
+                    help="wasm: an uploaded checker module run on this computer, in its sandbox, for every result")
     js.add_argument("--label")
     js.add_argument("--wait", action="store_true")
     _wasm_options(js)
@@ -763,7 +827,8 @@ def build_parser() -> argparse.ArgumentParser:
     size = br.add_mutually_exclusive_group()
     size.add_argument("--size", choices=["quick", "standard", "long"], default="quick")
     size.add_argument("--units", type=int)
-    br.add_argument("--scenarios", default="each,all")
+    br.add_argument("--scenarios", default="each,all", help="comma list: each, all, topN (the N fastest), worker names")
+    br.add_argument("--engines", default="native", help="native, wasm, or native,wasm for a Wasm overhead column")
     br.add_argument("--repeats", type=int, default=3)
     br.add_argument("--order", choices=["fixed", "shuffled"], default="fixed")
     br.add_argument("--label", default="")
@@ -796,7 +861,12 @@ def build_parser() -> argparse.ArgumentParser:
     pol.add_argument("policy", nargs="?", choices=["anyone", "trusted", "ask", "code"])
     pol.add_argument("--announce", action=argparse.BooleanOptionalAction, default=None)
     pol.add_argument("--label", help="short text nearby helpers see (everyone nearby can read it)")
+    pol.add_argument("--redundancy", type=int, metavar="PERCENT",
+                     help="share of open-group wasm chunks also run on a second helper to catch wrong results (0-100)")
     pol.set_defaults(fn=cmd_policy)
+    chk = sub.add_parser("checks", help="result checks: twins, tie-breaks and their outcome")
+    chk.add_argument("--limit", type=int, default=50)
+    chk.set_defaults(fn=cmd_checks)
     dev = sub.add_parser("devices", help="devices known to this requester, join requests and Verify numbers")
     dev.add_argument("action", nargs="?", default="list", choices=["list", "accept", "decline"])
     dev.add_argument("id", nargs="?")

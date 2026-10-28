@@ -28,6 +28,21 @@ wifidirect = [
   "winrt-Windows.Foundation==3.2.1; sys_platform == 'win32'",
   "winrt-Windows.Devices.Enumeration==3.2.1; sys_platform == 'win32'",
 ]
+# The one app's background parts (PLAN §13): tray icon, messages, Wi-Fi radio and Wi-Fi network scans.
+# pystray is LGPL-3.0, used unmodified as a separate library (owner approved, 2026-10-28).
+app = [
+  "pystray==0.19.5",
+  "winrt-runtime==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Foundation==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Foundation.Collections==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Data.Xml.Dom==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.UI.Notifications==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Devices.Radios==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Devices.WiFi==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Networking==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Networking.Connectivity==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Security.Credentials==3.2.1; sys_platform == 'win32'",
+]
 
 [project.scripts]
 nc = "network_connector.cli:main"
@@ -43,6 +58,9 @@ version = { attr = "network_connector.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["network_connector*"]
+
+[tool.setuptools.package-data]
+network_connector = ["data/*.wasm"]
 
 [tool.setuptools.data-files]
 "share/network_connector/scripts" = ["scripts/add-firewall-rule.ps1", "scripts/remove-firewall-rule.ps1"]
