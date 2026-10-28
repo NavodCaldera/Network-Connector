@@ -72,3 +72,35 @@ def cluster(tmp_path, monkeypatch):
     c = Cluster(tmp_path, lease_seconds=6, worker_offline_after_s=4)
     yield c
     c.close()
+
+
+# ---------------------------------------------------------------- Wasm sandbox (Compute agent)
+@pytest.fixture(scope="session")
+def sandbox_runtime(tmp_path_factory):
+    """A real sandbox runtime in a temp folder (never the user's). Its grant is removed afterwards."""
+    import os
+    import shutil
+    import sys
+
+    if sys.platform != "win32":
+        pytest.skip("the Wasm sandbox is Windows-only")
+    from network_connector import sandbox
+
+    base = tmp_path_factory.mktemp("sandbox")
+    old = {k: os.environ.get(k) for k in ("NC_HOME", "NC_RUNTIME_HOME")}
+    os.environ["NC_HOME"] = str(base / "home")
+    os.environ["NC_RUNTIME_HOME"] = str(base / "runtime")
+    try:
+        home = sandbox.setup_runtime()
+        shutil.copyfile(Path(__file__).with_name("escape_probe.py"), home / "escape_probe.py")
+        ok, reason = sandbox.available(refresh=True)
+        assert ok, reason
+        yield home
+    finally:
+        sandbox.remove_runtime(base / "runtime")
+        for key, value in old.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        sandbox.available(refresh=True)
