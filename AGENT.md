@@ -59,6 +59,16 @@ the acceptance lists (PLAN.md §9 and §22.3).
 10. Stale-report protection by attempt number stays in place on every path that writes job results.
 11. Never log passphrases, tokens, pairing codes, private keys, or job input/output contents.
 
+### Work log (required)
+
+- Every change to this project gets an entry in [WORKLOG.md](WORKLOG.md), **in the same commit** as the change
+  (or the last commit of a series). Newest entry first.
+- An entry says: date, who (person or agent), branch and commits; what was asked; what was done (files/features);
+  decisions and who made them; what was verified, with the real results including failures; and what is not done
+  or could not be checked, with the reason.
+- Never put secrets, tokens, passphrases, pairing codes or job contents in the log.
+- A hand-back or pull request is not complete until WORKLOG.md is updated.
+
 ### Working method
 
 - Work on your own branch (PLAN.md §11 for Part 1; for Part 2 `feat/identity-join`, `feat/sandbox`,
@@ -85,6 +95,7 @@ the acceptance lists (PLAN.md §9 and §22.3).
 ## Not done / deviations from PLAN.md
 ## Requests to the other agent / coordinator
 ## Docs updated
+## WORKLOG.md entry added (required)
 ```
 
 ---

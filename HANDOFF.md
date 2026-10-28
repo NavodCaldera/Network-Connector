@@ -67,6 +67,8 @@ The owner asked to stop work and update GitHub. The following changes are on
 
 ---
 
+**Project rule:** every change is recorded in [WORKLOG.md](WORKLOG.md) in the same commit (AGENT.md §1 "Work log").
+
 Written 2026-10-28 (updated after the Phase 7 + 8 merge) for the next coding agent (for example Codex) or developer who continues this project. Read
 this file first, then [PLAN.md](PLAN.md) (the full design) and [AGENT.md](AGENT.md) (rules, security invariants,
 file ownership). Wherever they differ, this file describes the **current state**; PLAN/AGENT describe the **target**.
