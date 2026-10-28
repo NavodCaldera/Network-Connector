@@ -64,6 +64,25 @@
 6. To rotate everything: stop the controller, delete `controller\server.crt`, `server.key` and
    `admin.token`, start it again, and re-pair all workers.
 
+## Direct radio links and discovery
+
+| Threat | Protection |
+|---|---|
+| Nearby devices see the advertised SSID | WPA2 passphrase, generated with cryptographic randomness; paired HTTPS still authenticates application traffic |
+| Rogue group advertises the same SSID | The SSID is not an identity. Workers retain the pinned controller certificate and certificate-bound pairing proofs |
+| Rogue controller answers a discovery probe | Probes send no token. A paired worker switches address only when the certificate matches its saved pin; every later request still validates pinned TLS |
+| Public/Unidentified direct network | Separate inbound rule restricted to the controller's exact IPv4 address, TCP port and peer /24; the Private LAN rule is unchanged |
+| Remote worker attempts an admin command | Admin token plus source address restricted to controller-owned binds and loopback; peers/subnets are never admin hosts |
+
+Workers open no discovery or application listening ports. Group credentials remain
+in controller memory and are shown only through authenticated local admin controls.
+Wi-Fi profile XML is ACL-protected before its passphrase is written and removed after
+installation. Windows retains the saved WPA2 profile for reconnecting. Stop/delete
+that profile in Windows Wi-Fi settings if the link is no longer needed.
+
+Wi-Fi Direct capabilities and concurrent operation require acceptance on the actual
+adapters. Neither a successful mocked test nor an advertised SSID establishes support.
+
 ## Reporting a problem
 
 Open a private security advisory on the GitHub repository, rather than a public issue.

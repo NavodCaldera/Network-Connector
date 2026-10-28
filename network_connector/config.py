@@ -7,7 +7,7 @@ import logging
 import logging.handlers
 import os
 import socket
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -23,6 +23,7 @@ class ConfigError(ValueError):
 @dataclass
 class ControllerConfig:
     bind_host: str = ""  # empty = auto-detect the private LAN address on first start
+    bind_hosts: list[str] = field(default_factory=list)
     port: int = 8765
     lease_seconds: int = 60  # a job returns to the queue if its worker is silent this long
     default_timeout_s: int = 600
@@ -39,6 +40,8 @@ class WorkerConfig:
     name: str = ""
     worker_id: str = ""
     token: str = ""  # secret: this file is protected and lives outside Git
+    controller_fingerprint: str = ""
+    known_hosts: list[str] = field(default_factory=list)
     max_cpu_threads: int = 2
     max_concurrent_jobs: int = 2
     max_memory_mb: int = 1024  # per job
@@ -53,6 +56,11 @@ T = TypeVar("T")
 
 
 def _cast(value: str, current: Any) -> Any:
+    if isinstance(current, list):
+        parsed = json.loads(value)
+        if not isinstance(parsed, list) or not all(isinstance(v, str) for v in parsed):
+            raise ConfigError("Address lists must be JSON arrays of IP address strings.")
+        return parsed
     if isinstance(current, bool):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     if isinstance(current, int):
@@ -100,6 +108,8 @@ def save_config(cfg: Any, path: Path) -> None:
 
 def validate_bind_host(host: str) -> str:
     """Refuse wildcard and public addresses: the controller is LAN-only."""
+    if not isinstance(host, str):
+        raise ConfigError("bind_host must be an explicit IP address string.")
     try:
         ip = ipaddress.ip_address(host)
     except ValueError as exc:
@@ -113,14 +123,23 @@ def validate_bind_host(host: str) -> str:
     return str(ip)
 
 
-def list_private_ips() -> list[str]:
+def list_private_ips(labelled: bool = False) -> list[str]:
     found: list[str] = []
-    for addrs in psutil.net_if_addrs().values():
+    from .wifidirect import direct_interfaces
+
+    try:
+        direct = {i.ip: i for i in direct_interfaces()}
+    except RuntimeError:
+        direct = {}
+    for name, addrs in psutil.net_if_addrs().items():
         for addr in addrs:
             if addr.family == socket.AF_INET:
                 ip = ipaddress.ip_address(addr.address)
-                if ip.is_private and not ip.is_loopback and not ip.is_link_local:
-                    found.append(addr.address)
+                if ip.is_private and not ip.is_loopback and (not ip.is_link_local or addr.address in direct):
+                    label = "Wi-Fi Direct" if addr.address in direct else name
+                    value = f"{addr.address} — {label}" if labelled else addr.address
+                    if value not in found:
+                        found.append(value)
     return found
 
 

@@ -20,10 +20,11 @@ import httpx
 import psutil
 
 from . import __version__
-from .client import ControllerError, pinned_context, raise_for_error
-from .config import WorkerConfig, load_config
+from .client import ControllerError, controller_url, pinned_context, probe, raise_for_error
+from .config import WorkerConfig, load_config, save_config
+from .security import constant_time_equal, fingerprint_pem_file
 from .sysinfo import hardware_info, live_metrics, prime_cpu_counter
-from .winlimits import limit_memory, release
+from .winlimits import limit_memory, release, peak_memory_mb
 
 log = logging.getLogger("network_connector.worker")
 
@@ -41,6 +42,12 @@ def load_worker_config(wdir: Path) -> WorkerConfig:
     cfg = load_config(WorkerConfig, wdir / "worker.json")
     if not (cfg.token and cfg.controller_host and (wdir / "controller.crt").is_file()):
         raise NotPaired("This worker is not paired yet. Pair it with a code from the controller first.")
+    # Upgrade older pairings from the already trusted certificate, without fetching a new one.
+    fingerprint = fingerprint_pem_file(wdir / "controller.crt")
+    known = list(dict.fromkeys([cfg.controller_host, *cfg.known_hosts]))[:4]
+    if cfg.controller_fingerprint != fingerprint or cfg.known_hosts != known:
+        cfg.controller_fingerprint, cfg.known_hosts = fingerprint, known
+        save_config(cfg, wdir / "worker.json")
     return cfg
 
 
@@ -64,6 +71,8 @@ class RunningJob:
     stdout: bytes = b""
     cancel: bool = False
     abandon: bool = False
+    cpu_seconds: float | None = None
+    peak_mem_mb: float = 0.0
     threads: list[threading.Thread] = field(default_factory=list)
 
 
@@ -87,11 +96,14 @@ class WorkerAgent:
         self.event_count = 0
         self._thread: threading.Thread | None = None
         self._http: httpx.Client | None = None
+        self._rtt_ms: float | None = None
+        self._link = "unknown"
         self._info = hardware_info() | {
             "limits": {
                 "max_cpu_threads": cfg.max_cpu_threads,
                 "max_concurrent_jobs": cfg.max_concurrent_jobs,
                 "max_memory_mb": cfg.max_memory_mb,
+                "low_priority": cfg.low_priority,
             }
         }
 
@@ -124,16 +136,13 @@ class WorkerAgent:
                          "elapsed": round(time.monotonic() - j.started, 1)} for j in self.running.values()],
             "completed": self.completed, "failed": self.failed, "last_error": self.last_error,
             "slots": self.slots, "metrics": live_metrics(), "name": self.cfg.name,
+            "link": self._link, "controller_host": self.cfg.controller_host, "rtt_ms": self._rtt_ms,
         }
 
     # ------------------------------------------------------------ main loop
     def run(self) -> None:
         prime_cpu_counter()
-        self._http = httpx.Client(
-            base_url=f"https://{self.cfg.controller_host}:{self.cfg.controller_port}",
-            verify=pinned_context(self.dir / "controller.crt"),
-            headers={"Authorization": f"Bearer {self.cfg.token}"}, timeout=10,
-        )
+        self._http = self._new_client(self.cfg.controller_host)
         self.state = "connecting"
         self._event(f"worker '{self.cfg.name}' starting; controller {self.cfg.controller_host}:{self.cfg.controller_port}")
         next_hb = next_claim = 0.0
@@ -175,6 +184,9 @@ class WorkerAgent:
                     next_hb = time.monotonic() + BACKOFF[min(backoff_i, len(BACKOFF) - 1)]
                     backoff_i += 1
                     self.state = "offline"
+                    if backoff_i >= 3 and self._try_refind():
+                        next_hb = next_claim = 0.0
+                        backoff_i = 0
                 if (self.cfg.idle_timeout_minutes > 0 and not self.running
                         and time.monotonic() - last_activity > self.cfg.idle_timeout_minutes * 60):
                     self._event(f"idle for {self.cfg.idle_timeout_minutes} minutes; stopping (idle timeout)")
@@ -189,9 +201,52 @@ class WorkerAgent:
             self._event("worker stopped")
 
     # ------------------------------------------------------------ network helpers
+    def _new_client(self, host: str) -> httpx.Client:
+        return httpx.Client(
+            base_url=controller_url(host, self.cfg.controller_port),
+            verify=pinned_context(self.dir / "controller.crt"),
+            headers={"Authorization": f"Bearer {self.cfg.token}"}, timeout=10,
+        )
+
+    def _try_refind(self) -> bool:
+        from .wifidirect import candidate_controllers
+
+        try:
+            expected = fingerprint_pem_file(self.dir / "controller.crt")
+            candidates = list(dict.fromkeys([*self.cfg.known_hosts[:4], *candidate_controllers()]))[:8]
+            for host in candidates:
+                if self.stop_event.is_set():
+                    return False
+                if host == self.cfg.controller_host:
+                    continue
+                seen = probe(host, self.cfg.controller_port, timeout=2)
+                if seen is None or not constant_time_equal(seen, expected):
+                    continue
+                http = self._new_client(host)
+                previous = self.cfg.controller_host, self.cfg.controller_fingerprint, self.cfg.known_hosts
+                self.cfg.controller_host, self.cfg.controller_fingerprint = host, expected
+                self.cfg.known_hosts = list(dict.fromkeys([host, previous[0], *previous[2]]))[:4]
+                try:
+                    save_config(self.cfg, self.dir / "worker.json")
+                except OSError:
+                    self.cfg.controller_host, self.cfg.controller_fingerprint, self.cfg.known_hosts = previous
+                    http.close()
+                    return False
+                old, self._http = self._http, http
+                if old:
+                    old.close()
+                self._event(f"found the pinned controller at {host}:{self.cfg.controller_port}")
+                return True
+        except (OSError, ValueError, RuntimeError):
+            pass
+        return False
+
     def _call(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         assert self._http is not None
-        return raise_for_error(self._http.post(path, json=body))
+        started = time.monotonic()
+        response = raise_for_error(self._http.post(path, json=body))
+        self._rtt_ms = (time.monotonic() - started) * 1000
+        return response
 
     def _net_problem(self, exc: Exception) -> None:
         msg = str(exc) or type(exc).__name__
@@ -204,13 +259,14 @@ class WorkerAgent:
     def _heartbeat(self) -> None:
         resp = self._call("/worker/heartbeat", {
             "info": self._info,
-            "metrics": live_metrics() | {"running_jobs": len(self.running)},
+            "metrics": live_metrics() | {"running_jobs": len(self.running), "rtt_ms": self._rtt_ms},
             "version": __version__,
             "jobs": [{"id": j.id, "attempt": j.attempt, "progress": j.progress} for j in self.running.values()],
         })
         if self.last_error and self.state in ("offline", "connecting"):
             self._event("connected to controller")
         self.last_error = ""
+        self._link = resp.get("link", "unknown")
         for jid in resp.get("cancel", []):
             if jid in self.running and not self.running[jid].cancel:
                 self.running[jid].cancel = True
@@ -295,6 +351,11 @@ class WorkerAgent:
                         rj.progress = float(line[9:].strip())
                     except ValueError:
                         pass
+                elif line.startswith(b"METRICS "):
+                    try:
+                        rj.cpu_seconds = max(0.0, float(json.loads(line[8:])["cpu_s"]))
+                    except (ValueError, KeyError, TypeError):
+                        pass
 
         rj.threads = [threading.Thread(target=f, daemon=True) for f in (feed, read_out, read_err)]
         for t in rj.threads:
@@ -319,7 +380,9 @@ class WorkerAgent:
             if exit_code is None:
                 over_memory = False
                 try:
-                    over_memory = psutil.Process(rj.proc.pid).memory_info().rss > self.cfg.max_memory_mb * 1024 * 1024 * 1.15
+                    memory = psutil.Process(rj.proc.pid).memory_info()
+                    rj.peak_mem_mb = max(rj.peak_mem_mb, getattr(memory, "peak_wset", memory.rss) / 1024 / 1024)
+                    over_memory = memory.rss > self.cfg.max_memory_mb * 1024 * 1024 * 1.15
                 except psutil.Error:
                     pass
                 if rj.abandon:
@@ -354,6 +417,7 @@ class WorkerAgent:
                 else:
                     body = {"attempt": rj.attempt, "retryable": True, "duration": round(elapsed, 3),
                             "error": f"job process exited unexpectedly (code {exit_code}); it may have hit the memory limit"}
+            body.update(duration=round(elapsed, 3), cpu_seconds=rj.cpu_seconds, peak_mem_mb=peak_memory_mb(rj.handle) or rj.peak_mem_mb or None)
             self._drop(rj)
             any_finished = True
             if action == "complete":

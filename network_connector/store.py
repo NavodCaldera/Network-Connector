@@ -40,6 +40,7 @@ TERMINAL = ("succeeded", "failed", "cancelled")
 
 class Store:
     def __init__(self, path: str | Path) -> None:
+        existed = Path(path).is_file()
         self._conn = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
@@ -47,6 +48,44 @@ class Store:
             self._conn.execute("pragma journal_mode=WAL")
             self._conn.execute("pragma synchronous=NORMAL")
             self._conn.executescript(SCHEMA)
+        self._migrate(Path(path), existed)
+        self._last_prune = 0.0
+        self.prune_samples()
+
+    def _migrate(self, path: Path, existed: bool) -> None:
+        self._conn.execute("create table if not exists meta(key text primary key, value text not null)")
+        row = self._conn.execute("select value from meta where key='schema_version'").fetchone()
+        version = int(row[0]) if row else 0
+        if version >= 1:
+            return
+        if existed:
+            backup = path.with_name(path.name + ".bak-0.1.0")
+            if not backup.exists():
+                with sqlite3.connect(str(backup)) as dest:
+                    self._conn.backup(dest)
+        with self._tx() as c:
+            for table, columns in {
+                "jobs": {"cpu_seconds": "real", "peak_mem_mb": "real", "queue_wait_s": "real", "link": "text", "eligible_workers": "text"},
+                "attempts": {"duration": "real", "cpu_seconds": "real", "peak_mem_mb": "real"},
+            }.items():
+                existing = {r[1] for r in c.execute(f"pragma table_info({table})")}
+                for name, kind in columns.items():
+                    if name not in existing:
+                        c.execute(f"alter table {table} add column {name} {kind}")
+            c.execute("create table if not exists worker_samples(worker_id text, ts real, cpu_percent real, mem_percent real, running_jobs integer, rtt_ms real)")
+            c.execute("create index if not exists samples_worker_ts on worker_samples(worker_id,ts)")
+            c.execute("create table if not exists benchmarks(id text primary key, created real, label text, spec text, status text, result text, error text, idem_key text unique)")
+            c.execute("create table if not exists benchmark_runs(benchmark_id text, scenario text, repeat integer, batch_id text, started real, finished real, wall_s real, settings text, per_worker text, answer text, valid integer)")
+            c.execute("insert or replace into meta values('schema_version','1')")
+
+    def prune_samples(self) -> None:
+        now = time.time()
+        with self._tx() as c:
+            c.execute("delete from worker_samples where ts<?", (now - 86400,))
+        self._last_prune = now
+
+    def samples(self, worker_id: str, t0: float, t1: float) -> list[dict[str, Any]]:
+        return [dict(r) for r in self._q("select * from worker_samples where worker_id=? and ts between ? and ? order by ts", (worker_id, t0, t1))]
 
     def close(self) -> None:
         with self._lock:
@@ -103,6 +142,7 @@ class Store:
         for w in workers:
             w["info"] = json.loads(w["info"])
             w["metrics"] = json.loads(w["metrics"])
+            w["link"] = w["metrics"].get("link", "unknown")
             w["running"] = stats.get((w["id"], "running"), 0)
             w["succeeded"] = stats.get((w["id"], "succeeded"), 0)
             w["failed"] = stats.get((w["id"], "failed"), 0)
@@ -123,6 +163,7 @@ class Store:
 
     def touch_worker(self, wid: str, info: dict[str, Any] | None, metrics: dict[str, Any], version: str) -> None:
         with self._tx() as c:
+            c.execute("insert into worker_samples values(?,?,?,?,?,?)", (wid, time.time(), metrics.get("cpu_percent"), metrics.get("mem_percent"), metrics.get("running_jobs", 0), metrics.get("rtt_ms")))
             if info:
                 c.execute(
                     "update workers set last_seen=?, metrics=?, version=?, info=? where id=?",
@@ -133,11 +174,14 @@ class Store:
                     "update workers set last_seen=?, metrics=?, version=? where id=?",
                     (time.time(), json.dumps(metrics), version, wid),
                 )
+        if time.time() - self._last_prune > 3600:
+            self.prune_samples()
 
     # ------------------------------------------------------------ submitting
     def create_batch(
         self, kind: str, label: str | None, idem_key: str | None, jobs: list[tuple[str, dict[str, Any]]],
         timeout_s: int, max_attempts: int, target: str | None,
+        eligible_workers: list[str] | None = None,
     ) -> tuple[str, bool]:
         """Insert a batch of jobs. A repeated idempotency key returns the original batch (duplicate prevention)."""
         with self._tx() as c:
@@ -153,10 +197,10 @@ class Store:
             )
             for idx, (job_kind, params) in enumerate(jobs):
                 c.execute(
-                    "insert into jobs(id,batch_id,idx,kind,params,status,max_attempts,timeout_s,target,created)"
-                    " values(?,?,?,?,?,?,?,?,?,?)",
+                    "insert into jobs(id,batch_id,idx,kind,params,status,max_attempts,timeout_s,target,created,eligible_workers)"
+                    " values(?,?,?,?,?,?,?,?,?,?,?)",
                     (secrets.token_hex(6), bid, idx, job_kind, json.dumps(params), "queued",
-                     max_attempts, timeout_s, target, now),
+                     max_attempts, timeout_s, target, now, json.dumps(eligible_workers) if eligible_workers else None),
                 )
             return bid, True
 
@@ -164,17 +208,22 @@ class Store:
     def claim(self, worker: dict[str, Any], limit: int, lease_s: int) -> list[dict[str, Any]]:
         now = time.time()
         with self._tx() as c:
+            saved_worker = c.execute("select metrics from workers where id=?", (worker["id"],)).fetchone()
+            link = json.loads(saved_worker["metrics"]).get("link", "unknown") if saved_worker else "unknown"
+            if link not in {"lan", "wifi-direct", "loopback"}:
+                link = "unknown"
             rows = c.execute(
                 "select id from jobs where status='queued' and (target is null or target=?)"
+                " and (eligible_workers is null or exists(select 1 from json_each(eligible_workers) where value=?))"
                 " order by created, idx limit ?",
-                (worker["name"], limit),
+                (worker["name"], worker["name"], limit),
             ).fetchall()
             claimed = []
             for r in rows:
                 c.execute(
                     "update jobs set status='running', worker_id=?, worker_name=?, attempt=attempt+1,"
-                    " started=?, lease_expires=?, progress=0, error=coalesce(error,'') where id=?",
-                    (worker["id"], worker["name"], now, now + lease_s, r["id"]),
+                    " started=?, lease_expires=?, progress=0, error=coalesce(error,''), queue_wait_s=?-created, link=? where id=?",
+                    (worker["id"], worker["name"], now, now + lease_s, now, link, r["id"]),
                 )
                 job = c.execute("select * from jobs where id=?", (r["id"],)).fetchone()
                 c.execute(
@@ -207,6 +256,7 @@ class Store:
     def finish(
         self, job_id: str, worker_id: str, attempt: int, *, result: Any = None, error: str | None = None,
         retryable: bool = False, cancelled: bool = False, duration: float = 0.0,
+        cpu_seconds: float | None = None, peak_mem_mb: float | None = None,
     ) -> str | None:
         """Record the outcome of an attempt. Returns the new status, or None if the report is stale."""
         now = time.time()
@@ -224,16 +274,16 @@ class Store:
                 status, outcome = "failed", "failed"
             c.execute(
                 "update jobs set status=?, result=?, error=?, finished=?, duration=?, lease_expires=null,"
-                " progress=? where id=?",
+                " progress=?, cpu_seconds=?, peak_mem_mb=? where id=?",
                 (status, json.dumps(result) if status == "succeeded" else None,
                  error if status != "succeeded" else None, now if status != "queued" else None,
-                 duration, 100.0 if status == "succeeded" else job["progress"], job_id),
+                 duration, 100.0 if status == "succeeded" else job["progress"], cpu_seconds, peak_mem_mb, job_id),
             )
             if status == "queued":
                 c.execute("update jobs set worker_id=null, worker_name=null where id=?", (job_id,))
             c.execute(
-                "update attempts set ended=?, outcome=?, error=? where job_id=? and attempt=?",
-                (now, outcome, error, job_id, attempt),
+                "update attempts set ended=?, outcome=?, error=?, duration=?, cpu_seconds=?, peak_mem_mb=? where job_id=? and attempt=? and outcome is null",
+                (now, outcome, error, duration, cpu_seconds, peak_mem_mb, job_id, attempt),
             )
             return status
 
@@ -247,10 +297,15 @@ class Store:
                 "update jobs set status='queued', worker_id=null, worker_name=null, attempt=attempt-1,"
                 " lease_expires=null, progress=0 where id=?", (job_id,),
             )
-            c.execute("delete from attempts where job_id=? and attempt=?", (job_id, attempt))
+            c.execute("update attempts set ended=?, duration=?-started, outcome='released' where job_id=? and attempt=? and outcome is null", (time.time(), time.time(), job_id, attempt))
             return True
 
     # ------------------------------------------------------------ cancel / retry / maintenance
+    def cancel_all(self, statuses: tuple[str, ...] = ("queued", "running")) -> dict[str, int]:
+        with self._tx() as c:
+            cancelled = c.execute("update jobs set status='cancelled', finished=? where status='queued'", (time.time(),)).rowcount if "queued" in statuses else 0
+            cancelling = c.execute("update jobs set cancel_requested=1 where status='running'").rowcount if "running" in statuses else 0
+        return {"cancelled": cancelled, "cancelling": cancelling}
     def cancel_job(self, job_id: str) -> str | None:
         with self._tx() as c:
             job = c.execute("select * from jobs where id=?", (job_id,)).fetchone()
@@ -301,8 +356,8 @@ class Store:
             (status, reason, now if status != "queued" else None, status, status, job["id"]),
         )
         c.execute(
-            "update attempts set ended=?, outcome=?, error=? where job_id=? and attempt=?",
-            (now, "lost", reason, job["id"], job["attempt"]),
+            "update attempts set ended=?, duration=?-started, outcome=?, error=? where job_id=? and attempt=? and outcome is null",
+            (now, now, "lost", reason, job["id"], job["attempt"]),
         )
 
     def expire_leases(self, hard_timeout_grace_s: int = 30) -> int:
@@ -389,3 +444,63 @@ class Store:
     def summary(self) -> dict[str, int]:
         counts = {r["status"]: r["n"] for r in self._q("select status, count(*) n from jobs group by 1")}
         return {s: counts.get(s, 0) for s in ("queued", "running", "succeeded", "failed", "cancelled")}
+
+    # ------------------------------------------------------------ benchmarks
+    def create_benchmark(self, spec: dict[str, Any], idem_key: str | None = None) -> tuple[str, bool]:
+        with self._tx() as c:
+            if idem_key:
+                row = c.execute("select id from benchmarks where idem_key=?", (idem_key,)).fetchone()
+                if row:
+                    return row[0], False
+            ident = uuid.uuid4().hex[:12]
+            c.execute("insert into benchmarks(id,created,label,spec,status,idem_key) values(?,?,?,?,?,?)", (ident, time.time(), spec.get("label"), json.dumps(spec), "running", idem_key))
+            return ident, True
+
+    def update_benchmark(self, ident: str, status: str, result: dict | None = None, error: str | None = None) -> None:
+        with self._tx() as c:
+            c.execute("update benchmarks set status=?,result=?,error=? where id=?", (status, json.dumps(result) if result is not None else None, error, ident))
+
+    def add_benchmark_run(self, ident: str, run: dict[str, Any]) -> None:
+        with self._tx() as c:
+            c.execute("insert into benchmark_runs values(?,?,?,?,?,?,?,?,?,?,?)", (ident, run["scenario"], run["repeat"], run["batch_id"], run["started"], run["finished"], run["wall_s"], json.dumps(run["settings"]), json.dumps(run["per_worker"]), json.dumps(run["answer"], sort_keys=True), int(run["valid"])))
+
+    def benchmark(self, ident: str) -> dict[str, Any] | None:
+        rows = self._q("select * from benchmarks where id=?", (ident,))
+        if not rows:
+            return None
+        item = dict(rows[0])
+        for key in ("spec", "result"):
+            item[key] = json.loads(item[key]) if item[key] else None
+        item.pop("idem_key", None)
+        item["runs"] = []
+        for row in self._q("select * from benchmark_runs where benchmark_id=? order by rowid", (ident,)):
+            run = dict(row)
+            for key in ("settings", "per_worker", "answer"):
+                run[key] = json.loads(run[key])
+            item["runs"].append(run)
+        return item
+
+    def benchmarks(self, limit: int = 50) -> list[dict[str, Any]]:
+        return [self.benchmark(r["id"]) for r in self._q("select id from benchmarks order by created desc limit ?", (limit,))]
+
+    def interrupt_benchmarks(self) -> None:
+        with self._tx() as c:
+            for row in c.execute("select id from benchmarks where status='running'").fetchall():
+                batch_ids = c.execute("select id from batches where label like ?", (f"bench:{row['id']}:%",)).fetchall()
+                for batch in batch_ids:
+                    c.execute("update jobs set status='cancelled', finished=? where batch_id=? and status='queued'", (time.time(), batch["id"]))
+                    c.execute("update jobs set cancel_requested=1 where batch_id=? and status='running'", (batch["id"],))
+            c.execute("update benchmarks set status='interrupted',error='Controller restarted; run again for comparable measurements.' where status='running'")
+
+    def delete_benchmark(self, ident: str) -> bool:
+        with self._tx() as c:
+            row = c.execute("select status from benchmarks where id=?", (ident,)).fetchone()
+            if not row or row[0] == "running":
+                return False
+            c.execute("delete from benchmark_runs where benchmark_id=?", (ident,))
+            c.execute("delete from benchmarks where id=?", (ident,))
+            return True
+
+    def latest_participant_benchmark(self, worker_name: str) -> dict[str, Any] | None:
+        rows = self._q("select b.id from benchmarks b where b.status='finished' and exists(select 1 from benchmark_runs r, json_each(r.per_worker) w where r.benchmark_id=b.id and w.key=? and json_extract(w.value,'$.chunks')>0) order by b.created desc limit 1", (worker_name,))
+        return self.benchmark(rows[0]["id"]) if rows else None

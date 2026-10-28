@@ -13,6 +13,14 @@ The controller computer can run a worker too, so **every machine works at the sa
 
 ## Features
 
+- **Measured comparisons:** run identical fixed work on each computer and all together,
+  compare throughput and efficiency, and share results with participating workers.
+  See [Benchmark guide](docs/BENCHMARK.md).
+- **Router-less connection:** create a Wi-Fi Direct group or use an existing Windows
+  Mobile Hotspot, join from the worker, and find the controller by its pinned identity.
+  See [Wi-Fi Direct guide](docs/WIFI_DIRECT.md). Actual adapter support and concurrent
+  home Wi-Fi still require tests on the two laptops.
+
 - **Desktop windows (GUI)** for both computers, plus a command line (`nc`) for scripting.
 - **Secure pairing** with a one-time code (`ABCD-EFGH-JKMN`). The code expires after 10 minutes,
   works once, and locks after 5 wrong tries. No passwords and no hard-coded secrets.
@@ -46,6 +54,7 @@ The controller computer can run a worker too, so **every machine works at the sa
 | `hash_files` | Hashes files whose bytes are sent inside the job | one job per file |
 | `image_resize` | Resizes an image sent inside the job (protected against decompression bombs) | one job per file |
 | `python_function` | Runs one function from a fixed list: `fibonacci`, `collatz_longest`, `nqueens` | – |
+| `benchmark` | Fixed SHA-256 chain or segmented prime-sieve work for comparisons | yes |
 
 To add your own job type, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#adding-a-job-type).
 

@@ -2,19 +2,22 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import logging
+import math
 import threading
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 import uvicorn
+import psutil
 from fastapi import Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import __version__, jobs
 from .config import ControllerConfig, detect_lan_ip, load_config, save_config, validate_bind_host
@@ -31,6 +34,8 @@ from .security import (
     pairing_proof,
 )
 from .store import Store
+from .wifidirect import DirectGroup, DirectLinkError, find_direct_interface
+from .benchmark import BenchmarkRunner, BenchmarkSpec, shared_result
 
 log = logging.getLogger("network_connector.controller")
 
@@ -64,6 +69,19 @@ class HeartbeatRequest(BaseModel):
     version: str = Field(default="", max_length=32)
     jobs: list[JobReport] = Field(default_factory=list, max_length=64)
 
+    @field_validator("metrics")
+    @classmethod
+    def valid_metrics(cls, metrics: dict[str, Any]) -> dict[str, Any]:
+        bounds = {"cpu_percent": 100, "mem_percent": 100, "battery_percent": 100, "running_jobs": 64, "rtt_ms": 1e9, "cpu_freq_mhz": 1e6}
+        for name, maximum in bounds.items():
+            value = metrics.get(name)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= maximum):
+                raise ValueError(f"{name} must be a finite number between 0 and {maximum}")
+        power = metrics.get("on_ac_power")
+        if power is not None and not isinstance(power, bool):
+            raise ValueError("on_ac_power must be a boolean or null")
+        return metrics
+
 
 class ClaimRequest(BaseModel):
     max_jobs: int = Field(default=1, ge=1, le=16)
@@ -73,6 +91,8 @@ class CompleteRequest(BaseModel):
     attempt: int = Field(ge=1)
     result: dict[str, Any]
     duration: float = Field(ge=0, le=1e6)
+    cpu_seconds: float | None = Field(default=None, ge=0, le=86400, allow_inf_nan=False)
+    peak_mem_mb: float | None = Field(default=None, ge=0, le=1_048_576, allow_inf_nan=False)
 
 
 class FailRequest(BaseModel):
@@ -81,10 +101,22 @@ class FailRequest(BaseModel):
     retryable: bool = True
     cancelled: bool = False
     duration: float = Field(default=0, ge=0, le=1e6)
+    cpu_seconds: float | None = Field(default=None, ge=0, le=86400, allow_inf_nan=False)
+    peak_mem_mb: float | None = Field(default=None, ge=0, le=1_048_576, allow_inf_nan=False)
 
 
 class ReleaseRequest(BaseModel):
     attempt: int = Field(ge=1)
+
+
+class DirectStartRequest(BaseModel):
+    ssid: str | None = Field(default=None, min_length=1, max_length=32)
+    passphrase: str | None = Field(default=None, min_length=8, max_length=63, repr=False)
+    listen: bool = True
+
+
+class DirectListenRequest(BaseModel):
+    enabled: bool
 
 
 class SubmitRequest(BaseModel):
@@ -158,11 +190,16 @@ class ControllerState:
     pairing: PairingManager
     shutdown_cb: Any = None
     history: dict[str, deque] = field(default_factory=lambda: defaultdict(lambda: deque(maxlen=90)))
+    benchmarks: Any = None
+    direct_runtime: Any = None
+    direct_subnets: set[str] = field(default_factory=set)
+    worker_links: dict[str, str] = field(default_factory=dict)
 
 
 def create_app(state: ControllerState) -> FastAPI:
     app = FastAPI(title="Network Connector Controller", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
     store, cfg = state.store, state.cfg
+    state.benchmarks = BenchmarkRunner(store, cfg.worker_offline_after_s)
 
     @app.exception_handler(ApiError)
     async def _api_error(_: Request, exc: ApiError) -> JSONResponse:
@@ -223,7 +260,18 @@ def create_app(state: ControllerState) -> FastAPI:
 
     # ---- worker API
     @app.post("/worker/heartbeat")
-    def heartbeat(req: HeartbeatRequest, worker: dict = Depends(require_worker)) -> dict[str, Any]:
+    def heartbeat(req: HeartbeatRequest, request: Request, worker: dict = Depends(require_worker)) -> dict[str, Any]:
+        link = "lan"
+        try:
+            source = ipaddress.ip_address(request.client.host if request.client else "")
+            if source.is_loopback:
+                link = "loopback"
+            elif any(source in ipaddress.ip_network(network) for network in state.direct_subnets):
+                link = "wifi-direct"
+        except ValueError:
+            pass
+        state.worker_links[worker["id"]] = link
+        req.metrics["link"] = link
         store.touch_worker(worker["id"], req.info, req.metrics, req.version)
         state.history[worker["id"]].append(
             (round(time.time(), 1), req.metrics.get("cpu_percent", 0), req.metrics.get("mem_percent", 0)))
@@ -234,6 +282,7 @@ def create_app(state: ControllerState) -> FastAPI:
             "abandon": abandon,
             "paused": worker["state"] == "paused",
             "disabled": worker["state"] == "disabled",
+            "link": link,
         }
 
     @app.post("/worker/claim")
@@ -249,9 +298,9 @@ def create_app(state: ControllerState) -> FastAPI:
     def complete(job_id: str, req: CompleteRequest, worker: dict = Depends(require_worker)) -> dict[str, Any]:
         if len(json.dumps(req.result)) > MAX_RESULT_BYTES:
             status = store.finish(job_id, worker["id"], req.attempt, error="result too large", retryable=False,
-                                  duration=req.duration)
+                                  duration=req.duration, cpu_seconds=req.cpu_seconds, peak_mem_mb=req.peak_mem_mb)
         else:
-            status = store.finish(job_id, worker["id"], req.attempt, result=req.result, duration=req.duration)
+            status = store.finish(job_id, worker["id"], req.attempt, result=req.result, duration=req.duration, cpu_seconds=req.cpu_seconds, peak_mem_mb=req.peak_mem_mb)
         if status is None:
             raise ApiError(409, "stale_report", "This job is no longer assigned to this worker attempt.")
         return {"status": status}
@@ -259,7 +308,7 @@ def create_app(state: ControllerState) -> FastAPI:
     @app.post("/worker/jobs/{job_id}/fail")
     def fail(job_id: str, req: FailRequest, worker: dict = Depends(require_worker)) -> dict[str, Any]:
         status = store.finish(job_id, worker["id"], req.attempt, error=req.error, retryable=req.retryable,
-                              cancelled=req.cancelled, duration=req.duration)
+                              cancelled=req.cancelled, duration=req.duration, cpu_seconds=req.cpu_seconds, peak_mem_mb=req.peak_mem_mb)
         if status is None:
             raise ApiError(409, "stale_report", "This job is no longer assigned to this worker attempt.")
         return {"status": status}
@@ -269,6 +318,77 @@ def create_app(state: ControllerState) -> FastAPI:
         return {"released": store.release(job_id, worker["id"], req.attempt)}
 
     # ---- admin API
+    def direct_runtime() -> Any:
+        if state.direct_runtime is None:
+            raise ApiError(503, "direct_unavailable", "Wi-Fi Direct control requires a running controller runtime.")
+        return state.direct_runtime
+
+    @app.get("/admin/wifidirect", dependencies=[Depends(require_admin)])
+    def admin_direct_status() -> dict[str, Any]:
+        try:
+            return direct_runtime().direct_status()
+        except (DirectLinkError, ValueError, RuntimeError, OSError) as exc:
+            raise ApiError(503, "direct_status_unavailable", str(exc)) from exc
+
+    @app.post("/admin/wifidirect", dependencies=[Depends(require_admin)])
+    def admin_direct_start(req: DirectStartRequest) -> dict[str, Any]:
+        try:
+            return direct_runtime().start_direct_group(req.ssid, req.passphrase, req.listen)
+        except (DirectLinkError, ValueError, RuntimeError, OSError) as exc:
+            raise ApiError(422, "direct_link_failed", str(exc)) from exc
+
+    @app.post("/admin/wifidirect/stop", dependencies=[Depends(require_admin)])
+    def admin_direct_stop() -> dict[str, Any]:
+        try:
+            return direct_runtime().stop_direct_group()
+        except (DirectLinkError, RuntimeError, OSError) as exc:
+            raise ApiError(422, "direct_link_failed", str(exc)) from exc
+
+    @app.post("/admin/wifidirect/listen", dependencies=[Depends(require_admin)])
+    def admin_direct_listen(req: DirectListenRequest) -> dict[str, Any]:
+        try:
+            return direct_runtime().set_direct_listener(req.enabled)
+        except (DirectLinkError, ValueError, RuntimeError, OSError) as exc:
+            raise ApiError(422, "direct_link_failed", str(exc)) from exc
+
+    @app.get("/worker/benchmarks/latest")
+    def worker_benchmark(worker: dict = Depends(require_worker)) -> dict[str, Any]:
+        return {"benchmark": shared_result(store, worker["name"])}
+
+    @app.post("/admin/jobs/cancel-all", dependencies=[Depends(require_admin)])
+    def admin_cancel_all() -> dict[str, int]:
+        return store.cancel_all()
+
+    @app.post("/admin/benchmarks", dependencies=[Depends(require_admin)])
+    def admin_start_benchmark(req: BenchmarkSpec) -> dict[str, Any]:
+        try:
+            return {"id": state.benchmarks.start(req)}
+        except ValueError as exc:
+            raise ApiError(422, "invalid_benchmark", str(exc)) from exc
+
+    @app.get("/admin/benchmarks", dependencies=[Depends(require_admin)])
+    def admin_benchmarks(limit: int = 50) -> dict[str, Any]:
+        return {"benchmarks": store.benchmarks(min(200, max(1, limit)))}
+
+    @app.get("/admin/benchmarks/{ident}", dependencies=[Depends(require_admin)])
+    def admin_benchmark(ident: str) -> dict[str, Any]:
+        result = store.benchmark(ident)
+        if result is None:
+            raise ApiError(404, "unknown_benchmark", "No benchmark with that ID.")
+        return result
+
+    @app.post("/admin/benchmarks/{ident}/cancel", dependencies=[Depends(require_admin)])
+    def admin_cancel_benchmark(ident: str) -> dict[str, Any]:
+        if store.benchmark(ident) is None:
+            raise ApiError(404, "unknown_benchmark", "No benchmark with that ID.")
+        return {"cancelling": state.benchmarks.cancel(ident)}
+
+    @app.delete("/admin/benchmarks/{ident}", dependencies=[Depends(require_admin)])
+    def admin_delete_benchmark(ident: str) -> dict[str, Any]:
+        if not store.delete_benchmark(ident):
+            raise ApiError(409, "not_deletable", "Benchmark is running or does not exist.")
+        return {"deleted": True}
+
     def _check_job(kind: str, params: dict[str, Any]) -> None:
         try:
             jobs.validate(kind, params)
@@ -307,6 +427,7 @@ def create_app(state: ControllerState) -> FastAPI:
                 status = "online" if age is not None and age < cfg.worker_offline_after_s else "offline"
             w["status"], w["seconds_since_heartbeat"] = status, None if age is None else round(age, 1)
             w["history"] = list(state.history.get(w["id"], []))
+            w["link"] = state.worker_links.get(w["id"], "unknown")
             out.append(w)
         return {"workers": out}
 
@@ -405,6 +526,20 @@ class _Server(uvicorn.Server):
         pass
 
 
+def port_in_use_message(port: int) -> str:
+    try:
+        for conn in psutil.net_connections(kind="tcp"):
+            if conn.status == psutil.CONN_LISTEN and conn.laddr.port == port and conn.pid:
+                try:
+                    name = psutil.Process(conn.pid).name()
+                except (psutil.Error, OSError):
+                    name = "unknown"
+                return f"Port {port} is used by another program (PID {conn.pid}, name {name})"
+    except (psutil.Error, OSError):
+        pass
+    return f"Controller failed to start on port {port}; the address may be unavailable or the port in use."
+
+
 class ControllerRuntime:
     """Owns the TLS server thread and the lease-reaper thread."""
 
@@ -415,7 +550,15 @@ class ControllerRuntime:
         if not self.cfg.bind_host:
             self.cfg.bind_host = detect_lan_ip()
         self.cfg.bind_host = validate_bind_host(self.cfg.bind_host)
+        if not isinstance(self.cfg.bind_hosts, list) or len(self.cfg.bind_hosts) > 16:
+            raise ValueError("bind_hosts must contain at most 16 explicit IP addresses.")
+        self.cfg.bind_hosts = list(dict.fromkeys([
+            self.cfg.bind_host, *[validate_bind_host(h) for h in self.cfg.bind_hosts], "127.0.0.1"]))
+        if len(self.cfg.bind_hosts) > 16:
+            raise ValueError("At most 16 controller listeners are allowed, including loopback.")
         self.cert, self.key = self.dir / "server.crt", self.dir / "server.key"
+        if self.cert.is_file() != self.key.is_file():
+            raise RuntimeError("The controller certificate or private key is missing. Restore the matching pair from backup; refusing to replace its identity.")
         if not (self.cert.is_file() and self.key.is_file()):
             generate_self_signed(self.cert, self.key, [self.cfg.bind_host, "127.0.0.1"])
             log.info("created new TLS certificate")
@@ -425,40 +568,180 @@ class ControllerRuntime:
         self.stop_event = threading.Event()
         self.state = ControllerState(
             cfg=self.cfg, store=self.store, fingerprint=self.fingerprint, admin_token=self.admin_token,
-            admin_hosts={"127.0.0.1", "::1", self.cfg.bind_host}, pairing=PairingManager(self.cfg.pairing_ttl_s),
+            admin_hosts={"127.0.0.1", "::1", *self.cfg.bind_hosts}, pairing=PairingManager(self.cfg.pairing_ttl_s),
             shutdown_cb=self.stop,
+            direct_runtime=self,
         )
+        self.direct_group = DirectGroup()
+        self._direct_listener: str | None = None
+        self._listener_lock = threading.RLock()
+        self._direct_lock = threading.RLock()
         self.app = create_app(self.state)
         self._server: _Server | None = None
+        self._servers: list[_Server] = []
+        self._listeners: dict[str, tuple[_Server, threading.Thread]] = {}
+        self._starting = False
         self._threads: list[threading.Thread] = []
         save_config(self.cfg, self.dir / "controller.json")
 
     @property
     def running(self) -> bool:
-        return bool(self._server and self._server.started and not self._server.should_exit)
+        return bool(self._servers) and all(s.started and not s.should_exit for s in self._servers) and not self.stop_event.is_set()
+
+    @property
+    def listener_hosts(self) -> list[str]:
+        with self._listener_lock:
+            return list(self._listeners)
+
+    def _sync_servers(self) -> None:
+        self._servers = [s for s, _ in self._listeners.values()]
+        self._server = self._servers[0] if self._servers else None
+
+    def add_listener(self, host: str, persist: bool = True) -> None:
+        host = validate_bind_host(host)
+        with self._listener_lock:
+            if self.stop_event.is_set():
+                raise RuntimeError("The controller is stopping; cannot add a listener.")
+            if not self._starting and "127.0.0.1" not in self._listeners:
+                raise RuntimeError("Start the controller before adding another listener.")
+            if host in self._listeners:
+                return
+            if len(self._listeners) >= 16:
+                raise ValueError("At most 16 controller listeners are allowed.")
+            config = uvicorn.Config(
+                self.app, host=host, port=self.cfg.port, ssl_keyfile=str(self.key),
+                ssl_certfile=str(self.cert), log_level="warning", access_log=False,
+            )
+            server = _Server(config)
+            thread = threading.Thread(target=server.run, name=f"controller-http-{host}", daemon=True)
+            thread.start()
+            deadline = time.monotonic() + 15
+            while not server.started and time.monotonic() < deadline:
+                if not thread.is_alive():
+                    raise RuntimeError(port_in_use_message(self.cfg.port))
+                time.sleep(0.05)
+            if not server.started:
+                server.should_exit = True
+                thread.join(timeout=5)
+                raise RuntimeError(f"Controller listener startup timed out on {host}:{self.cfg.port}.")
+            old_hosts = list(self.cfg.bind_hosts)
+            self.cfg.bind_hosts = list(dict.fromkeys([*old_hosts, host]))
+            try:
+                if persist:
+                    save_config(self.cfg, self.dir / "controller.json")
+            except OSError:
+                self.cfg.bind_hosts = old_hosts
+                server.should_exit = True
+                thread.join(timeout=10)
+                raise
+            self._listeners[host] = server, thread
+            self._threads.append(thread)
+            self.state.admin_hosts.add(host)
+            self._sync_servers()
+
+    def remove_listener(self, host: str, persist: bool = True) -> None:
+        host = validate_bind_host(host)
+        if host == "127.0.0.1":
+            raise ValueError("The loopback listener is required and cannot be removed.")
+        with self._listener_lock:
+            listener = self._listeners.get(host)
+            if listener is None:
+                return
+            old_primary, old_hosts = self.cfg.bind_host, self.cfg.bind_hosts
+            self.cfg.bind_hosts = [h for h in old_hosts if h != host]
+            if self.cfg.bind_host == host:
+                self.cfg.bind_host = next((h for h in self.cfg.bind_hosts if h != "127.0.0.1"), "127.0.0.1")
+            try:
+                if persist:
+                    save_config(self.cfg, self.dir / "controller.json")
+            except OSError:
+                self.cfg.bind_host, self.cfg.bind_hosts = old_primary, old_hosts
+                raise
+            server, thread = listener
+            server.should_exit = True
+            if thread is not threading.current_thread():
+                thread.join(timeout=10)
+            if thread.is_alive():
+                raise RuntimeError(f"The listener on {host} has not stopped yet.")
+            del self._listeners[host]
+            self.state.admin_hosts.discard(host)
+            self._sync_servers()
 
     def start(self) -> None:
+        if self.running:
+            return
         recovered = self.store.recover_on_start(self.cfg.lease_seconds)
         if recovered:
             log.info("recovered %d running job(s) from before the restart; waiting for workers to reconnect", recovered)
-        config = uvicorn.Config(
-            self.app, host=self.cfg.bind_host, port=self.cfg.port, ssl_keyfile=str(self.key),
-            ssl_certfile=str(self.cert), log_level="warning", access_log=False,
-        )
-        self._server = _Server(config)
-        server_thread = threading.Thread(target=self._server.run, name="controller-http", daemon=True)
-        reaper = threading.Thread(target=self._reap, name="controller-reaper", daemon=True)
-        self._threads = [server_thread, reaper]
         self.stop_event.clear()
-        for t in self._threads:
-            t.start()
-        deadline = time.time() + 15
-        while not self._server.started and time.time() < deadline:
-            if not server_thread.is_alive():
-                raise RuntimeError(
-                    f"Controller failed to start on {self.cfg.bind_host}:{self.cfg.port} (port already in use?)")
-            time.sleep(0.05)
+        self._listeners.clear()
+        self._threads = []
+        self._starting = True
+        try:
+            for host in list(self.cfg.bind_hosts):
+                self.add_listener(host, persist=False)
+        except Exception:
+            self.stop()
+            raise
+        finally:
+            self._starting = False
+        reaper = threading.Thread(target=self._reap, name="controller-reaper", daemon=True)
+        self._threads.append(reaper)
+        reaper.start()
+        self._refresh_direct_subnets()
         log.info("controller listening on https://%s:%d", self.cfg.bind_host, self.cfg.port)
+
+    def _refresh_direct_subnets(self) -> None:
+        try:
+            iface = find_direct_interface()
+            self.state.direct_subnets = {iface.subnet} if iface else set()
+        except DirectLinkError:
+            self.state.direct_subnets = set()
+
+    def direct_status(self) -> dict[str, Any]:
+        info = self.direct_group.status()
+        self.state.direct_subnets = {info.subnet} if info.ip and info.subnet else set()
+        return asdict(info) | {"fingerprint": self.fingerprint, "listeners": self.listener_hosts,
+                               "listening": bool(info.ip and info.ip in self.listener_hosts)}
+
+    def start_direct_group(self, ssid: str | None = None, passphrase: str | None = None, listen: bool = True) -> dict[str, Any]:
+        with self._direct_lock:
+            self.direct_group.start(ssid, passphrase)
+            if listen:
+                try:
+                    return self.set_direct_listener(True)
+                except Exception:
+                    self.direct_group.stop()
+                    raise
+            self._refresh_direct_subnets()
+            return self.direct_status()
+
+    def set_direct_listener(self, enabled: bool) -> dict[str, Any]:
+        with self._direct_lock:
+            if enabled:
+                info = self.direct_group.status()
+                deadline = time.monotonic() + 10
+                while info.running and not info.ip and time.monotonic() < deadline:
+                    time.sleep(0.5)
+                    info = self.direct_group.status()
+                if not info.running or not info.ip:
+                    raise DirectLinkError("The direct group has no active IPv4 address. Start the group or Windows Mobile Hotspot first.")
+                if info.ip not in self.listener_hosts:
+                    self.add_listener(info.ip, persist=False)
+                    self._direct_listener = info.ip
+                if info.subnet:
+                    self.state.direct_subnets = {info.subnet}
+            elif self._direct_listener:
+                self.remove_listener(self._direct_listener, persist=False)
+                self._direct_listener = None
+            return self.direct_status()
+
+    def stop_direct_group(self) -> dict[str, Any]:
+        with self._direct_lock:
+            self.set_direct_listener(False)
+            self.direct_group.stop()
+            self._refresh_direct_subnets()
+            return self.direct_status()
 
     def _reap(self) -> None:
         while not self.stop_event.wait(5):
@@ -471,8 +754,15 @@ class ControllerRuntime:
 
     def stop(self) -> None:
         self.stop_event.set()
-        if self._server:
-            self._server.should_exit = True
+        benchmarks = getattr(self.state, "benchmarks", None)
+        if benchmarks:
+            benchmarks.stop()
+        try:
+            self.direct_group.stop()
+        except DirectLinkError:
+            log.warning("Wi-Fi Direct publisher has not stopped yet")
+        for server in self._servers:
+            server.should_exit = True
         for t in self._threads:
             if t is not threading.current_thread():
                 t.join(timeout=10)
@@ -480,7 +770,7 @@ class ControllerRuntime:
 
     def wait(self) -> None:
         try:
-            while self._server and not self._server.should_exit:
+            while self.running:
                 time.sleep(0.5)
         except KeyboardInterrupt:
             pass

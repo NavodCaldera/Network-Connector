@@ -352,6 +352,49 @@ def _r_python_function(p: dict[str, Any], progress: Progress) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- registry
+HASH_ROUNDS = 2_000_000
+SIEVE_UNIT = 10_000_000
+
+
+def _v_benchmark_total(p: dict[str, Any]) -> dict[str, Any]:
+    _only(p, {"workload", "units", "seed", "start"})
+    start = _int(p, "start", 0, 19999, 0)
+    units = _int(p, "units", 1, 20000)
+    if start + units > 20000:
+        raise JobError("benchmark range must end at or before 20000 units")
+    return {"workload": _choice(p, "workload", {"hash_chain", "prime_sieve"}, "hash_chain"), "units": units, "seed": _int(p, "seed", 0, 2**32, 0), "start": start}
+
+
+def _v_benchmark(p: dict[str, Any]) -> dict[str, Any]:
+    clean = _v_benchmark_total(p)
+    if clean["units"] > 500:
+        raise JobError("each benchmark chunk must have at most 500 units")
+    return clean
+
+
+def _s_benchmark(p: dict[str, Any], parts: int) -> list[dict[str, Any]]:
+    out, cursor = [], p["start"]
+    for size in partition(p["units"], max(parts, (p["units"] + 499) // 500)):
+        out.append(p | {"start": cursor, "units": size})
+        cursor += size
+    return out
+
+
+def _r_benchmark(p: dict[str, Any], progress: Progress) -> dict[str, Any]:
+    digest, primes = 0, 0
+    for offset in range(p["units"]):
+        unit = p["start"] + offset
+        if p["workload"] == "hash_chain":
+            value = f"{p['seed']}:{unit}".encode("ascii")
+            for _ in range(HASH_ROUNDS):
+                value = hashlib.sha256(value).digest()
+            digest ^= int.from_bytes(value, "big")
+        else:
+            primes += _r_prime_range({"start": unit * SIEVE_UNIT, "end": (unit + 1) * SIEVE_UNIT}, lambda _: None)["primes"]
+        progress((offset + 1) * 100 / p["units"])
+    return {"units": p["units"], "digest": f"{digest:064x}"} if p["workload"] == "hash_chain" else {"units": p["units"], "primes": primes}
+
+
 @dataclass(frozen=True)
 class JobSpec:
     name: str
@@ -360,11 +403,13 @@ class JobSpec:
     validate: Callable[[dict[str, Any]], dict[str, Any]]
     run: Callable[[dict[str, Any], Progress], dict[str, Any]]
     split: Callable[[dict[str, Any], int], list[dict[str, Any]]] | None = None
+    validate_total: Callable[[dict[str, Any]], dict[str, Any]] | None = None
 
 
 REGISTRY: dict[str, JobSpec] = {
     s.name: s
     for s in (
+        JobSpec("benchmark", "Fixed work for comparing machines", {"workload": "hash_chain", "units": 4}, _v_benchmark, _r_benchmark, _s_benchmark, _v_benchmark_total),
         JobSpec("number_batch", "Sum of squares over a range of numbers", {"start": 1, "count": 5_000_000},
                 _v_number_batch, _r_number_batch, _s_number_batch),
         JobSpec("prime_range", "Count the primes in a range", {"start": 0, "end": 50_000_000},
@@ -399,8 +444,12 @@ def execute(kind: str, params: Any, progress: Progress = lambda _pct: None) -> d
 
 
 def split(kind: str, params: dict[str, Any], parts: int) -> list[dict[str, Any]]:
-    clean = validate(kind, params)
+    if kind not in REGISTRY:
+        return [validate(kind, params)]
     spec = REGISTRY[kind]
+    clean = spec.validate_total(params) if spec.validate_total else validate(kind, params)
+    if spec.validate_total and spec.split:
+        return [validate(kind, p) for p in spec.split(clean, parts)]
     if parts == 1:
         return [clean]
     if spec.split is None:
@@ -414,6 +463,14 @@ def combine(kind: str, results: list[dict[str, Any]]) -> Any:
         return None
     if kind == "number_batch":
         return {"sum_of_squares": sum(r["sum_of_squares"] for r in results), "count": sum(r["count"] for r in results)}
+    if kind == "benchmark":
+        units = sum(r["units"] for r in results)
+        if "primes" in results[0]:
+            return {"units": units, "primes": sum(r["primes"] for r in results)}
+        digest = 0
+        for r in results:
+            digest ^= int(r["digest"], 16)
+        return {"units": units, "digest": f"{digest:064x}"}
     if kind == "prime_range":
         return {"primes": sum(r["primes"] for r in results)}
     if kind == "monte_carlo_pi":

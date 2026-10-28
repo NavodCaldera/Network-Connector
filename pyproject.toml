@@ -20,6 +20,13 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+wifidirect = [
+  "winrt-runtime==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Devices.WiFiDirect==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Security.Credentials==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Foundation==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Devices.Enumeration==3.2.1; sys_platform == 'win32'",
+]
 
 [project.scripts]
 nc = "network_connector.cli:main"
@@ -35,6 +42,9 @@ version = { attr = "network_connector.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["network_connector*"]
+
+[tool.setuptools.data-files]
+"share/network_connector/scripts" = ["scripts/add-firewall-rule.ps1", "scripts/remove-firewall-rule.ps1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

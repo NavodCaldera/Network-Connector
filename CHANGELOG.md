@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.0 (in development)
+
+### Wi-Fi Direct
+
+- Added controller-owned Wi-Fi Direct publishing, Mobile Hotspot detection, worker
+  join/discovery and fingerprint-checked reconnection. Actual adapter acceptance
+  remains pending tests on the real i7 and i3.
+- Added dynamic explicit listeners, direct-link status, GUI/CLI controls and a narrow
+  firewall rule for Public/Unidentified direct networks.
+- The controller GUI can attach to a running controller. Local admin and local
+  worker traffic use an explicit loopback listener without changing pairing.
+
+### Benchmark
+
+- Added cancel-all, versioned database migration with a backup, job CPU/memory
+  measurements, attempt durations and persisted heartbeat samples.
+- Added fixed-work benchmarks, controller orchestration, history, authenticated
+  APIs, CLI commands, controller controls and shared worker results.
+- Added JSON, CSV and self-contained HTML reports.
+
 ## 0.1.0
 
 First release.

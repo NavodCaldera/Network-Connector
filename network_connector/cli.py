@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import getpass
 import json
 import sys
 import time
@@ -55,6 +56,8 @@ def cmd_controller_start(a: argparse.Namespace) -> int:
     setup_logging("controller")
     cfg = load_config(ControllerConfig, controller_dir() / "controller.json")
     if a.host:
+        if a.host != cfg.bind_host:
+            cfg.bind_hosts = [h for h in cfg.bind_hosts if h != cfg.bind_host]
         cfg.bind_host = a.host
     if a.port:
         cfg.port = a.port
@@ -176,6 +179,103 @@ def cmd_job_cancel(a: argparse.Namespace) -> int:
 
 def cmd_job_retry(a: argparse.Namespace) -> int:
     print(_admin().retry_job(a.id))
+    return 0
+
+
+def cmd_job_cancel_all(a: argparse.Namespace) -> int:
+    if not a.yes and input("Cancel all queued and running jobs? [y/N] ").strip().lower() != "y":
+        return 0
+    print(json.dumps(_admin().cancel_all()))
+    return 0
+
+
+def cmd_bench(a: argparse.Namespace) -> int:
+    from .benchmark import export_benchmark
+
+    client = _admin()
+    if a.sub == "run":
+        spec = {"workload": a.workload, "size": a.size, "scenarios": a.scenarios.split(","), "repeats": a.repeats, "order": a.order, "label": a.label}
+        if a.units is not None:
+            spec["units"] = a.units
+        ident = client.start_benchmark(spec)["id"]
+        print(f"Benchmark {ident}")
+        if not a.wait:
+            return 0
+        while True:
+            item = client.benchmark(ident)
+            if item["status"] != "running":
+                print(json.dumps(item, indent=2))
+                return 0 if item["status"] == "finished" else 1
+            time.sleep(1)
+    if a.sub == "list":
+        _table([[b["id"], b["status"], b["label"], b["spec"]["workload"]] for b in client.benchmarks()], ["ID", "STATUS", "LABEL", "WORKLOAD"])
+    elif a.sub == "cancel":
+        print(json.dumps(client.cancel_benchmark(a.id)))
+    elif a.sub == "show":
+        item = client.benchmark(a.id)
+        print(f"Benchmark {a.id}: {item['status']}")
+        rows = (item.get("result") or {}).get("scenarios", [])
+        _table([[r["scenario"], f"{r['wall_s']:.3f}", f"{r['min_s']:.3f}-{r['max_s']:.3f}", f"{r['units_per_s']:.3f}", r["speedup"]] for r in rows], ["SCENARIO", "WALL MEDIAN (s)", "RANGE (s)", "UNITS/S", "SPEEDUP"])
+        print(json.dumps(item.get("result") or {"error": item.get("error")}, indent=2))
+    elif a.sub == "export":
+        content = export_benchmark(client.benchmark(a.id), a.format)
+        if a.output:
+            Path(a.output).write_text(content, encoding="utf-8")
+            print(f"Saved {a.output}")
+        else:
+            print(content)
+    return 0
+
+
+def cmd_worker_perf(a: argparse.Namespace) -> int:
+    from .client import latest_benchmark
+    from .worker import load_worker_config
+
+    wdir = _wdir(a)
+    result = latest_benchmark(load_worker_config(wdir), wdir)
+    print(json.dumps(result, indent=2) if result else "No completed benchmark includes this worker yet.")
+    return 0
+
+
+def cmd_wifidirect(a: argparse.Namespace) -> int:
+    client = _admin()
+    if a.sub == "start":
+        result = client.direct_start(a.ssid, a.passphrase, not a.no_listen)
+    elif a.sub == "stop":
+        result = client.direct_stop()
+    else:
+        result = client.direct_status()
+    # Display credentials only when starting a group, never in routine status output.
+    if a.sub != "start":
+        result = {k: v for k, v in result.items() if k != "passphrase"}
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_worker_join(a: argparse.Namespace) -> int:
+    from dataclasses import asdict
+    from .wifidirect import join
+
+    password = a.passphrase or getpass.getpass("Wi-Fi passphrase: ")
+    info = join(a.ssid, password)
+    print(json.dumps(asdict(info), indent=2))
+    return 0
+
+
+def cmd_worker_find(a: argparse.Namespace) -> int:
+    from .link_gui import discover_controller
+
+    directory = _wdir(a)
+    cfg = load_config(WorkerConfig, directory / "worker.json")
+    result = discover_controller(cfg, directory)
+    if cfg.token:
+        cfg.controller_host = result["host"]
+        cfg.controller_fingerprint = result["fingerprint"]
+        cfg.known_hosts = list(dict.fromkeys([result["host"]] + cfg.known_hosts))[:4]
+        save_config(cfg, directory / "worker.json")
+    print(f"Controller: {result['host']}:{cfg.controller_port}\nCertificate: {result['fingerprint']}")
+    if not cfg.token:
+        print("Compare the certificate fingerprint on the controller, then pair with its one-time code.")
     return 0
 
 
@@ -346,15 +446,48 @@ def build_parser() -> argparse.ArgumentParser:
     jl.add_argument("--status")
     jl.add_argument("--limit", type=int, default=50)
     jl.set_defaults(fn=cmd_job_list)
+    ja = j.add_parser("cancel-all", help="cancel every queued and running job")
+    ja.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    ja.set_defaults(fn=cmd_job_cancel_all)
     for name, fn in (("status", cmd_job_status), ("cancel", cmd_job_cancel), ("retry", cmd_job_retry)):
         jp = j.add_parser(name)
         jp.add_argument("id")
         jp.set_defaults(fn=fn)
 
+    bench = sub.add_parser("bench", help="compare machines on identical fixed work").add_subparsers(dest="sub", required=True)
+    br = bench.add_parser("run")
+    br.add_argument("--workload", choices=["hash_chain", "prime_sieve"], default="hash_chain")
+    size = br.add_mutually_exclusive_group()
+    size.add_argument("--size", choices=["quick", "standard", "long"], default="quick")
+    size.add_argument("--units", type=int)
+    br.add_argument("--scenarios", default="each,all")
+    br.add_argument("--repeats", type=int, default=3)
+    br.add_argument("--order", choices=["fixed", "shuffled"], default="fixed")
+    br.add_argument("--label", default="")
+    br.add_argument("--wait", action="store_true")
+    br.set_defaults(fn=cmd_bench)
+    bench.add_parser("list").set_defaults(fn=cmd_bench)
+    for action in ("show", "cancel", "export"):
+        command = bench.add_parser(action)
+        command.add_argument("id")
+        command.set_defaults(fn=cmd_bench)
+        if action == "export":
+            command.add_argument("--format", choices=["json", "csv", "html"], default="json")
+            command.add_argument("-o", "--output")
+
     d = sub.add_parser("demo", help="run the proof-of-work demo")
     d.add_argument("--chunks", type=int, default=40)
     d.add_argument("--target", help="run only on this worker (e.g. your i3) to prove it works")
     d.set_defaults(fn=cmd_demo)
+
+    direct = sub.add_parser("wifidirect", help="manage the running controller's direct Wi-Fi group").add_subparsers(dest="sub", required=True)
+    ds = direct.add_parser("start")
+    ds.add_argument("--ssid", help="optional DIRECT-NC-xxxx SSID")
+    ds.add_argument("--passphrase", help="optional WPA2 passphrase; omitted generates a new one")
+    ds.add_argument("--no-listen", action="store_true", help="create the link without adding a controller listener")
+    ds.set_defaults(fn=cmd_wifidirect)
+    direct.add_parser("stop").set_defaults(fn=cmd_wifidirect)
+    direct.add_parser("status").set_defaults(fn=cmd_wifidirect)
 
     wk = sub.add_parser("worker", help="the worker agent on this computer").add_subparsers(dest="sub", required=True)
     wp = wk.add_parser("pair", help="pair this computer with a controller")
@@ -372,6 +505,12 @@ def build_parser() -> argparse.ArgumentParser:
         wc = wk.add_parser(name, help=f"{name} the running worker")
         wc.set_defaults(fn=cmd_worker_control, cmd=name)
     wk.add_parser("status").set_defaults(fn=cmd_worker_status)
+    wk.add_parser("perf", help="show this worker's latest shared benchmark").set_defaults(fn=cmd_worker_perf)
+    join = wk.add_parser("join", help="join the controller's direct Wi-Fi or hotspot")
+    join.add_argument("--ssid", required=True)
+    join.add_argument("--passphrase", help="omit to enter privately")
+    join.set_defaults(fn=cmd_worker_join)
+    wk.add_parser("find", help="find the controller; paired workers require its pinned certificate").set_defaults(fn=cmd_worker_find)
     wu = wk.add_parser("update", help="install the newest approved release from GitHub")
     wu.add_argument("--check", action="store_true", help="only report whether an update exists")
     wu.add_argument("--verify-signature", action="store_true", help="require a GPG/SSH-signed tag")
@@ -385,6 +524,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.fn(args) or 0)
     except ControllerError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except (RuntimeError, ValueError, OSError, httpx.HTTPError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

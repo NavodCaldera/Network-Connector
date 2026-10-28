@@ -10,12 +10,13 @@ from . import __version__
 from .client import pair_worker
 from .config import WorkerConfig, default_worker_limits, load_config, save_config, setup_logging
 from .gui_common import Background, fill_tree, make_tree
+from .link_gui import WorkerDirectControls
 from .paths import worker_dir
 from .sysinfo import hardware_info, live_metrics, prime_cpu_counter
 from .worker import NotPaired, WorkerAgent, load_worker_config
 
 
-class WorkerApp:
+class WorkerApp(WorkerDirectControls):
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.bg = Background(root)
@@ -31,8 +32,20 @@ class WorkerApp:
         hw = hardware_info()
 
         root.title(f"Network Connector — Worker {__version__}")
-        root.geometry("900x680")
+        root.geometry(f"900x{min(900, max(550, root.winfo_screenheight() - 100))}")
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        # Keep every section reachable on smaller laptop displays.
+        canvas = tk.Canvas(root, highlightthickness=0)
+        scroll = ttk.Scrollbar(root, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        self.body = ttk.Frame(canvas)
+        window = canvas.create_window(0, 0, window=self.body, anchor="nw")
+        self.body.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
+        root = self.body
 
         head = ttk.Frame(root, padding=8)
         head.pack(fill="x")
@@ -41,6 +54,7 @@ class WorkerApp:
         self.state_label = ttk.Label(head, text="", font=("Segoe UI", 12, "bold"))
         self.state_label.pack(anchor="w", pady=(4, 0))
 
+        self._build_worker_direct()
         # pairing
         self.pair_box = ttk.LabelFrame(root, text="1. Pair with the controller", padding=8)
         self.pair_box.pack(fill="x", padx=8, pady=4)
@@ -99,11 +113,51 @@ class WorkerApp:
         self.usage.pack(side="right")
 
         self.jtree = make_tree(root, [("Job", 120), ("Kind", 140), ("Progress", 80), ("Running for", 100)], height=4)
+        perf = ttk.LabelFrame(root, text="Performance", padding=6)
+        perf.pack(fill="x", padx=8, pady=4)
+        self.performance = ttk.Label(perf, text="No shared benchmark loaded.", wraplength=840)
+        self.performance.pack(anchor="w")
+        self._perf_busy = False
+        ttk.Button(perf, text="Refresh comparison", command=self._refresh_performance).pack(anchor="w")
+        self.root.after(3000, self._performance_tick)
         ttk.Label(root, text="Activity", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=8)
         self.log = tk.Text(root, height=10, font=("Consolas", 9))
         self.log.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         self._refresh_paired()
         self.root.after(1000, self._tick)
+
+    def _performance_tick(self) -> None:
+        self.root.after(30000, self._performance_tick)
+        self._refresh_performance()
+
+    def _refresh_performance(self) -> None:
+        if self._perf_busy or not self._paired():
+            return
+        from .client import latest_benchmark
+        self._perf_busy = True
+        def work() -> Any:
+            return latest_benchmark(load_worker_config(self.dir), self.dir)
+        def done(data: Any) -> None:
+            self._perf_busy = False
+            if not data:
+                self.performance.config(text="No finished benchmark involving this computer yet.")
+                return
+            result = data.get("result") or {}
+            text = (f"{data.get('label') or data.get('id')}: combined speedup {result.get('speedup', '?')}x; "
+                    f"efficiency {result.get('efficiency', '?')}; identical answers: {result.get('answers_identical', '?')}.")
+            cfg = load_worker_config(self.dir)
+            for row in result.get("scenarios", []):
+                if row.get("scenario") == cfg.name:
+                    text += f" This computer's relative speed: {row.get('relative_speed', '?')}x."
+                if row.get("scenario") == "all":
+                    share = row.get("per_worker", {}).get(cfg.name, {})
+                    if share:
+                        text += f" Combined work on this computer: {share.get('chunks', '?')} chunks."
+            self.performance.config(text=text)
+        def fail(exc: Exception) -> None:
+            self._perf_busy = False
+            self.performance.config(text=f"Comparison unavailable: {exc}")
+        self.bg.run(work, done, fail)
 
     # ------------------------------------------------------------------ helpers
     def _paired(self) -> bool:
@@ -170,6 +224,8 @@ class WorkerApp:
             return
         cfg = load_config(WorkerConfig, self.cfg_path)
         cfg.token = cfg.worker_id = ""
+        cfg.controller_fingerprint = ""
+        cfg.known_hosts = []
         save_config(cfg, self.cfg_path)
         (self.dir / "controller.crt").unlink(missing_ok=True)
         self._refresh_paired()
@@ -278,6 +334,9 @@ class WorkerApp:
             fill_tree(self.jtree, [])
             return
         s = agent.snapshot()
+        if not self._join_busy:
+            self.link_status.config(text=f"Link: {s.get('link', 'unknown')} | Controller: "
+                                    f"{s.get('controller_host', self.cfg.controller_host)} | RTT: {s.get('rtt_ms', 0):.1f} ms")
         colors = {"online": "#1b5e20", "paused": "#a15c00", "offline": "#b00020", "revoked": "#b00020", "disabled": "#a15c00"}
         text = {"online": "Online — ready for work", "paused": "Paused — no new jobs", "offline": "Offline — retrying connection …",
                 "connecting": "Connecting …", "revoked": "Revoked by the controller — pair again",

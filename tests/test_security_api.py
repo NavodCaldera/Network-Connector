@@ -165,3 +165,60 @@ def test_bind_host_rejects_public_and_wildcard(host):
 @pytest.mark.parametrize("host", ["192.168.1.4", "10.1.2.3", "127.0.0.1", "172.16.5.5"])
 def test_bind_host_accepts_private(host):
     assert validate_bind_host(host) == host
+
+
+@pytest.mark.parametrize("host", ["192.168.137.1", "169.254.10.1"])
+def test_bind_host_accepts_direct_and_link_local(host):
+    assert validate_bind_host(host) == host
+
+
+def test_direct_endpoints_are_admin_only_and_validate_input(env):
+    from unittest.mock import Mock
+    client, state = env
+    state.direct_runtime = runtime = Mock()
+    runtime.direct_status.return_value = {"running": False, "mode": "none"}
+    runtime.start_direct_group.return_value = {"running": True, "mode": "A"}
+    for method, path, body in [("get", "/admin/wifidirect", None),
+                              ("post", "/admin/wifidirect", {}),
+                              ("post", "/admin/wifidirect/stop", None),
+                              ("post", "/admin/wifidirect/listen", {"enabled": True})]:
+        kwargs = {"json": body} if body is not None else {}
+        assert getattr(client, method)(path, **kwargs).status_code == 401
+    assert client.get("/admin/wifidirect", headers=ADMIN).json()["mode"] == "none"
+    assert client.post("/admin/wifidirect", headers=ADMIN, json={"ssid": "x" * 33}).status_code == 422
+    assert client.post("/admin/wifidirect", headers=ADMIN, json={"passphrase": "short"}).status_code == 422
+    assert client.post("/admin/wifidirect", headers=ADMIN, json={"ssid": "DIRECT-NC-1234"}).status_code == 200
+    runtime.start_direct_group.assert_called_once_with("DIRECT-NC-1234", None, True)
+    state.admin_hosts = {"127.0.0.1", "192.168.137.1"}
+    assert client.post("/admin/wifidirect", headers=ADMIN, json={}).status_code == 403
+
+
+def test_direct_status_failure_is_structured(env):
+    from unittest.mock import Mock
+    from network_connector.wifidirect import DirectLinkError
+    client, state = env
+    state.direct_runtime = Mock()
+    state.direct_runtime.direct_status.side_effect = DirectLinkError("Windows networking command timed out.")
+    response = client.get("/admin/wifidirect", headers=ADMIN)
+    assert response.status_code == 503
+    assert response.json() == {"error": {"code": "direct_status_unavailable", "message": "Windows networking command timed out."}}
+
+
+def test_link_is_classified_from_request_source_not_worker_claim(env):
+    client, state = env
+    worker = pair(client, state).json()
+    auth = {"Authorization": "Bearer " + worker["token"]}
+    # TestClient supplies a named source, so this is LAN even if the worker claims otherwise.
+    reply = client.post("/worker/heartbeat", headers=auth, json={"metrics": {"link": "wifi-direct"}})
+    assert reply.json()["link"] == "lan"
+    assert client.get("/admin/workers", headers=ADMIN).json()["workers"][0]["link"] == "lan"
+
+
+def test_direct_peer_cannot_admin_even_on_direct_listener(env):
+    from fastapi.testclient import TestClient
+    client, state = env
+    state.admin_hosts = {"127.0.0.1", "::1", "192.168.137.1"}
+    peer = TestClient(create_app(state), client=("192.168.137.22", 12345))
+    with peer:
+        assert peer.get("/admin/summary", headers=ADMIN).status_code == 403
+        assert peer.get("/admin/wifidirect", headers=ADMIN).status_code == 403

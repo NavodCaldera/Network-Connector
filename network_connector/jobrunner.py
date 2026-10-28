@@ -14,6 +14,7 @@ from . import jobs
 
 
 def main() -> int:
+    wall_start, cpu_start = time.monotonic(), time.process_time()
     try:
         data = json.loads(sys.stdin.buffer.read())
         kind, params = data["kind"], data["params"]
@@ -39,6 +40,7 @@ def main() -> int:
         out = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "retryable": True}
     sys.stdout.write(json.dumps(out))
     sys.stdout.flush()
+    print("METRICS " + json.dumps({"cpu_s": time.process_time() - cpu_start, "wall_s": time.monotonic() - wall_start}), file=sys.stderr, flush=True)
     return 0
 
 

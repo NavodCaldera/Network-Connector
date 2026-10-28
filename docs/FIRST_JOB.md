@@ -1,5 +1,9 @@
 # Submitting your first job and proving the i3 did the work
 
+For measured comparisons of each computer alone and both together, use the
+controller's **Benchmark** tab after checking the connection with the demo below.
+See [BENCHMARK.md](BENCHMARK.md) for repeated runs, shared worker results and export.
+
 ## The demo (start here)
 
 In the controller window open the **Demo** tab and click **Run demo**. It:

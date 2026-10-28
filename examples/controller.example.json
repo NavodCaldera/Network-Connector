@@ -1,5 +1,6 @@
 {
   "bind_host": "192.168.1.4",
+  "bind_hosts": [],
   "port": 8765,
   "lease_seconds": 60,
   "default_timeout_s": 600,

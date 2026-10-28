@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import secrets
 import ssl
+import ipaddress
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,10 @@ def pinned_context(cafile: Path) -> ssl.SSLContext:
     return ctx
 
 
+def controller_url(host: str, port: int) -> str:
+    return f"https://{'[' + host + ']' if ':' in host else host}:{port}"
+
+
 def raise_for_error(resp: httpx.Response) -> dict[str, Any]:
     try:
         body = resp.json()
@@ -54,7 +59,7 @@ class AdminClient:
 
     def __init__(self, host: str, port: int, cert: Path, admin_token: str, timeout: float = 20) -> None:
         self._http = httpx.Client(
-            base_url=f"https://{host}:{port}", verify=pinned_context(cert),
+            base_url=controller_url(host, port), verify=pinned_context(cert),
             headers={"X-Admin-Token": admin_token}, timeout=timeout,
         )
 
@@ -95,6 +100,24 @@ class AdminClient:
     def cancel_job(self, job_id: str) -> dict[str, Any]:
         return self._call("POST", f"/admin/jobs/{job_id}/cancel")
 
+    def cancel_all(self) -> dict[str, Any]:
+        return self._call("POST", "/admin/jobs/cancel-all")
+
+    def start_benchmark(self, spec: dict[str, Any]) -> dict[str, Any]:
+        return self._call("POST", "/admin/benchmarks", json=spec)
+
+    def benchmarks(self, limit: int = 50) -> list[dict[str, Any]]:
+        return self._call("GET", "/admin/benchmarks", params={"limit": limit})["benchmarks"]
+
+    def benchmark(self, ident: str) -> dict[str, Any]:
+        return self._call("GET", f"/admin/benchmarks/{ident}")
+
+    def cancel_benchmark(self, ident: str) -> dict[str, Any]:
+        return self._call("POST", f"/admin/benchmarks/{ident}/cancel")
+
+    def delete_benchmark(self, ident: str) -> dict[str, Any]:
+        return self._call("DELETE", f"/admin/benchmarks/{ident}")
+
     def retry_job(self, job_id: str) -> dict[str, Any]:
         return self._call("POST", f"/admin/jobs/{job_id}/retry")
 
@@ -110,6 +133,18 @@ class AdminClient:
     def shutdown(self) -> dict[str, Any]:
         return self._call("POST", "/admin/shutdown")
 
+    def direct_status(self) -> dict[str, Any]:
+        return self._call("GET", "/admin/wifidirect")
+
+    def direct_start(self, ssid: str | None = None, passphrase: str | None = None, listen: bool = True) -> dict[str, Any]:
+        return self._call("POST", "/admin/wifidirect", json={"ssid": ssid, "passphrase": passphrase, "listen": listen}, timeout=45)
+
+    def direct_stop(self) -> dict[str, Any]:
+        return self._call("POST", "/admin/wifidirect/stop", timeout=30)
+
+    def direct_listen(self, enabled: bool) -> dict[str, Any]:
+        return self._call("POST", "/admin/wifidirect/listen", json={"enabled": enabled}, timeout=30)
+
 
 def admin_client_from_disk(controller_dir_: Path) -> AdminClient:
     from .config import ControllerConfig, load_config
@@ -118,15 +153,33 @@ def admin_client_from_disk(controller_dir_: Path) -> AdminClient:
     if not cfg.bind_host:
         raise ControllerError(0, "not_started", "The controller has not been started yet.")
     token = (controller_dir_ / "admin.token").read_text(encoding="utf-8").strip()
-    return AdminClient(cfg.bind_host, cfg.port, controller_dir_ / "server.crt", token)
+    return AdminClient("127.0.0.1", cfg.port, controller_dir_ / "server.crt", token)
 
 
 # ---------------------------------------------------------------- pairing (worker side)
-def fetch_server_cert(host: str, port: int) -> tuple[str, str]:
+def latest_benchmark(cfg: WorkerConfig, wdir: Path) -> dict[str, Any] | None:
+    with httpx.Client(base_url=controller_url(cfg.controller_host, cfg.controller_port), verify=pinned_context(wdir / "controller.crt"), headers={"Authorization": f"Bearer {cfg.token}"}, timeout=10) as http:
+        return raise_for_error(http.get("/worker/benchmarks/latest"))["benchmark"]
+
+
+def fetch_server_cert(host: str, port: int, timeout: float = 10) -> tuple[str, str]:
     """Return (PEM, fingerprint) of the certificate the server presents right now."""
-    pem = ssl.get_server_certificate((host, port), timeout=10)  # type: ignore[call-arg]
+    pem = ssl.get_server_certificate((host, port), timeout=timeout)  # type: ignore[call-arg]
     der = ssl.PEM_cert_to_DER_cert(pem)
     return pem, fingerprint_der(der)
+
+
+def probe(host: str, port: int, timeout: float = 2) -> str | None:
+    """Read a candidate's certificate without sending a token or trusting its identity."""
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_unspecified or not (ip.is_private or ip.is_loopback or ip.is_link_local):
+            return None
+        if not isinstance(port, int) or not 1 <= port <= 65535:
+            return None
+        return fetch_server_cert(str(ip), port, timeout=max(0.1, min(timeout, 10)))[1]
+    except (OSError, ValueError):
+        return None
 
 
 def pair_worker(host: str, port: int, code: str, name: str, worker_dir: Path, cfg: WorkerConfig) -> WorkerConfig:
@@ -143,7 +196,7 @@ def pair_worker(host: str, port: int, code: str, name: str, worker_dir: Path, cf
     cert_path = worker_dir / "controller.crt"
     cert_path.write_text(pem, encoding="utf-8")
     nonce = secrets.token_hex(16)
-    with httpx.Client(base_url=f"https://{host}:{port}", verify=pinned_context(cert_path), timeout=20) as http:
+    with httpx.Client(base_url=controller_url(host, port), verify=pinned_context(cert_path), timeout=20) as http:
         body = raise_for_error(http.post("/pair", json={
             "worker_name": name, "nonce": nonce,
             "proof": pairing_proof(code, "worker", fingerprint, nonce),
@@ -154,6 +207,8 @@ def pair_worker(host: str, port: int, code: str, name: str, worker_dir: Path, cf
         cert_path.unlink(missing_ok=True)
         raise ControllerError(0, "controller_not_authentic", "The controller failed to prove it knows the pairing code. Aborting.")
     cfg.controller_host, cfg.controller_port = host, port
+    cfg.controller_fingerprint = fingerprint
+    cfg.known_hosts = [host]
     cfg.name, cfg.worker_id, cfg.token = name, body["worker_id"], body["token"]
     save_config(cfg, worker_dir / "worker.json")
     protect_path(cert_path)

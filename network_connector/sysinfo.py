@@ -38,8 +38,19 @@ def prime_cpu_counter() -> None:
 
 def live_metrics() -> dict[str, Any]:
     mem = psutil.virtual_memory()
+    try:
+        battery = psutil.sensors_battery()
+    except (psutil.Error, OSError, NotImplementedError):
+        battery = None
+    try:
+        freq = psutil.cpu_freq()
+    except (psutil.Error, OSError, NotImplementedError):
+        freq = None
     return {
         "cpu_percent": round(psutil.cpu_percent(interval=None), 1),
         "mem_percent": round(mem.percent, 1),
         "mem_used_mb": int(mem.used / 1024 / 1024),
+        "on_ac_power": battery.power_plugged if battery else None,
+        "battery_percent": battery.percent if battery else None,
+        "cpu_freq_mhz": freq.current if freq else None,
     }

@@ -11,7 +11,9 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
 from . import __version__, jobs
-from .client import AdminClient
+from .client import AdminClient, admin_client_from_disk
+from .benchmark_gui import BenchmarkControls
+from .link_gui import ControllerDirectControls
 from .config import (
     ConfigError,
     ControllerConfig,
@@ -41,7 +43,7 @@ def _short(value: Any) -> Any:
     return value
 
 
-class ControllerApp:
+class ControllerApp(BenchmarkControls, ControllerDirectControls):
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.bg = Background(root)
@@ -69,7 +71,9 @@ class ControllerApp:
         self._build_jobs(nb)
         self._build_submit(nb)
         self._build_pairing(nb)
+        self._build_direct(nb)
         self._build_demo(nb)
+        self._build_benchmark(nb)
         self._build_settings(nb)
         self.root.after(1000, self._tick)
 
@@ -102,7 +106,7 @@ class ControllerApp:
         ttk.Label(tab, text="Workers", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 2))
         self.wtree = make_tree(tab, [("Name", 130), ("Status", 80), ("CPU", 60), ("RAM", 60), ("CPU model", 230),
                                      ("Limits", 140), ("Running", 60), ("Done", 60), ("Failed", 60),
-                                     ("Last heartbeat", 100), ("Version", 60)], height=6)
+                                     ("Last heartbeat", 100), ("Version", 60), ("Link", 95)], height=6)
         btns = ttk.Frame(tab)
         btns.pack(fill="x", pady=4)
         for label, action in (("Pause", "pause"), ("Resume", "resume"), ("Disable", "disable"),
@@ -127,7 +131,8 @@ class ControllerApp:
         self.job_filter.set("all")
         self.job_filter.pack(side="left", padx=4)
         for label, fn in (("Cancel job", self.cancel_selected), ("Cancel whole batch", self.cancel_batch_selected),
-                          ("Retry job", self.retry_selected), ("Save image result…", self.save_image_result)):
+                          ("Retry job", self.retry_selected), ("Cancel all", self.cancel_all_jobs),
+                          ("Save image result…", self.save_image_result)):
             ttk.Button(top, text=label, command=fn).pack(side="left", padx=2)
         self.jtree = make_tree(tab, [("ID", 110), ("Batch", 110), ("Kind", 110), ("Status", 80), ("Progress", 70),
                                      ("Worker", 110), ("Try", 40), ("Time", 70), ("Error", 300)], height=14)
@@ -249,12 +254,15 @@ class ControllerApp:
         self.code_label.pack(anchor="w", pady=12)
         self.code_info = ttk.Label(tab, text="", justify="left")
         self.code_info.pack(anchor="w")
+        self.direct_pair_hint = ttk.Label(tab, text="", wraplength=950, justify="left")
+        self.direct_pair_hint.pack(anchor="w", pady=8)
 
     def _build_demo(self, nb: ttk.Notebook) -> None:
         tab = ttk.Frame(nb, padding=12)
         nb.add(tab, text="Demo")
         ttk.Label(tab, text="Proof-of-work demo: counts the primes below 100,000,000 across all online workers and shows "
-                  "which computer did each part. The answer is checked against the known value 5,761,455.",
+                  "which computer did each part. The answer is checked against the known value 5,761,455. "
+                  "Use the Benchmark tab for measured comparisons between machines.",
                   wraplength=1000).pack(anchor="w")
         row = ttk.Frame(tab)
         row.pack(anchor="w", pady=8)
@@ -276,11 +284,17 @@ class ControllerApp:
         nb.add(tab, text="Settings & help")
         net = ttk.LabelFrame(tab, text="Network (applies the next time you start the controller)", padding=8)
         net.pack(fill="x")
-        ips = list_private_ips() + ["127.0.0.1"]
+        ips = list(dict.fromkeys([self.cfg.bind_host, "127.0.0.1"])) if self.cfg.bind_host else ["127.0.0.1"]
         self.bind_var = tk.StringVar(value=self.cfg.bind_host or (ips[0] if ips else "127.0.0.1"))
         self.port_var = tk.IntVar(value=self.cfg.port)
         ttk.Label(net, text="Listen on (this PC's private LAN address)").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(net, values=ips, textvariable=self.bind_var, width=18).grid(row=0, column=1, sticky="w", padx=6)
+        bind_choices = ttk.Combobox(net, values=ips, textvariable=self.bind_var, width=42)
+        bind_choices.grid(row=0, column=1, sticky="w", padx=6)
+        def addresses_ready(values: list[str]) -> None:
+            bind_choices.config(values=values)
+            if not self.cfg.bind_host and not self.admin and self.bind_var.get() == "127.0.0.1" and values:
+                self.bind_var.set(values[0])
+        self.bg.run(lambda: list_private_ips(labelled=True) + ["127.0.0.1"], addresses_ready)
         ttk.Label(net, text="Port").grid(row=1, column=0, sticky="w")
         ttk.Spinbox(net, from_=1024, to=65535, textvariable=self.port_var, width=8).grid(row=1, column=1, sticky="w", padx=6)
         ttk.Button(net, text="Save", command=self.save_settings).grid(row=2, column=0, sticky="w", pady=6)
@@ -304,24 +318,48 @@ class ControllerApp:
 
     # ------------------------------------------------------------------ controller lifecycle
     def toggle_controller(self) -> None:
-        if self.runtime:
+        if self.admin:
+            if not self.runtime and not messagebox.askyesno(
+                    "Stop controller", "Stop the controller started elsewhere? Running jobs will be interrupted."):
+                return
             self.start_btn.config(state="disabled")
-            self.bg.run(self._stop_all, lambda _r: self._set_stopped())
+            self.bg.run(lambda: self._stop_all(shutdown_attached=True), lambda _r: self._set_stopped())
             return
-        self.save_settings(quiet=True)
         self.start_btn.config(state="disabled")
         self.status.config(text="Starting …", foreground="#555")
+        selected_host = self.bind_var.get().split(" — ", 1)[0].strip()
+        selected_port = int(self.port_var.get())
 
         def work() -> tuple[Any, AdminClient]:
             from .controller import ControllerRuntime
 
-            rt = ControllerRuntime(load_config(ControllerConfig, self.cfg_path))
-            rt.start()
-            return rt, AdminClient(rt.cfg.bind_host, rt.cfg.port, rt.cert, rt.admin_token)
+            client = None
+            try:
+                client = admin_client_from_disk(self.cfg_path.parent)
+                client.health()
+                client.summary()
+                return None, client
+            except Exception:
+                if client:
+                    client.close()
+            cfg = load_config(ControllerConfig, self.cfg_path)
+            if cfg.bind_host != selected_host:
+                cfg.bind_hosts = [h for h in cfg.bind_hosts if h != cfg.bind_host]
+            cfg.bind_host, cfg.port = selected_host, selected_port
+            rt = ControllerRuntime(cfg)
+            try:
+                rt.start()
+            except Exception:
+                rt.stop()
+                rt.store.close()
+                raise
+            return rt, AdminClient("127.0.0.1", rt.cfg.port, rt.cert, rt.admin_token)
 
         def done(res: tuple[Any, AdminClient]) -> None:
             self.runtime, self.admin = res
-            self.status.config(text=f"Controller running at {self.runtime.cfg.bind_host}:{self.runtime.cfg.port}",
+            self.cfg = load_config(ControllerConfig, self.cfg_path)
+            origin = "" if self.runtime else " (started elsewhere)"
+            self.status.config(text=f"Controller running{origin} at {self.cfg.bind_host}:{self.cfg.port}",
                                foreground="#1b5e20")
             self.start_btn.config(text="Stop controller", state="normal")
             self.local_btn.config(state="normal")
@@ -333,11 +371,13 @@ class ControllerApp:
 
         self.bg.run(work, done, fail)
 
-    def _stop_all(self) -> None:
+    def _stop_all(self, shutdown_attached: bool = False) -> None:
         if self.local_agent:
             self.local_agent.stop()
             self.local_agent = None
         if self.admin:
+            if shutdown_attached and not self.runtime:
+                self.admin.shutdown()
             self.admin.close()
             self.admin = None
         if self.runtime:
@@ -359,9 +399,9 @@ class ControllerApp:
             self.local_btn.config(state="disabled")
             self.bg.run(agent.stop, lambda _r: self.local_btn.config(text="Use this PC as a worker too", state="normal"))
             return
-        if not (self.admin and self.runtime):
+        if not self.admin:
             return
-        admin, host, port = self.admin, self.runtime.cfg.bind_host, self.runtime.cfg.port
+        admin, host, port = self.admin, "127.0.0.1", self.cfg.port
         threads, mem = self.local_threads.get(), self.local_mem.get()
 
         def work() -> Any:
@@ -386,7 +426,10 @@ class ControllerApp:
 
     def save_settings(self, quiet: bool = False) -> None:
         cfg = load_config(ControllerConfig, self.cfg_path)
-        cfg.bind_host, cfg.port = self.bind_var.get().strip(), int(self.port_var.get())
+        previous_host = cfg.bind_host
+        cfg.bind_host, cfg.port = self.bind_var.get().split(" — ", 1)[0].strip(), int(self.port_var.get())
+        if cfg.bind_host != previous_host:
+            cfg.bind_hosts = [h for h in cfg.bind_hosts if h != previous_host]
         try:
             from .config import validate_bind_host
 
@@ -435,7 +478,7 @@ class ControllerApp:
             rows.append((w["id"], [w["name"], w["status"], f"{m.get('cpu_percent', '–')}%", f"{m.get('mem_percent', '–')}%",
                                    info.get("cpu_name", "?"),
                                    f"{lim.get('max_concurrent_jobs', '?')} jobs, {lim.get('max_memory_mb', '?')} MB",
-                                   w["running"], w["succeeded"], w["failed"], hb, w["version"]]))
+                                   w["running"], w["succeeded"], w["failed"], hb, w["version"], w.get("link", "unknown")]))
         fill_tree(self.wtree, rows)
         live = [w for w in workers if w["history"] and w["status"] != "revoked"]
         self.cpu_graph.draw({w["name"]: [h[1] for h in w["history"]] for w in live})
@@ -568,9 +611,9 @@ class ControllerApp:
 
     def create_code(self) -> None:
         admin = self._need_admin()
-        if not admin or not self.runtime:
+        if not admin:
             return
-        host, port = self.runtime.cfg.bind_host, self.runtime.cfg.port
+        host, port = self.cfg.bind_host, self.cfg.port
 
         def done(res: dict[str, Any]) -> None:
             self._pair_expires = time.time() + res["expires_in_seconds"]

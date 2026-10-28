@@ -20,6 +20,10 @@ win over `.env`.
 
 Example: [examples/controller.example.json](../examples/controller.example.json)
 
+The controller also listens on `127.0.0.1` using the same port and certificate. The admin
+client and this computer's local worker use that address, so changing the LAN address
+does not change their connection. Remote workers still use the LAN address.
+
 ## Worker: `worker\worker.json`
 
 | Setting | Default | Meaning |
@@ -47,3 +51,22 @@ token only ever comes from pairing).
 | You're actively using the i3 | 1–2 | 1024 MB |
 
 On the i7 (16 threads, 16 GB), 14 threads with 768 MB each leaves room for the controller and your apps.
+
+## Direct-link addresses and discovery
+
+`ControllerConfig.bind_hosts` is a JSON array of additional explicit private,
+link-local or loopback IPs. The existing `bind_host` remains the primary address.
+The controller always listens on `127.0.0.1`; wildcard/public binds are rejected.
+The direct-link tab adds/removes its detected address at runtime without replacing
+the TLS certificate. Workers and subnets are never added to the admin allowlist.
+
+Worker pairing stores `controller_fingerprint` and up to four `known_hosts`.
+Old workers can derive the fingerprint from their existing pinned certificate.
+After three failed connection rounds, the worker probes saved addresses and the
+detected direct interface's gateway/first host. It switches only when the observed
+certificate matches the pin. `nc worker find` uses the same identity requirement
+for paired workers; an unpaired worker must compare the fingerprint before pairing.
+
+Set address lists in environment variables as JSON, for example
+`NC_BIND_HOSTS=["192.168.1.4","127.0.0.1"]`. Only use addresses assigned to this
+computer. See [WIFI_DIRECT.md](WIFI_DIRECT.md) for runtime link setup and firewall rules.

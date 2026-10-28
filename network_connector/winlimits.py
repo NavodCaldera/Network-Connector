@@ -58,6 +58,7 @@ if sys.platform == "win32":
     _k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     _k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
     _k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _k32.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]
 
 
 def set_low_priority(pid: int) -> None:
@@ -96,3 +97,11 @@ def limit_memory(pid: int, megabytes: int) -> object | None:
 def release(handle: object | None) -> None:
     if handle and sys.platform == "win32":
         _k32.CloseHandle(handle)
+
+
+def peak_memory_mb(handle: object | None) -> float | None:
+    if handle and sys.platform == "win32":
+        info = _ExtendedLimit()
+        if _k32.QueryInformationJobObject(handle, _EXTENDED_LIMIT_INFO, ctypes.byref(info), ctypes.sizeof(info), None):
+            return info.PeakProcessMemoryUsed / 1024 / 1024
+    return None

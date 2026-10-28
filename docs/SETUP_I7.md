@@ -85,4 +85,13 @@ Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -like "192.16
 **Tip:** give the i7 a fixed address in your router (a "DHCP reservation"), so the address the i3
 was paired with doesn't change. If it does change, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-i7s-ip-address-changed).
 
+## Router-less option
+
+Install the optional controller publisher while online:
+`powershell -ExecutionPolicy Bypass -File .\scripts\setup-controller.ps1 -WiFiDirect`.
+Start the controller, open **Wi-Fi Direct**, start a group, and allow its narrow
+firewall rule using the tab's button. Windows Mobile Hotspot is the fallback when
+the publisher is unavailable. See [WIFI_DIRECT.md](WIFI_DIRECT.md) for both modes,
+fingerprint comparison and the pending real-adapter acceptance checks.
+
 Next: [set up the i3](SETUP_I3.md).

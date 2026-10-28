@@ -32,12 +32,25 @@ def _ver(text: str) -> tuple[int, int, int]:
 
 
 def _run(args: list[str], cwd: Path, timeout: int = 300) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False)
+    try:
+        return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise UpdateError(f"Update command timed out after {timeout}s.") from exc
+    except OSError as exc:
+        raise UpdateError(f"Could not run update command: {exc}") from exc
 
 
 def _git(repo: Path, *args: str) -> str:
-    res = _run(["git", *args], repo)
+    fetching = bool(args and args[0] == "fetch")
+    try:
+        res = _run(["git", *args], repo, timeout=30 if fetching else 300)
+    except UpdateError as exc:
+        if fetching:
+            raise UpdateError("No internet connection; connect to a normal network to update. If already online, check Git and repository access.") from exc
+        raise
     if res.returncode != 0:
+        if fetching:
+            raise UpdateError("No internet connection; connect to a normal network to update. If already online, check Git and repository access.")
         raise UpdateError(f"git {' '.join(args)} failed: {(res.stderr or res.stdout).strip()}")
     return res.stdout.strip()
 
