@@ -224,3 +224,52 @@ def test_connection_acceptor_stop_cancels_pending_and_closes_devices():
     request.close.assert_called_once()
     device.remove_connection_status_changed.assert_called_once_with("device-token")
     device.close.assert_called_once()
+
+
+def test_open_group_name_and_derived_passphrase_are_the_same_everywhere():
+    from network_connector.wifidirect import DIRECT_NC_RE, derived_passphrase, open_group_ssid, validate_credentials
+
+    ssid = open_group_ssid("ab12" + "0" * 60)
+    assert ssid == "DIRECT-NC-AB12" and DIRECT_NC_RE.fullmatch(ssid)
+    secret = derived_passphrase(ssid)
+    assert secret == derived_passphrase("DIRECT-NC-AB12") and len(secret) == 24
+    assert secret != derived_passphrase("DIRECT-NC-AB13")
+    validate_credentials(ssid, secret)  # acceptable to the Wi-Fi Direct publisher and netsh
+    for bad in ("home-wifi", "DIRECT-NC-ab12", "DIRECT-NC-AB123"):
+        with pytest.raises(direct.DirectLinkError):
+            derived_passphrase(bad)
+
+
+def test_auto_join_only_when_on_no_wifi_and_at_most_every_30_seconds():
+    from network_connector.wifidirect import AutoJoin
+
+    auto = AutoJoin()
+    assert auto.due(100.0) and not auto.due(129.0) and auto.due(130.0)
+    assert AutoJoin.decide(["DIRECT-NC-AB12", "home"], []) == ("join", "DIRECT-NC-AB12", "")
+    assert AutoJoin.decide(["DIRECT-NC-AB12"], ["home"]) == ("offer", "DIRECT-NC-AB12", "home")
+    assert AutoJoin.decide(["DIRECT-NC-AB12"], None)[0] == "offer"  # unknown state is never joined by itself
+    assert AutoJoin.decide(["DIRECT-NC-AB12"], ["DIRECT-NC-CD34"]) is None
+    assert AutoJoin.decide(["DIRECT-NC-AB12"], [], own_ssid="DIRECT-NC-AB12") is None
+    assert AutoJoin.decide(["DIRECT-xy-Printer"], []) is None
+
+
+def test_open_requester_starts_its_group_with_derived_credentials(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    from network_connector.config import ControllerConfig
+    from network_connector.controller import ControllerRuntime
+    from network_connector.wifidirect import derived_passphrase, open_group_ssid
+
+    rt = ControllerRuntime(ControllerConfig(bind_host="127.0.0.1", join_policy="anyone"), tmp_path)
+    try:
+        rt.direct_group = Mock()
+        monkeypatch.setattr(rt, "direct_status", lambda: {})
+        rt.start_direct_group(listen=False)
+        ssid = open_group_ssid(rt.fingerprint)
+        rt.direct_group.start.assert_called_once_with(ssid, derived_passphrase(ssid))
+        rt.cfg.join_policy = "code"
+        rt.direct_group.start.reset_mock()
+        rt.start_direct_group(listen=False)
+        rt.direct_group.start.assert_called_once_with(None, None)  # closed groups keep random credentials
+    finally:
+        rt.store.close()

@@ -96,6 +96,34 @@ def verify_signature(cert: Any, data: bytes, signature: bytes) -> bool:
         return False
 
 
+EXPIRY_WARN_DAYS = 90
+
+
+def cert_expires(path: Path) -> dt.datetime:
+    cert = load_cert(Path(path).read_text(encoding="ascii"))
+    after = getattr(cert, "not_valid_after_utc", None)
+    return after if after is not None else cert.not_valid_after.replace(tzinfo=dt.timezone.utc)
+
+
+def expiry_warning(path: Path, now: dt.datetime | None = None, warn_days: int = EXPIRY_WARN_DAYS) -> str:
+    """A plain-English warning when a pinned certificate expires soon (TLS refuses it afterwards), else "".
+
+    Certificates are never renewed silently: the device ID is the certificate's hash, so a new certificate is
+    a new identity and every helper must pair or join again. A 0.2.0 controller certificate lasts 2 years.
+    """
+    try:
+        expires = cert_expires(path)
+    except (OSError, ValueError):
+        return ""
+    left = expires - (now or dt.datetime.now(dt.timezone.utc))
+    if left.total_seconds() <= 0:
+        return f"The certificate expired on {expires:%Y-%m-%d}. Connections are refused until you renew it (docs/SECURITY.md)."
+    if left.days < warn_days:
+        return (f"The certificate expires on {expires:%Y-%m-%d} ({left.days} days). Plan to renew it: "
+                "helpers must pair or join again afterwards (docs/SECURITY.md).")
+    return ""
+
+
 def join_message(challenge: str, requester_id: str, helper_id: str) -> bytes:
     """What a helper signs to join. Binding the requester ID stops a relay to another requester."""
     return b"\n".join([JOIN_DOMAIN, challenge.encode("ascii"), requester_id.encode("ascii"), helper_id.encode("ascii")])

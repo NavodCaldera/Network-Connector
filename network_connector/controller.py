@@ -370,6 +370,7 @@ class ControllerState:
     closing: bool = False
     save_cfg: Any = None
     on_policy_change: Any = None
+    cert_path: Any = None
 
 
 def create_app(state: ControllerState) -> FastAPI:
@@ -821,7 +822,11 @@ def create_app(state: ControllerState) -> FastAPI:
     # ---- admin: identity, join policy and devices
     @app.get("/admin/identity", dependencies=[Depends(require_admin)])
     def admin_identity() -> dict[str, Any]:
-        return {"device_id": state.fingerprint, "short_id": identity.short_id(state.fingerprint), "name": _requester_name()}
+        out = {"device_id": state.fingerprint, "short_id": identity.short_id(state.fingerprint), "name": _requester_name()}
+        if state.cert_path:
+            out |= {"expires": identity.cert_expires(state.cert_path).isoformat(),
+                    "expiry_warning": identity.expiry_warning(state.cert_path)}
+        return out
 
     def _policy() -> dict[str, Any]:
         announcer = getattr(state.direct_runtime, "announcer", None)
@@ -973,7 +978,11 @@ class ControllerRuntime:
             identity=self.identity,
             save_cfg=lambda: save_config(self.cfg, self.dir / "controller.json"),
             on_policy_change=self._sync_announcer,
+            cert_path=self.cert,
         )
+        warning = identity.expiry_warning(self.cert)
+        if warning:
+            log.warning("controller certificate: %s", warning)
         self.direct_group = DirectGroup()
         self._direct_listener: str | None = None
         self._listener_lock = threading.RLock()
@@ -1131,6 +1140,12 @@ class ControllerRuntime:
 
     def start_direct_group(self, ssid: str | None = None, passphrase: str | None = None, listen: bool = True) -> dict[str, Any]:
         with self._direct_lock:
+            if ssid is None and passphrase is None and self.cfg.join_policy != "code":
+                # Open groups: a name and passphrase every copy of the app can derive (PLAN §15.3).
+                from .wifidirect import derived_passphrase, open_group_ssid
+
+                ssid = open_group_ssid(self.fingerprint)
+                passphrase = derived_passphrase(ssid)
             self.direct_group.start(ssid, passphrase)
             if listen:
                 try:

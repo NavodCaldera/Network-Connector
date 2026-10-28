@@ -392,7 +392,13 @@ def cmd_identity(a: argparse.Namespace) -> int:
 
     ident = identity.set_name(a.name) if a.name else identity.current()
     print(f"Name:       {ident.name}\nShort ID:   {ident.short_id}\nDevice ID:  {ident.device_id}\n"
-          f"Folder:     {ident.cert_path.parent}")
+          f"Folder:     {ident.cert_path.parent}\nExpires:    {identity.cert_expires(ident.cert_path):%Y-%m-%d}")
+    from .paths import controller_dir
+
+    for label, path in (("Device certificate", ident.cert_path), ("Requester certificate", controller_dir() / "server.crt")):
+        warning = identity.expiry_warning(path) if path.is_file() else ""
+        if warning:
+            print(f"Warning ({label}): {warning}")
     return 0
 
 

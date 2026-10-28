@@ -119,3 +119,19 @@ def test_verify_numbers_match_and_commitment_binds_nonce():
     assert re.fullmatch(r"\d{6}", code)
     assert code == identity.verify_code(helper, requester, na, nb)
     assert len({identity.verify_code(helper, requester, identity.new_nonce(), nb) for _ in range(20)}) > 15
+
+
+def test_expiry_warning_for_a_migrated_two_year_certificate(tmp_path):
+    import datetime as dt
+
+    from network_connector import identity
+    from network_connector.security import generate_self_signed
+
+    cert, key = tmp_path / "server.crt", tmp_path / "server.key"
+    generate_self_signed(cert, key, ["127.0.0.1"])
+    expires = identity.cert_expires(cert)
+    assert identity.expiry_warning(cert, now=expires - dt.timedelta(days=200)) == ""
+    soon = identity.expiry_warning(cert, now=expires - dt.timedelta(days=30))
+    assert "expires on" in soon and "30 days" in soon and "pair or join again" in soon
+    assert "expired" in identity.expiry_warning(cert, now=expires + dt.timedelta(days=1))
+    assert identity.expiry_warning(tmp_path / "missing.crt") == ""

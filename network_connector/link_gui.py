@@ -78,6 +78,41 @@ def allow_direct_firewall(host: str, port: int) -> None:
         raise RuntimeError("Firewall setup was declined or failed. Run scripts/add-firewall-rule.ps1 as administrator.")
 
 
+def discovery_program() -> str:
+    """The interpreter Windows Firewall sees for this app: the base python.exe, never the venv launcher."""
+    exe = Path(getattr(sys, "_base_executable", sys.executable) or sys.executable).resolve()
+    if exe.name.lower() == "pythonw.exe" and exe.with_name("python.exe").is_file():
+        exe = exe.with_name("python.exe")
+    if exe.name.lower() != "python.exe" or any(c in str(exe) for c in "'\"*?`$"):
+        raise RuntimeError(f"Unexpected Python path for a firewall rule: {exe}")
+    return str(exe)
+
+
+def discovery_firewall_command(port: int, local_address: str | None) -> str:
+    """The elevated command that adds the narrow discovery rule (UDP only, one program, LAN or direct subnet)."""
+    if not 1024 <= port <= 65535:
+        raise ValueError("Invalid discovery port")
+    script = Path(__file__).resolve().parents[1] / "scripts" / "add-firewall-rule.ps1"
+    if not script.is_file():
+        script = Path(sys.prefix) / "share" / "network_connector" / "scripts" / "add-firewall-rule.ps1"
+    if not script.is_file():
+        raise RuntimeError("Firewall setup script is missing. Run from a full project installation.")
+    args = [f"'-File','\"{str(script).replace(chr(39), chr(39) * 2)}\"'", "'-Discovery'", f"'-DiscoveryPort','{port}'",
+            f"'-Program','\"{discovery_program()}\"'"]
+    if local_address:
+        args.append(f"'-LocalAddress','{ipaddress.IPv4Address(local_address)}'")
+    return ("$p=Start-Process -FilePath powershell.exe -Verb RunAs -WindowStyle Hidden -Wait -PassThru "
+            f"-ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass',{','.join(args)}); exit $p.ExitCode")
+
+
+def allow_discovery_firewall(port: int, local_address: str | None = None) -> None:
+    encoded = base64.b64encode(discovery_firewall_command(port, local_address).encode("utf-16-le")).decode("ascii")
+    proc = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                          capture_output=True, text=True, timeout=120)
+    if proc.returncode:
+        raise RuntimeError("Firewall setup was declined or failed. Run scripts/add-firewall-rule.ps1 -Discovery as administrator.")
+
+
 class ControllerDirectControls:
     def _build_direct(self, nb: ttk.Notebook) -> None:
         tab = ttk.Frame(nb, padding=12)
@@ -320,7 +355,9 @@ class ControllerJoinControls:
 
         self._devices_busy = False
         ident, policy, devices = data
-        self.identity_label.config(text=f"This requester: {ident['name']}   ·   ID {ident['short_id']}")
+        warning = ident.get("expiry_warning") or ""
+        self.identity_label.config(text=f"This requester: {ident['name']}   ·   ID {ident['short_id']}"
+                                   + (f"\n{warning}" if warning else ""), foreground="#b00020" if warning else "")
         self._policy_render(policy)
         rows = [(f"r:{r['device_id']}", ["Wants to join", r["name"], r["short_id"], ""]) for r in devices["requests"]]
         rows += [(f"v:{v['device_id']}", ["Verify", v["worker"], v["short_id"], f"{v['code'][:3]} {v['code'][3:]}"])
@@ -366,9 +403,18 @@ class WorkerNearbyControls:
         for label, fn in (("Join", self._nearby_join), ("Search", self._nearby_search), ("Trust", self._nearby_trust),
                           ("Block", self._nearby_block), ("Verify", self._nearby_verify), ("Leave", self._nearby_leave)):
             ttk.Button(buttons, text=label, command=fn).pack(side="left", padx=2)
-        self.auto_direct = tk.BooleanVar(value=False)
-        ttk.Checkbutton(buttons, text="Join nearby Wi-Fi Direct groups automatically (not available yet)",
-                        variable=self.auto_direct, state="disabled").pack(side="left", padx=10)
+        if sys.platform == "win32":
+            ttk.Button(buttons, text="Allow discovery through firewall", command=self._discovery_firewall).pack(side="left", padx=2)
+        self.auto_direct = tk.BooleanVar(value=self.cfg.auto_join_direct)
+        ttk.Checkbutton(buttons, text="Join nearby Wi-Fi Direct groups automatically", variable=self.auto_direct,
+                        command=self._auto_direct_changed).pack(side="left", padx=10)
+        self.direct_offer = ttk.Button(box, text="", command=self._direct_offer_join)
+        self._direct_offer_ssid = ""
+        self._direct_joined_ssid = ""
+        from .wifidirect import AutoJoin
+
+        self._auto_join = AutoJoin()
+        self._direct_busy = False
         self.nearby_status = ttk.Label(box, text="", wraplength=840, foreground="#555")
         self.nearby_status.pack(anchor="w")
         self._nearby_busy = False
@@ -388,6 +434,99 @@ class WorkerNearbyControls:
                 self.nearby_status.config(text=f"Discovery unavailable ({exc}). Use Search or Find controller.")
         self.root.after(1000, self._nearby_tick)
 
+    # ---- Wi-Fi Direct groups without a router (PLAN §15.3); off by default
+    def _auto_direct_changed(self) -> None:
+        cfg = load_config(WorkerConfig, self.dir / "worker.json")
+        cfg.auto_join_direct = self.cfg.auto_join_direct = bool(self.auto_direct.get())
+        save_config(cfg, self.dir / "worker.json")
+        if not cfg.auto_join_direct:
+            self._direct_offer_hide()
+
+    def _direct_scan_tick(self) -> None:
+        import time
+
+        from .wifidirect import DirectLinkError, connected_wlan_ssids, scan_direct_groups
+
+        if (not self.auto_direct.get() or self.agent or self._direct_busy or sys.platform != "win32"
+                or not self._auto_join.due(time.monotonic())):
+            return
+        self._direct_busy = True
+
+        def work() -> Any:
+            return self._auto_join.decide(scan_direct_groups(), connected_wlan_ssids(), self._direct_joined_ssid)
+
+        def done(decision: Any) -> None:
+            self._direct_busy = False
+            if decision is None:
+                self._direct_offer_hide()
+            elif decision[0] == "join":
+                self._direct_join(decision[1])
+            else:
+                self._direct_offer_ssid = decision[1]
+                self.direct_offer.config(text=f"Join {decision[1]} (disconnects {decision[2]})")
+                self.direct_offer.pack(anchor="w", pady=2)
+
+        def fail(exc: Exception) -> None:
+            self._direct_busy = False
+            if isinstance(exc, DirectLinkError):
+                self.nearby_status.config(text=str(exc))
+
+        self.bg.run(work, done, fail)
+
+    def _direct_offer_hide(self) -> None:
+        self._direct_offer_ssid = ""
+        self.direct_offer.pack_forget()
+
+    def _direct_offer_join(self) -> None:
+        if self._direct_offer_ssid:
+            self._direct_join(self._direct_offer_ssid)
+
+    def _direct_join(self, ssid: str) -> None:
+        from .wifidirect import join_open_group
+
+        self._direct_offer_hide()
+        self._direct_busy = True
+        self.nearby_status.config(text=f"Joining the Wi-Fi Direct group {ssid} …")
+
+        def done(info: Any) -> None:
+            self._direct_busy = False
+            self._direct_joined_ssid = ssid
+            self._write(f"Joined Wi-Fi {ssid} ({info.ip}). Looking for its requester …")
+            self._nearby_search()  # the outbound gateway probe; the join policy decides what happens next
+
+        def fail(exc: Exception) -> None:
+            self._direct_busy = False
+            self.nearby_status.config(text=f"Could not join {ssid}: {exc}")
+
+        self.bg.run(lambda: join_open_group(ssid), done, fail)
+
+    def _direct_leave(self) -> None:
+        """Remove the Wi-Fi profile this app created for a DIRECT-NC group (Windows then reconnects home Wi-Fi)."""
+        from .wifidirect import leave
+
+        ssid, self._direct_joined_ssid = self._direct_joined_ssid, ""
+        if ssid:
+            self.bg.run(lambda: leave(ssid), None, lambda e: self._write(f"Could not remove Wi-Fi {ssid}: {e}"))
+
+    def _discovery_firewall(self) -> None:
+        from .wifidirect import DirectLinkError, find_direct_interface
+
+        port = self.cfg.discovery_port
+        if not messagebox.askyesno("Firewall", f"Allow nearby announcements (UDP {port}) for this app's Python only, on "
+                                   "private networks and, if one is up, the direct Wi-Fi subnet? Windows asks for "
+                                   "administrator approval."):
+            return
+
+        def work() -> None:
+            try:
+                iface = find_direct_interface()
+            except (DirectLinkError, OSError, RuntimeError):
+                iface = None
+            allow_discovery_firewall(port, iface.ip if iface and iface.ip else None)
+
+        self.bg.run(work, lambda _r: self.nearby_status.config(text="Discovery firewall rule added."),
+                    lambda e: self.nearby_status.config(text=str(e)))
+
     def _nearby_stop(self) -> None:
         if getattr(self, "listener", None):
             self.listener.stop()
@@ -397,6 +536,7 @@ class WorkerNearbyControls:
         from .gui_common import fill_tree
 
         self.root.after(1000, self._nearby_tick)
+        self._direct_scan_tick()
         for request in self.consent.expire():
             self._consent_closed(request.device_id)
             self._write(f"No answer for {request.name} ({request.short_id}) in 60 s, so it was declined.")
@@ -601,7 +741,7 @@ class WorkerNearbyControls:
             return
         if agent:
             self._write("Leaving: unfinished jobs go back to the requester …")
-            self.bg.run(agent.leave, lambda _r: (self._stopped(), self._use_dir(worker_dir("worker"))))
+            self.bg.run(agent.leave, lambda _r: (self._stopped(), self._use_dir(worker_dir("worker")), self._direct_leave()))
             return
         try:
             cfg = load_worker_config(self.dir)
@@ -612,6 +752,7 @@ class WorkerNearbyControls:
         def finish(_r: Any = None) -> None:
             self._use_dir(worker_dir("worker"))
             self._write("Left the requester's group.")
+            self._direct_leave()
 
         self.bg.run(lambda: leave_requester(cfg, directory), finish, lambda _e: finish())
 

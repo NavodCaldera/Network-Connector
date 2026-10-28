@@ -226,7 +226,11 @@ class WorkerApp(WorkerDirectControls, WorkerNearbyControls):
                 text = f"Joined {cfg.requester_name or cfg.controller_host} as '{cfg.name}' (open group, no code)."
             else:
                 text = f"Paired as '{cfg.name}' with {cfg.controller_host}:{cfg.controller_port}."
-            self.pair_status.config(text=text, foreground="#1b5e20")
+            from .identity import expiry_warning
+
+            warning = expiry_warning(self.dir / "controller.crt")
+            self.pair_status.config(text=text + (f"\nRequester {warning[4:]}" if warning else ""),
+                                    foreground="#b00020" if warning else "#1b5e20")
             self.start_btn.config(state="normal" if not self.agent else "disabled")
         else:
             self.pair_status.config(text="Not paired yet.", foreground="#b00020")
