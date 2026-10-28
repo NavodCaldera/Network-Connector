@@ -126,11 +126,49 @@ def _wait_batch(client: AdminClient, batch_id: str) -> None:
         time.sleep(1)
 
 
+def _wasm_items(client: AdminClient, a: argparse.Namespace, params: dict[str, Any]) -> list[dict[str, Any]]:
+    """One wasm job per input (the module is uploaded once and shared by hash)."""
+    if a.module:
+        up = client.upload_module(Path(a.module).read_bytes(), Path(a.module).name)
+        print(f"module {up['sha256']}  ({up['size']} bytes, {'uploaded' if up['created'] else 'already uploaded'})")
+        params["module_sha256"] = up["sha256"]
+    if a.wasm_args:
+        params["args"] = a.wasm_args
+    limits = dict(params.get("limits", {}))
+    for key, value in (("memory_mb", a.memory_mb), ("seconds", a.seconds), ("fuel", a.fuel)):
+        if value is not None:
+            limits[key] = value
+    if limits:
+        params["limits"] = limits
+    inputs = [Path(f).read_bytes() for f in a.inputs or []]
+    if a.input_text is not None:
+        inputs.append(a.input_text.encode("utf-8"))
+    return [{"kind": "wasm", "params": params | ({"input_b64": base64.b64encode(data).decode()} if inputs else {})}
+            for data in (inputs or [None])]
+
+
+def _print_wasm_outputs(client: AdminClient, batch_id: str) -> None:
+    for job in sorted(client.jobs(batch_id=batch_id), key=lambda j: j["idx"]):
+        result = job.get("result") or {}
+        print(f"--- job {job['idx']} ({job['status']}, exit code {result.get('exit_code', '-')})")
+        if "stdout_b64" in result:
+            print(base64.b64decode(result["stdout_b64"]).decode("utf-8", "replace"), end="")
+        elif job.get("error"):
+            print(job["error"])
+
+
 def cmd_job_submit(a: argparse.Namespace) -> int:
     client = _admin()
     params = _parse_params(a.param, a.params_json)
     opts = {k: v for k, v in {"label": a.label, "idempotency_key": a.key, "timeout_s": a.timeout,
                               "max_attempts": a.retries, "target": a.target}.items() if v is not None}
+    if a.kind == "wasm":
+        res = client.submit_batch(_wasm_items(client, a, params), **opts)
+        print(f"batch {res['batch_id']}  ({res['chunks']} job(s), {'created' if res['created'] else 'already existed: duplicate ignored'})")
+        if a.wait:
+            _wait_batch(client, res["batch_id"])
+            _print_wasm_outputs(client, res["batch_id"])
+        return 0
     if a.kind in ("hash_files", "image_resize") and a.files:
         items = []
         for f in a.files:
@@ -225,6 +263,57 @@ def cmd_bench(a: argparse.Namespace) -> int:
         else:
             print(content)
     return 0
+
+
+def cmd_module(a: argparse.Namespace) -> int:
+    client = _admin()
+    if a.sub == "upload":
+        path = Path(a.file)
+        res = client.upload_module(path.read_bytes(), a.label or path.name)
+        print(f"{res['sha256']}  {res['size']} bytes  ({'uploaded' if res['created'] else 'already uploaded'})")
+    else:
+        _table([[m["sha256"], m["size"], time.strftime("%Y-%m-%d %H:%M", time.localtime(m["uploaded"])), m["label"] or ""]
+                for m in client.modules()], ["SHA256", "BYTES", "UPLOADED", "LABEL"])
+    return 0
+
+
+def cmd_sandbox(a: argparse.Namespace) -> int:
+    from . import sandbox
+
+    if a.sub == "setup":
+        if a.remove:
+            sandbox.remove_runtime()
+            print(f"Removed the sandbox runtime and its grant: {sandbox.runtime_home()}")
+            return 0
+        home = sandbox.setup_runtime()
+        print(f"Sandbox runtime ready in {home} (app containers may read it; nothing else was changed).")
+    if a.sub in ("setup", "status"):
+        ok, reason = sandbox.available(refresh=True)
+        print(f"Sandbox available: {'yes' if ok else 'no'}" + ("" if ok else f"\n  {reason}"))
+        print(f"Runtime folder: {sandbox.runtime_home()}\nPython: {sandbox.base_python()}")
+        print(f"Leftover sandbox profiles: {len(sandbox.leftovers())}")
+        if ok and getattr(a, "check", False):
+            r = sandbox.self_check()
+            print(f"Self-check: {r.outcome}, output {r.stdout!r}, {r.wall_s * 1000:.0f} ms, profile deleted")
+        return 0 if ok else 1
+    if a.sub == "sweep":
+        print(f"Removed {sandbox.sweep()} leftover sandbox profile(s).")
+        return 0
+    data = b"".join(Path(f).read_bytes() for f in a.inputs or [])
+    from . import modules
+
+    module = Path(a.file).read_bytes()
+    modules.check(module)
+    if a.input_text is not None:
+        data += a.input_text.encode("utf-8")
+    r = sandbox.run(module, data, a.wasm_args or [], memory_mb=a.memory_mb or jobs.WASM_DEFAULT_LIMITS["memory_mb"],
+                    seconds=a.seconds or jobs.WASM_DEFAULT_LIMITS["seconds"], fuel=a.fuel)
+    sys.stdout.buffer.write(r.stdout)
+    sys.stdout.flush()
+    print(f"[{r.outcome}{' ' + r.detail if r.detail else ''}] exit code {r.exit_code}, {r.wall_s:.2f} s, "
+          f"cpu {r.cpu_seconds:.2f} s, peak {r.peak_mem_mb:.0f} MB" + (f", fuel {r.fuel_used}" if r.fuel_used else ""),
+          file=sys.stderr)
+    return (r.exit_code or 0) if r.ok else 1
 
 
 def cmd_worker_perf(a: argparse.Namespace) -> int:
@@ -401,6 +490,16 @@ def cmd_worker_gui(_: argparse.Namespace) -> int:
     return 0
 
 
+def _wasm_options(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--input", dest="inputs", action="append", metavar="FILE",
+                   help="wasm: a file given to the module on stdin; repeat for one job per file")
+    p.add_argument("--input-text", help="wasm: text given to the module on stdin")
+    p.add_argument("--arg", dest="wasm_args", action="append", metavar="TEXT", help="wasm: a command-line argument")
+    p.add_argument("--memory-mb", type=int, help="wasm: memory limit in MB")
+    p.add_argument("--seconds", type=int, help="wasm: time limit in seconds")
+    p.add_argument("--fuel", type=int, help="wasm: instruction budget (optional, about 8%% slower)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="nc", description="Network Connector: distribute safe jobs across your LAN computers.")
     p.add_argument("--version", action="version", version=__version__)
@@ -430,7 +529,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     j = sub.add_parser("job", help="submit and manage jobs").add_subparsers(dest="sub", required=True)
     js = j.add_parser("submit", help="submit a job")
-    js.add_argument("kind", choices=sorted(jobs.REGISTRY))
+    js.add_argument("kind", choices=sorted(jobs.ALL_KINDS))
     js.add_argument("--param", "-p", action="append", metavar="KEY=VALUE")
     js.add_argument("--params-json")
     js.add_argument("--files", nargs="+", help="files to embed (hash_files / image_resize); one job per file")
@@ -441,6 +540,8 @@ def build_parser() -> argparse.ArgumentParser:
     js.add_argument("--key", help="idempotency key: submitting the same key twice creates only one job")
     js.add_argument("--label")
     js.add_argument("--wait", action="store_true")
+    _wasm_options(js)
+    js.add_argument("--module", help="wasm: a .wasm file to upload and run (or --param module_sha256=...)")
     js.set_defaults(fn=cmd_job_submit)
     jl = j.add_parser("list")
     jl.add_argument("--status")
@@ -453,6 +554,26 @@ def build_parser() -> argparse.ArgumentParser:
         jp = j.add_parser(name)
         jp.add_argument("id")
         jp.set_defaults(fn=fn)
+
+    mod = sub.add_parser("module", help="upload and list Wasm modules").add_subparsers(dest="sub", required=True)
+    mu = mod.add_parser("upload", help="upload a .wasm module (at most 10 MB) and print its sha256")
+    mu.add_argument("file")
+    mu.add_argument("--label")
+    mu.set_defaults(fn=cmd_module)
+    mod.add_parser("list").set_defaults(fn=cmd_module)
+
+    sb = sub.add_parser("sandbox", help="the Wasm sandbox on this helper").add_subparsers(dest="sub", required=True)
+    ss = sb.add_parser("setup", help="create the sandbox runtime folder and its one read grant")
+    ss.add_argument("--remove", action="store_true", help="remove the runtime folder and the grant again")
+    ss.set_defaults(fn=cmd_sandbox)
+    sst = sb.add_parser("status", help="can this computer run wasm jobs?")
+    sst.add_argument("--check", action="store_true", help="also run a tiny module in a fresh sandbox")
+    sst.set_defaults(fn=cmd_sandbox)
+    sb.add_parser("sweep", help="remove sandbox profiles left by a crash").set_defaults(fn=cmd_sandbox)
+    sr = sb.add_parser("run", help="run a .wasm file here, in the sandbox (to test your module)")
+    sr.add_argument("file")
+    _wasm_options(sr)
+    sr.set_defaults(fn=cmd_sandbox)
 
     bench = sub.add_parser("bench", help="compare machines on identical fixed work").add_subparsers(dest="sub", required=True)
     br = bench.add_parser("run")

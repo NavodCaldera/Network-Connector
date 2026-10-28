@@ -4,6 +4,7 @@ The worker opens no listening port, so nothing on the network can connect to it.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -19,8 +20,8 @@ from typing import Any
 import httpx
 import psutil
 
-from . import __version__
-from .client import ControllerError, controller_url, pinned_context, probe, raise_for_error
+from . import __version__, jobs, modules, sandbox
+from .client import ControllerError, controller_url, fetch_module, pinned_context, probe, raise_for_error
 from .config import WorkerConfig, load_config, save_config
 from .security import constant_time_equal, fingerprint_pem_file
 from .sysinfo import hardware_info, live_metrics, prime_cpu_counter
@@ -64,7 +65,7 @@ class RunningJob:
     kind: str
     attempt: int
     timeout_s: int
-    proc: subprocess.Popen
+    proc: subprocess.Popen | None
     handle: object | None
     started: float = field(default_factory=time.monotonic)
     progress: float = 0.0
@@ -74,6 +75,10 @@ class RunningJob:
     cpu_seconds: float | None = None
     peak_mem_mb: float = 0.0
     threads: list[threading.Thread] = field(default_factory=list)
+    sandbox: Any = None  # wasm jobs: a sandbox.Sandbox run on threads[0]
+    wasm_result: Any = None
+    wasm_error: str = ""
+    module_sha256: str = ""
 
 
 class WorkerAgent:
@@ -98,6 +103,12 @@ class WorkerAgent:
         self._http: httpx.Client | None = None
         self._rtt_ms: float | None = None
         self._link = "unknown"
+        self.module_cache = modules.ModuleCache(wdir / "modules")
+        # "closed" or "open". The Link agent sets cfg.group_mode when joining an open group. The requester's
+        # heartbeat can only make this stricter, never looser.
+        self.group_mode = getattr(cfg, "group_mode", "closed")
+        self._remote_group_mode = "closed"
+        self._sandbox_note = ""
         self._info = hardware_info() | {
             "limits": {
                 "max_cpu_threads": cfg.max_cpu_threads,
@@ -133,15 +144,26 @@ class WorkerAgent:
         return {
             "state": self.state, "paused": self.local_paused or self.remote_paused, "disabled": self.remote_disabled,
             "running": [{"id": j.id, "kind": j.kind, "progress": round(j.progress, 1),
-                         "elapsed": round(time.monotonic() - j.started, 1)} for j in self.running.values()],
+                         "elapsed": round(time.monotonic() - j.started, 1)}
+                        | ({"module_sha256": j.module_sha256} if j.module_sha256 else {}) for j in self.running.values()],
             "completed": self.completed, "failed": self.failed, "last_error": self.last_error,
             "slots": self.slots, "metrics": live_metrics(), "name": self.cfg.name,
             "link": self._link, "controller_host": self.cfg.controller_host, "rtt_ms": self._rtt_ms,
         }
 
     # ------------------------------------------------------------ main loop
+    @property
+    def effective_group_mode(self) -> str:
+        return "open" if "open" in (self.group_mode, self._remote_group_mode) else "closed"
+
     def run(self) -> None:
         prime_cpu_counter()
+        try:
+            swept = sandbox.sweep()  # leftovers from a crash or power loss
+            if swept:
+                self._event(f"removed {swept} leftover sandbox(es) from an earlier run")
+        except OSError:
+            pass
         self._http = self._new_client(self.cfg.controller_host)
         self.state = "connecting"
         self._event(f"worker '{self.cfg.name}' starting; controller {self.cfg.controller_host}:{self.cfg.controller_port}")
@@ -276,6 +298,7 @@ class WorkerAgent:
                 self.running[jid].abandon = True
         self.remote_paused = bool(resp.get("paused"))
         self.remote_disabled = bool(resp.get("disabled"))
+        self._remote_group_mode = "open" if resp.get("group_mode") == "open" else "closed"
         self._write_status()
 
     def _can_claim(self) -> bool:
@@ -285,8 +308,23 @@ class WorkerAgent:
             return False
         return psutil.virtual_memory().percent < 92  # never start work when the laptop is nearly out of RAM
 
+    def claim_kinds(self) -> list[str]:
+        """Job kinds this helper accepts right now: by group mode, and wasm only if the sandbox works."""
+        kinds = set(jobs.allowed_kinds(self.effective_group_mode))
+        if jobs.WASM in kinds:
+            ok, reason = sandbox.available()
+            if not ok:
+                kinds.discard(jobs.WASM)
+                if reason != self._sandbox_note:
+                    self._event(f"not taking wasm jobs: {reason}")
+            self._sandbox_note = "" if ok else reason
+        return sorted(kinds)
+
     def _claim(self) -> bool:
-        resp = self._call("/worker/claim", {"max_jobs": self.slots - len(self.running)})
+        kinds = self.claim_kinds()
+        if not kinds:
+            return False
+        resp = self._call("/worker/claim", {"max_jobs": self.slots - len(self.running), "kinds": kinds})
         for job in resp.get("jobs", []):
             self._start_job(job)
         return bool(resp.get("jobs"))
@@ -308,7 +346,21 @@ class WorkerAgent:
             self._report(job_id, action, body)
 
     # ------------------------------------------------------------ running jobs
+    def _refuse(self, job: dict[str, Any], error: str, retryable: bool) -> None:
+        self.failed += 1
+        self._event(f"refused job {job['id']}: {error}")
+        try:
+            self._report(job["id"], "fail", {"attempt": job["attempt"], "error": error[:1900], "retryable": retryable})
+        except ControllerError:
+            pass
+
     def _start_job(self, job: dict[str, Any]) -> None:
+        if job.get("kind") not in jobs.allowed_kinds(self.effective_group_mode):
+            self._refuse(job, f"open groups run only sandboxed wasm jobs; {job.get('kind')!r} is refused on this helper", False)
+            return
+        if job["kind"] == jobs.WASM:
+            self._start_wasm(job)
+            return
         env = os.environ.copy()
         for var in _THREAD_VARS:
             env[var] = "1"
@@ -363,8 +415,110 @@ class WorkerAgent:
         self.running[rj.id] = rj
         self._event(f"started job {rj.id} ({rj.kind}, attempt {rj.attempt})")
 
-    def _kill(self, rj: RunningJob) -> None:
+    def _module(self, sha256: str) -> bytes:
+        data = self.module_cache.get(sha256)
+        if data is None:
+            assert self._http is not None
+            data = fetch_module(self._http, sha256, modules.MAX_MODULE_BYTES)
+            self.module_cache.put(sha256, data)  # checks size, hash and imports first
+        return data
+
+    def _start_wasm(self, job: dict[str, Any]) -> None:
+        ok, reason = sandbox.available()
+        if not ok:
+            self._refuse(job, f"this helper can't run wasm jobs: {reason}", True)
+            return
         try:
+            params = jobs.validate(jobs.WASM, job["params"])
+        except jobs.JobError as exc:
+            self._refuse(job, f"job rejected: {exc}", False)
+            return
+        limits = params["limits"]
+        if limits["memory_mb"] > self.cfg.max_memory_mb:
+            self._refuse(job, f"needs {limits['memory_mb']} MB; this helper allows {self.cfg.max_memory_mb} MB per job", True)
+            return
+        try:
+            module = self._module(params["module_sha256"])
+        except modules.ModuleError as exc:
+            self._refuse(job, f"module refused: {exc}", False)
+            return
+        except (ControllerError, httpx.HTTPError, OSError) as exc:
+            self._refuse(job, f"could not download the module: {exc}", True)
+            return
+        box = sandbox.Sandbox(module, base64.b64decode(params["input_b64"]), params["args"],
+                              memory_mb=limits["memory_mb"], seconds=min(limits["seconds"], job["timeout_s"]),
+                              fuel=limits.get("fuel"))
+        rj = RunningJob(job["id"], job["kind"], job["attempt"], job["timeout_s"], None, None, sandbox=box,
+                        module_sha256=params["module_sha256"])
+
+        def go() -> None:
+            try:
+                rj.wasm_result = box.run()
+            except sandbox.SandboxUnavailable as exc:
+                rj.wasm_error = f"this helper can't run wasm jobs: {exc}"
+            except Exception as exc:  # noqa: BLE001 - reported as a retryable failure
+                rj.wasm_error = f"sandbox error: {type(exc).__name__}: {exc}"
+
+        rj.threads = [threading.Thread(target=go, name=f"sandbox-{rj.id}", daemon=True)]
+        rj.threads[0].start()
+        self.running[rj.id] = rj
+        self._event(f"started job {rj.id} (wasm {rj.module_sha256[:12]}, attempt {rj.attempt}) in a fresh sandbox")
+
+    def _poll_wasm(self, rj: RunningJob) -> bool:
+        """Returns True when the job left self.running."""
+        elapsed = time.monotonic() - rj.started
+        if rj.threads[0].is_alive():
+            if rj.abandon or rj.cancel:
+                rj.sandbox.kill("cancelled")
+            if not rj.abandon:
+                rj.progress = min(99.0, elapsed * 100 / max(rj.sandbox.seconds, 1))
+                return False
+            rj.threads[0].join(5)
+        self._drop(rj)
+        if rj.abandon:
+            return True
+        r = rj.wasm_result
+        action, body = "fail", {"attempt": rj.attempt}
+        if r is None:
+            body |= {"error": rj.wasm_error or "the sandbox failed", "retryable": True}
+        elif r.outcome == "stopped" and not rj.cancel:
+            self._event(f"job {rj.id} stopped by the owner; handing it back")
+            self._report(rj.id, "release", {"attempt": rj.attempt})
+            return True
+        elif r.ok:
+            action = "complete"
+            body["result"] = {"stdout_b64": base64.b64encode(r.stdout).decode(), "exit_code": r.exit_code,
+                              "fuel_used": r.fuel_used, "cpu_seconds": r.cpu_seconds,
+                              "stderr_b64": base64.b64encode(r.stderr).decode()}
+        elif rj.cancel or r.outcome == "cancelled":
+            body |= {"error": "cancelled", "cancelled": True, "retryable": False}
+        else:
+            body |= {"error": f"wasm {r.outcome}: {r.detail}"[:1900], "retryable": r.outcome in ("timeout", "crashed", "error")}
+        if r is not None:
+            body |= {"cpu_seconds": min(r.cpu_seconds, 86400), "peak_mem_mb": r.peak_mem_mb or None}
+            if r.escape_signal:
+                self._event(f"job {rj.id} tried to start a process from inside the sandbox; it was blocked and killed")
+        body["duration"] = round(elapsed, 3)
+        if action == "complete":
+            self.completed += 1
+            self._event(f"job {rj.id} finished in {elapsed:.1f}s (sandbox deleted)")
+        else:
+            self.failed += 1
+            self._event(f"job {rj.id} did not succeed: {body['error']} (sandbox deleted)")
+        try:
+            self._report(rj.id, action, body)
+        except ControllerError:
+            pass
+        return True
+
+    def _kill(self, rj: RunningJob) -> None:
+        if rj.sandbox is not None:
+            rj.sandbox.kill("stopped")
+            for t in rj.threads:
+                t.join(timeout=10)
+            return
+        try:
+            assert rj.proc is not None
             rj.proc.kill()
             rj.proc.wait(timeout=10)
         except (OSError, subprocess.TimeoutExpired):
@@ -373,6 +527,9 @@ class WorkerAgent:
     def _poll_running(self) -> bool:
         any_finished = False
         for rj in list(self.running.values()):
+            if rj.sandbox is not None:
+                any_finished = self._poll_wasm(rj) or any_finished
+                continue
             elapsed = time.monotonic() - rj.started
             exit_code = rj.proc.poll()
             body: dict[str, Any] | None = None

@@ -1,6 +1,7 @@
 """HTTPS clients that trust ONLY the controller's own certificate (certificate pinning)."""
 from __future__ import annotations
 
+import base64
 import secrets
 import ssl
 import ipaddress
@@ -118,6 +119,14 @@ class AdminClient:
     def delete_benchmark(self, ident: str) -> dict[str, Any]:
         return self._call("DELETE", f"/admin/benchmarks/{ident}")
 
+    def upload_module(self, data: bytes, label: str | None = None) -> dict[str, Any]:
+        """Upload a Wasm module (at most 10 MB). Returns {sha256, size, created}."""
+        return self._call("POST", "/admin/modules", json={"module_b64": base64.b64encode(data).decode(), "label": label},
+                          timeout=120)
+
+    def modules(self) -> list[dict[str, Any]]:
+        return self._call("GET", "/admin/modules")["modules"]
+
     def retry_job(self, job_id: str) -> dict[str, Any]:
         return self._call("POST", f"/admin/jobs/{job_id}/retry")
 
@@ -154,6 +163,21 @@ def admin_client_from_disk(controller_dir_: Path) -> AdminClient:
         raise ControllerError(0, "not_started", "The controller has not been started yet.")
     token = (controller_dir_ / "admin.token").read_text(encoding="utf-8").strip()
     return AdminClient("127.0.0.1", cfg.port, controller_dir_ / "server.crt", token)
+
+
+# ---------------------------------------------------------------- module download (worker side)
+def fetch_module(http: httpx.Client, sha256: str, max_bytes: int) -> bytes:
+    """Download a module for a running wasm job. The caller checks the hash before using it."""
+    with http.stream("GET", f"/worker/modules/{sha256}", timeout=120) as resp:
+        if resp.status_code >= 400:
+            resp.read()
+            raise_for_error(resp)
+        data = bytearray()
+        for chunk in resp.iter_bytes():
+            data += chunk
+            if len(data) > max_bytes:
+                raise ControllerError(0, "module_too_large", "The module is larger than the 10 MB limit; refused.")
+        return bytes(data)
 
 
 # ---------------------------------------------------------------- pairing (worker side)

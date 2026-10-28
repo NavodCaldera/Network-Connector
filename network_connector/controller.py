@@ -1,6 +1,8 @@
 """The controller: FastAPI service (HTTPS, LAN-only) + SQLite state + lease reaper."""
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import ipaddress
 import logging
@@ -16,10 +18,10 @@ import uvicorn
 import psutil
 from fastapi import Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
-from . import __version__, jobs
+from . import __version__, jobs, modules
 from .config import ControllerConfig, detect_lan_ip, load_config, save_config, validate_bind_host
 from .paths import controller_dir
 from .security import (
@@ -85,6 +87,20 @@ class HeartbeatRequest(BaseModel):
 
 class ClaimRequest(BaseModel):
     max_jobs: int = Field(default=1, ge=1, le=16)
+    # Kinds this worker can run now. None = an older worker, which is never given wasm jobs.
+    kinds: list[str] | None = Field(default=None, max_length=32)
+
+    @field_validator("kinds")
+    @classmethod
+    def valid_kinds(cls, kinds: list[str] | None) -> list[str] | None:
+        if kinds is not None and any(not isinstance(k, str) or len(k) > 40 for k in kinds):
+            raise ValueError("kinds must be short job kind names")
+        return kinds
+
+
+class ModuleUpload(BaseModel):
+    module_b64: str = Field(min_length=8, max_length=(modules.MAX_MODULE_BYTES + 2) // 3 * 4, repr=False)
+    label: str | None = Field(default=None, max_length=120)
 
 
 class CompleteRequest(BaseModel):
@@ -194,6 +210,10 @@ class ControllerState:
     direct_runtime: Any = None
     direct_subnets: set[str] = field(default_factory=set)
     worker_links: dict[str, str] = field(default_factory=dict)
+    # "closed" (paired, trusted helpers: every kind) or "open" (anyone nearby: wasm only). The Link agent sets
+    # this from the join policy, and may set group_mode_for(worker) -> mode to decide per worker.
+    group_mode: str = "closed"
+    group_mode_for: Any = None
 
 
 def create_app(state: ControllerState) -> FastAPI:
@@ -283,20 +303,31 @@ def create_app(state: ControllerState) -> FastAPI:
             "paused": worker["state"] == "paused",
             "disabled": worker["state"] == "disabled",
             "link": link,
+            "group_mode": worker_group_mode(worker),  # a helper may only tighten its own mode with this
         }
+
+    def worker_group_mode(worker: dict[str, Any]) -> str:
+        mode = state.group_mode_for(worker) if state.group_mode_for else state.group_mode
+        return mode if mode in jobs.GROUP_MODES else "open"  # unknown means the strictest
 
     @app.post("/worker/claim")
     def claim(req: ClaimRequest, worker: dict = Depends(require_worker)) -> dict[str, Any]:
         if worker["state"] != "active":
             return {"jobs": []}
-        claimed = store.claim(worker, req.max_jobs, cfg.lease_seconds)
+        offered = set(req.kinds) if req.kinds is not None else jobs.ALL_KINDS - {jobs.WASM}
+        kinds = sorted(jobs.allowed_kinds(worker_group_mode(worker)) & offered)
+        if not kinds:
+            return {"jobs": []}
+        claimed = store.claim(worker, req.max_jobs, cfg.lease_seconds, kinds)
         return {"jobs": [
             {"id": j["id"], "kind": j["kind"], "params": j["params"], "attempt": j["attempt"],
              "timeout_s": j["timeout_s"]} for j in claimed]}
 
     @app.post("/worker/jobs/{job_id}/complete")
     def complete(job_id: str, req: CompleteRequest, worker: dict = Depends(require_worker)) -> dict[str, Any]:
-        if len(json.dumps(req.result)) > MAX_RESULT_BYTES:
+        job = store.get_job(job_id)
+        limit = jobs.WASM_MAX_RESULT_BYTES if job and job["kind"] == jobs.WASM else MAX_RESULT_BYTES
+        if len(json.dumps(req.result)) > limit:
             status = store.finish(job_id, worker["id"], req.attempt, error="result too large", retryable=False,
                                   duration=req.duration, cpu_seconds=req.cpu_seconds, peak_mem_mb=req.peak_mem_mb)
         else:
@@ -312,6 +343,16 @@ def create_app(state: ControllerState) -> FastAPI:
         if status is None:
             raise ApiError(409, "stale_report", "This job is no longer assigned to this worker attempt.")
         return {"status": status}
+
+    @app.get("/worker/modules/{sha256}")
+    def worker_module(sha256: str, worker: dict = Depends(require_worker)) -> Response:
+        # Only while this worker runs a wasm job that uses the module; otherwise it does not exist for it.
+        if not modules.SHA256_RE.match(sha256) or not store.worker_may_fetch_module(worker["id"], sha256):
+            raise ApiError(404, "unknown_module", "No such module for a job you are running.")
+        data = store.module_data(sha256)
+        if data is None:
+            raise ApiError(404, "unknown_module", "No such module for a job you are running.")
+        return Response(content=data, media_type="application/wasm", headers={"X-Module-SHA256": sha256})
 
     @app.post("/worker/jobs/{job_id}/release")
     def release(job_id: str, req: ReleaseRequest, worker: dict = Depends(require_worker)) -> dict[str, Any]:
@@ -391,9 +432,27 @@ def create_app(state: ControllerState) -> FastAPI:
 
     def _check_job(kind: str, params: dict[str, Any]) -> None:
         try:
-            jobs.validate(kind, params)
+            clean = jobs.validate(kind, params)
         except jobs.JobError as exc:
             raise ApiError(422, "invalid_job", str(exc)) from exc
+        if kind == jobs.WASM and not store.module_exists(clean["module_sha256"]):
+            raise ApiError(422, "unknown_module", "Upload the module first (POST /admin/modules), then use its sha256.")
+
+    @app.post("/admin/modules", dependencies=[Depends(require_admin)])
+    def admin_upload_module(req: ModuleUpload) -> dict[str, Any]:
+        try:
+            data = base64.b64decode(req.module_b64, validate=True)
+            digest = modules.check(data)
+            modules.validate_with_wasmtime(data)
+        except (binascii.Error, ValueError) as exc:  # ModuleError is a ValueError
+            raise ApiError(422, "invalid_module", str(exc)) from exc
+        created = store.add_module(digest, data, req.label)
+        log.info("module %s uploaded (%d bytes)", digest[:12], len(data))
+        return {"sha256": digest, "size": len(data), "created": created}
+
+    @app.get("/admin/modules", dependencies=[Depends(require_admin)])
+    def admin_modules() -> dict[str, Any]:
+        return {"modules": store.list_modules()}
 
     def _defaults(timeout_s: int | None, max_attempts: int | None) -> tuple[int, int]:
         return timeout_s or cfg.default_timeout_s, max_attempts or cfg.default_max_attempts
@@ -448,6 +507,7 @@ def create_app(state: ControllerState) -> FastAPI:
             chunk_params = jobs.split(req.kind, req.params, req.chunks)
         except jobs.JobError as exc:
             raise ApiError(422, "invalid_job", str(exc)) from exc
+        _check_job(req.kind, chunk_params[0])
         timeout_s, attempts = _defaults(req.timeout_s, req.max_attempts)
         bid, created = store.create_batch(
             req.kind, req.label, req.idempotency_key, [(req.kind, p) for p in chunk_params],
