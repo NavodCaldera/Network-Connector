@@ -256,7 +256,7 @@ class JoinManager:
         self.requests: dict[str, dict[str, Any]] = {}
         self._approved: dict[str, float] = {}
         self._verify: OrderedDict[str, dict[str, Any]] = OrderedDict()
-        self.per_source = SlidingWindow(limit=30, window_s=60)
+        self.per_source = SlidingWindow(limit=60, window_s=60)  # an Ask-me wait polls hello + join every 5 s
         self.overall = SlidingWindow(limit=600, window_s=60, max_keys=1)
         self._lock = threading.Lock()
 
@@ -473,7 +473,7 @@ def create_app(state: ControllerState) -> FastAPI:
         if cfg.join_policy == "ask" and not trusted and not state.join.take_approval(device_id):
             store.upsert_device(device_id, name, req.device_cert)
             state.join.ask(device_id, name, source)
-            return JSONResponse({"status": "pending", "retry_after_seconds": 3,
+            return JSONResponse({"status": "pending", "retry_after_seconds": 5,
                                  "message": "Waiting for the requester's owner to accept."}, status_code=202)
         worker_name = joined_worker_name(name, device_id)
         existing = store.get_worker(worker_name)

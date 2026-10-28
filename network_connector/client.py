@@ -305,7 +305,7 @@ def join_requester(host: str, port: int, expected_device_id: str, ident: Any, wd
                 break
             if time.monotonic() >= deadline or (should_stop and should_stop()):
                 raise JoinPending(202, "pending", "The requester's owner has not accepted yet. Try again in a moment.")
-            time.sleep(3)
+            time.sleep(5)
     wdir = wdir or joined_dir(fingerprint)
     wdir.mkdir(parents=True, exist_ok=True)
     cert_path = wdir / "controller.crt"

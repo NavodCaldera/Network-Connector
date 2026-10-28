@@ -94,4 +94,9 @@ firewall rule using the tab's button. Windows Mobile Hotspot is the fallback whe
 the publisher is unavailable. See [WIFI_DIRECT.md](WIFI_DIRECT.md) for both modes,
 fingerprint comparison and the pending real-adapter acceptance checks.
 
+## Letting helpers join without a code (0.3.0 preview)
+
+An upgraded controller keeps requiring pairing codes. To let nearby helpers join in one click, open the **Devices**
+tab and choose **Anyone nearby**, **Trusted only** or **Ask me** (or `nc policy ask`). See [JOINING.md](JOINING.md).
+
 Next: [set up the i3](SETUP_I3.md).

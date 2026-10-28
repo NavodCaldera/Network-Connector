@@ -415,7 +415,8 @@ def cmd_worker_connect(a: argparse.Namespace) -> int:
     if len(expected) != 64:
         info = requester_hello(host, port)
         if not info or (expected and not info["device_id"].startswith(expected)):
-            raise SystemExit("No open requester with that ID answered at this address.")
+            raise SystemExit("No open requester with that ID answered at this address. It may be off, closed, or "
+                             "require a pairing code (then use: nc worker pair).")
         print(f"Requester: {info['name']}  ID {identity.short_id(info['device_id'])}  ({info['device_id']})")
         if not a.yes and input("Join it? [y/N] ").strip().lower() != "y":
             return 1

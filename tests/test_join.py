@@ -185,8 +185,8 @@ def test_joined_name_never_takes_over_a_paired_worker(env, ids):
 
 def test_join_is_rate_limited_and_size_capped(env, ids):
     client, state, _ = env
-    codes = [hello(client).status_code for _ in range(35)]
-    assert codes.count(200) == 30 and codes[-1] == 429
+    codes = [hello(client).status_code for _ in range(65)]
+    assert codes.count(200) == 60 and codes[-1] == 429
     r = client.post("/join", content=b"{" + b" " * 40000 + b"}", headers={"content-type": "application/json"})
     assert r.status_code == 413
 
