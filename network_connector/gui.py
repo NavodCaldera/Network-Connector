@@ -28,6 +28,8 @@ class App:
         self.join_btn.pack(side="left", padx=8)
         self.send_btn = ttk.Button(top, text="Send Hello", command=self.on_send, state="disabled")
         self.send_btn.pack(side="left")
+        self.retry_btn = ttk.Button(top, text="Retry", command=self.on_retry)  # packed only after a failure
+        self.last_work = None
         self.status = ttk.Label(root, text="Click Host on one PC, then Join on the other.", padding=(10, 0))
         self.status.pack(fill="x")
         self.log = scrolledtext.ScrolledText(root, state="disabled", font=("Consolas", 10), height=18)
@@ -52,6 +54,10 @@ class App:
                 self.status.config(text=text)
             elif kind == "enable_send":
                 self.send_btn.config(state="normal")
+            elif kind == "failed":  # let the user try again instead of restarting the app
+                self.host_btn.config(state="normal")
+                self.join_btn.config(state="normal")
+                self.retry_btn.pack(side="left", padx=8)
             else:
                 self.log.config(state="normal")
                 self.log.insert("end", f"{time.strftime('%H:%M:%S')}  {text}\n", tag)
@@ -60,16 +66,23 @@ class App:
         self.root.after(100, self.pump)
 
     def run(self, work) -> None:
+        self.last_work = work
         self.host_btn.config(state="disabled")
         self.join_btn.config(state="disabled")
+        self.retry_btn.pack_forget()
 
         def wrapped() -> None:
             try:
                 work()
             except (DirectLinkError, OSError) as exc:
                 self.say(f"Error: {exc}", "err")
-                self.set_status("Something went wrong - see below.")
+                self.set_status("Something went wrong - see below, then click Retry.")
+                self.events.put(("failed", "", ""))
         threading.Thread(target=wrapped, daemon=True).start()
+
+    def on_retry(self) -> None:
+        self.say("Retrying...")
+        self.run(self.last_work)
 
     # ---- host
     def on_host(self) -> None:
