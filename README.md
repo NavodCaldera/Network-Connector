@@ -18,8 +18,7 @@ py -m venv .venv
 **PC 1 (host)**, once as administrator: `powershell -File scriptsdd-firewall-rule.ps1`. Then:
 
 ```powershell
-.\.venv\Scripts
-c host
+.\.venv\Scripts\nc host
 ```
 
 It starts a group named `DIRECT-NC-XXXX` (fixed for this PC) and waits. Turn off Windows Mobile Hotspot first, because
@@ -28,8 +27,7 @@ it uses the same adapter. If Windows says "aborted", wait about 10 seconds and r
 **PC 2:**
 
 ```powershell
-.\.venv\Scripts
-c join
+.\.venv\Scripts\nc join
 ```
 
 It finds the nearby `DIRECT-NC-` group, joins with the built-in password and sends Hello. PC 2 prints
