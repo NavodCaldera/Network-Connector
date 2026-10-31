@@ -17,6 +17,27 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ## 2026-11-01 · Claude Code (local, Windows) · `main`
 
+- **Asked:** research how the joiner can keep internet (not via the host); build the "joiner keeps its own Wi-Fi"
+  option; give a prompt for the other PC.
+- **Research:** a legacy group makes the joiner leave its router (one infrastructure connection per adapter).
+  Microsoft's WDI docs say one adapter can run an infrastructure connection and Wi-Fi Direct at once. This PC's
+  adapter: Wi-Fi Direct Client/GO supported, P2P Clients Port Count 1.
+- **Done:** new `p2p.py` with native Wi-Fi Direct (WinRT). `Host` = advertisement publisher (discoverable) +
+  connection listener: accepts, pairs push-button with an auto-accept handler, opens WiFiDirectDevice and reports
+  the link IPs. `Joiner` = finds ASSOCIATION_ENDPOINT devices, pairs (GO intent 0), connects and returns the host's
+  link IP. The window uses it by default; a "Classic mode" checkbox keeps the old legacy group. If several devices
+  are found, a picker asks which one. The window now shows any exception type. Added `winrt-Windows.Networking` to the
+  extra. Rebased onto 5ea657c (other session's Stop rework) and merged: Stop also closes native host/joiner.
+- **Verified:** pytest 21 passed. On this PC: `Joiner.find()` listed WINDOWS_LAPTOP. `Host.start()`/`stop()`
+  advertised and stopped cleanly.
+- **Not done / open:** pairing, connect and Hello over the native link are not tested between the two PCs. It is
+  unknown whether Windows still shows its own "allow device" prompt. The joiner's adapter capabilities are not yet
+  checked. No unit tests for p2p.py (needs hardware).
+
+---
+
+## 2026-11-01 · Claude Code (local, Windows) · `main`
+
 - **Asked:** add a Stop button for the host.
 - **Result before the change:** first real two-PC run worked. In the window: Firewall fixed (one UAC Yes), group
   DIRECT-NC-JXSS, and repeated Hellos from Windows_Laptop (192.168.137.50) answered by DESKTOP-VMRF6PJ.
