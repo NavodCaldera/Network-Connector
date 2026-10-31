@@ -15,6 +15,27 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (local, Windows) · `simple-hello` (new branch from cd2e4a3)
+
+- **Asked:** make the application very simple: two PCs just send a Hello message to each other. The owner chose
+  "strip the app down" and "plain TCP for now".
+- **Done:** removed every module except `wifidirect.py` (open groups, AutoJoin and TLS probe also removed;
+  `protect_path` moved in), and every test except `test_wifidirect.py` (trimmed) and the new `test_hello.py`. Added
+  `hello.py` (one line each way, 200-byte cap, 10 s timeout) and a new `cli.py`: `nc host` (start group, print
+  SSID/password, answer Hellos, stop group on exit), `nc join SSID PASS` (join, send Hello to gateway/.1),
+  `nc send IP`, `nc listen`. Removed examples, setup scripts and the GUI entry points. The firewall scripts now add one
+  inbound TCP 8765 rule (Private+Public, LocalSubnet). pyproject has no runtime dependencies; version 0.4.0. README
+  rewritten; notes added at the top of HANDOFF.md and AGENT.md; CHANGELOG entry.
+- **Decisions:** worked on a new branch so the full app stays intact on `claude/great-davinci-bch39n`. The plain TCP
+  Hello breaks AGENT.md's TLS invariant on purpose (owner's choice); recorded in the AGENT.md note. PLAN.md, docs/,
+  spikes/ and `.claude/agents` kept as history and not updated.
+- **Verified:** `.venv` pytest: 17 passed. `nc listen --bind 127.0.0.1 --once` plus `nc send 127.0.0.1` as two
+  processes: both sides printed the other's "Hello from DESKTOP-VMRF6PJ".
+- **Not done / open:** `nc host`/`nc join` not run on two real PCs (needs the i7 and i3). The firewall scripts were
+  not run.
+
+---
+
 ## 2026-11-01 · Claude Code (local, Windows) · `claude/great-davinci-bch39n` · ae6c341
 
 - **Asked:** remove the Mobile Hotspot path (mode B) from the whole system; use Wi-Fi Direct only.
