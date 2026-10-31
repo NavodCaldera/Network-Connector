@@ -7,7 +7,7 @@ import time
 import tkinter as tk
 from tkinter import scrolledtext, ttk
 
-from . import firewall, hello
+from . import firewall, hello, p2p
 from .wifidirect import (DirectGroup, DirectLinkError, candidate_controllers, default_ssid, derived_passphrase, join,
                          leave, scan_direct_groups)
 
@@ -18,6 +18,9 @@ class App:
         self.events: queue.Queue = queue.Queue()
         self.group: DirectGroup | None = None
         self.peer: str | None = None  # the host's address once joined
+        self.native_host: p2p.Host | None = None
+        self.joiner: p2p.Joiner | None = None
+        self.classic = tk.BooleanVar(value=False)
         root.title("Network Connector - Hello")
         root.geometry("620x420")
         top = ttk.Frame(root, padding=10)
@@ -30,6 +33,7 @@ class App:
         self.send_btn.pack(side="left")
         self.stop_btn = ttk.Button(top, text="Stop", command=self.on_stop, state="disabled")
         self.stop_btn.pack(side="left", padx=8)
+        ttk.Checkbutton(top, text="Classic mode (joiner leaves its Wi-Fi)", variable=self.classic).pack(side="left")
         self.retry_btn = ttk.Button(top, text="Retry", command=self.on_retry)  # packed only after a failure
         self.last_work = None
         self.stopping = threading.Event()  # set by Stop: ends the Hello server and a running search
@@ -56,6 +60,8 @@ class App:
             kind, text, tag = self.events.get()
             if kind == "status":
                 self.status.config(text=text)
+            elif kind == "choose":
+                self.ask_choice(*text)
             elif kind == "enable_send":
                 self.send_btn.config(state="normal")
             elif kind == "failed":  # let the user try again instead of restarting the app
@@ -86,10 +92,10 @@ class App:
         def wrapped() -> None:
             try:
                 work()
-            except (DirectLinkError, OSError) as exc:
+            except Exception as exc:  # noqa: BLE001 - WinRT raises assorted types; show them all
                 if self.stopping.is_set():
                     return  # Stop interrupted it; on_stop reports the outcome
-                self.say(f"Error: {exc}", "err")
+                self.say(f"Error: {exc or type(exc).__name__}", "err")
                 self.set_status("Something went wrong - see below, then click Retry.")
                 self.events.put(("failed", "", ""))
         threading.Thread(target=wrapped, daemon=True).start()
@@ -110,6 +116,24 @@ class App:
             self.say("Firewall fixed." if firewall.fix() else "Firewall not fixed; the other PC's Hello may not arrive.",
                      "" if not firewall.problems() else "err")
         self.set_status("Starting Wi-Fi Direct...")
+        if not self.classic.get():
+            self.host_native()
+        else:
+            self.host_classic()
+        self.serve()
+
+    def host_native(self) -> None:
+        def on_peer(name: str, local: str, remote: str) -> None:
+            self.say(f"{name} connected over Wi-Fi Direct (this PC {local}, {name} {remote}).", "in")
+            self.set_status(f"{name} connected. Waiting for its Hello...")
+
+        self.native_host = p2p.Host(on_peer, lambda msg: self.say(msg, "err"))
+        self.native_host.start()
+        self.say("Wi-Fi Direct is on. Both PCs keep their normal Wi-Fi and internet.")
+        self.set_status("Hosting. On the other PC open this app and click 'Join the other PC'. "
+                        "If Windows asks to allow a device, click Allow.")
+
+    def host_classic(self) -> None:
         ssid = default_ssid()
         for attempt in range(3):  # Windows may abort while a previous group is still being released
             try:
@@ -124,6 +148,7 @@ class App:
         self.say(f"Wi-Fi Direct group started: {ssid}")
         self.set_status(f"Hosting {ssid}. On the other PC open this app and click 'Join the other PC'.")
 
+    def serve(self) -> None:
         def note(msg: str) -> None:
             if " says: " in msg:
                 self.say("<- " + msg, "in")
@@ -136,6 +161,60 @@ class App:
         self.run(self.join)
 
     def join(self) -> None:
+        if self.classic.get():
+            self.join_classic()
+        else:
+            self.join_native()
+
+    def join_native(self) -> None:
+        self.set_status("Looking for the other PC over Wi-Fi Direct...")
+        if self.joiner:
+            self.joiner.close()
+        self.joiner = p2p.Joiner()
+        peers = self.joiner.find()
+        if not peers:
+            raise p2p.DirectLinkError("No Wi-Fi Direct PC found. Click Host on the other PC first.")
+        peer = peers[0] if len(peers) == 1 else self.choose(peers)
+        if peer is None:
+            raise p2p.DirectLinkError("No PC chosen.")
+        self.say(f"Found {peer.name}, connecting (click Allow if Windows asks)...")
+        local, remote = self.joiner.connect(peer)
+        self.say(f"Connected over Wi-Fi Direct. This PC {local}, {peer.name} {remote}. Your normal Wi-Fi stays on.")
+        self.peer = remote
+        for _ in range(5):  # the host may need a moment to see the connection
+            if self.send():
+                self.events.put(("enable_send", "", ""))
+                self.set_status(f"Connected to {peer.name}. Click Send Hello to say it again.")
+                return
+            time.sleep(2)
+        raise p2p.DirectLinkError("Connected, but the host did not answer. Is the app hosting on the other PC?")
+
+    def choose(self, peers: list) -> p2p.Peer | None:
+        """Ask on the Tk thread which PC to join; blocks this worker thread until answered."""
+        answer: list = []
+        done = threading.Event()
+        self.events.put(("choose", (peers, answer, done), ""))
+        done.wait()
+        return answer[0] if answer else None
+
+    def ask_choice(self, peers: list, answer: list, done: threading.Event) -> None:
+        win = tk.Toplevel(self.root)
+        win.title("Which PC?")
+        ttk.Label(win, text="Several Wi-Fi Direct devices were found. Pick the other PC:", padding=10).pack()
+        box = tk.Listbox(win, height=min(len(peers), 10), width=40)
+        for peer in peers:
+            box.insert("end", peer.name)
+        box.selection_set(0)
+        box.pack(padx=10)
+
+        def ok() -> None:
+            if box.curselection():
+                answer.append(peers[box.curselection()[0]])
+            win.destroy()
+        ttk.Button(win, text="Connect", command=ok).pack(pady=10)
+        win.bind("<Destroy>", lambda _e: done.set())
+
+    def join_classic(self) -> None:
         self.set_status("Looking for the other PC's DIRECT-NC group...")
         for _ in range(6):
             found = scan_direct_groups()
@@ -185,6 +264,14 @@ class App:
                 self.group.stop()
                 self.group = None
                 self.say("Wi-Fi Direct group stopped.")
+            if self.native_host:
+                self.native_host.stop()
+                self.native_host = None
+                self.say("Wi-Fi Direct stopped.")
+            if self.joiner:
+                self.joiner.close()
+                self.joiner = None
+                self.say("Disconnected from the other PC.")
             if self.joined_ssid:
                 leave(self.joined_ssid)
                 self.say(f"Left {self.joined_ssid}.")
@@ -198,6 +285,12 @@ class App:
 
     def on_close(self) -> None:
         self.stopping.set()
+        for link in (self.native_host, self.joiner):
+            try:
+                if link:
+                    link.stop() if isinstance(link, p2p.Host) else link.close()
+            except Exception:  # noqa: BLE001 - closing anyway
+                pass
         if self.group:
             try:
                 self.group.stop()
