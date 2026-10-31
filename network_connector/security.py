@@ -72,6 +72,7 @@ def protect_path(path: Path) -> None:
                     capture_output=True,
                     check=False,
                     timeout=15,
+                    creationflags=0x08000000,  # CREATE_NO_WINDOW: no console flash under pythonw
                 )
         else:
             path.chmod(0o600)

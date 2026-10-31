@@ -124,6 +124,9 @@ def _check_home(home: Path) -> None:
             "Use a separate folder (NC_RUNTIME_HOME).")
 
 
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0  # no console flash under pythonw
+
+
 def setup_runtime(home: Path | None = None) -> Path:
     """Create the runtime folder (runner + wasmtime copy) and grant AppContainers read/execute on it only."""
     home = home or runtime_home()
@@ -132,7 +135,7 @@ def setup_runtime(home: Path | None = None) -> Path:
     if not has_grant(home, inherit=True):
         # Granted on the folder before copying, so every file inherits it. Never on any other folder.
         proc = subprocess.run(["icacls", str(home), "/grant", f"*{ALL_APP_PACKAGES}:(OI)(CI)(RX)"],
-                              capture_output=True, text=True, timeout=60, check=False)
+                              capture_output=True, text=True, timeout=60, check=False, creationflags=_NO_WINDOW)
         if proc.returncode != 0:
             raise SandboxUnavailable(f"Could not grant sandbox read access on {home}: {proc.stdout.strip() or proc.stderr.strip()}")
     try:
@@ -165,7 +168,7 @@ def remove_runtime(home: Path | None = None) -> None:
     home = home or runtime_home()
     if home.is_dir():
         subprocess.run(["icacls", str(home), "/remove:g", f"*{ALL_APP_PACKAGES}"], capture_output=True,
-                       timeout=60, check=False)
+                       timeout=60, check=False, creationflags=_NO_WINDOW)
         shutil.rmtree(home, ignore_errors=True)
     available(refresh=True)
 

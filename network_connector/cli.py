@@ -917,7 +917,7 @@ def build_parser() -> argparse.ArgumentParser:
         wv.add_argument("--requester", help="short ID of a joined requester (default: the paired controller)")
         wv.set_defaults(fn=fn)
     wk.add_parser("perf", help="show this worker's latest shared benchmark").set_defaults(fn=cmd_worker_perf)
-    join = wk.add_parser("join", help="join the controller's direct Wi-Fi or hotspot")
+    join = wk.add_parser("join", help="join the controller's Wi-Fi Direct group")
     join.add_argument("--ssid", required=True)
     join.add_argument("--passphrase", help="omit to enter privately")
     join.set_defaults(fn=cmd_worker_join)

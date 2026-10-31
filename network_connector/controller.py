@@ -7,8 +7,10 @@ import json
 import ipaddress
 import logging
 import math
+import os
 import re
 import secrets
+import socket
 import threading
 import time
 from collections import OrderedDict, defaultdict, deque
@@ -47,7 +49,7 @@ from .security import (
     pairing_proof,
 )
 from .store import Store
-from .wifidirect import DirectGroup, DirectLinkError, find_direct_interface
+from .wifidirect import DirectGroup, DirectLinkError
 from .benchmark import BenchmarkRunner, BenchmarkSpec, shared_result
 
 log = logging.getLogger("network_connector.controller")
@@ -944,10 +946,12 @@ class _Server(uvicorn.Server):
         pass
 
 
-def port_in_use_message(port: int) -> str:
+def port_in_use_message(port: int, host: str | None = None) -> str:
     try:
         for conn in psutil.net_connections(kind="tcp"):
-            if conn.status == psutil.CONN_LISTEN and conn.laddr.port == port and conn.pid:
+            # Our own listeners on other addresses share the port; they are not "another program".
+            if (conn.status == psutil.CONN_LISTEN and conn.laddr.port == port and conn.pid and conn.pid != os.getpid()
+                    and (host is None or conn.laddr.ip in (host, "0.0.0.0", "::"))):
                 try:
                     name = psutil.Process(conn.pid).name()
                 except (psutil.Error, OSError):
@@ -955,7 +959,19 @@ def port_in_use_message(port: int) -> str:
                 return f"Port {port} is used by another program (PID {conn.pid}, name {name})"
     except (psutil.Error, OSError):
         pass
+    if host and not _host_assigned(host):
+        return (f"This PC no longer has the address {host} (for example, the Wi-Fi Direct group was stopped), "
+                f"so the controller cannot listen on {host}:{port}.")
     return f"Controller failed to start on port {port}; the address may be unavailable or the port in use."
+
+
+def _host_assigned(host: str) -> bool:
+    """Whether an IPv4 address is currently assigned to one of this PC's adapters."""
+    try:
+        return any(a.family == socket.AF_INET and a.address == host
+                   for addrs in psutil.net_if_addrs().values() for a in addrs)
+    except (psutil.Error, OSError):
+        return True  # unknown: let the bind itself decide
 
 
 class ControllerRuntime:
@@ -1054,6 +1070,7 @@ class ControllerRuntime:
             config = uvicorn.Config(
                 self.app, host=host, port=self.cfg.port, ssl_keyfile=str(self.key),
                 ssl_certfile=str(self.cert), log_level="warning", access_log=False,
+                use_colors=False,  # Windows GUI launches have no stdout for isatty().
             )
             server = _Server(config)
             thread = threading.Thread(target=server.run, name=f"controller-http-{host}", daemon=True)
@@ -1061,7 +1078,7 @@ class ControllerRuntime:
             deadline = time.monotonic() + 15
             while not server.started and time.monotonic() < deadline:
                 if not thread.is_alive():
-                    raise RuntimeError(port_in_use_message(self.cfg.port))
+                    raise RuntimeError(port_in_use_message(self.cfg.port, host))
                 time.sleep(0.05)
             if not server.started:
                 server.should_exit = True
@@ -1122,6 +1139,11 @@ class ControllerRuntime:
         self._starting = True
         try:
             for host in list(self.cfg.bind_hosts):
+                # An extra address can vanish between runs (a Wi-Fi Direct group that stopped). Skip it without
+                # forgetting it; the main address and loopback must still bind or the start fails.
+                if host not in (self.cfg.bind_host, "127.0.0.1") and not _host_assigned(host):
+                    log.warning("skipping listener %s: this PC does not have that address now", host)
+                    continue
                 self.add_listener(host, persist=False)
         except Exception:
             self.stop()
@@ -1160,8 +1182,8 @@ class ControllerRuntime:
 
     def _refresh_direct_subnets(self) -> None:
         try:
-            iface = find_direct_interface()
-            self.state.direct_subnets = {iface.subnet} if iface else set()
+            info = self.direct_group.status()
+            self.state.direct_subnets = {info.subnet} if info.running and info.subnet else set()
         except DirectLinkError:
             self.state.direct_subnets = set()
 
@@ -1198,7 +1220,7 @@ class ControllerRuntime:
                     time.sleep(0.5)
                     info = self.direct_group.status()
                 if not info.running or not info.ip:
-                    raise DirectLinkError("The direct group has no active IPv4 address. Start the group or Windows Mobile Hotspot first.")
+                    raise DirectLinkError("The direct group has no active IPv4 address. Start the Wi-Fi Direct group first.")
                 if info.ip not in self.listener_hosts:
                     self.add_listener(info.ip, persist=False)
                     self._direct_listener = info.ip

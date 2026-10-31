@@ -62,12 +62,12 @@ def test_direct_gui_renders_mode_listener_and_fingerprint(monkeypatch):
         monkeypatch.setattr(link_gui, "firewall_status", lambda _host: "narrow rule present")
         obj._build_direct(ttk.Notebook(root))
         obj.direct_pair_hint = ttk.Label(root)
-        obj._direct_render({"mode": "B", "ip": "192.168.137.1", "interface": "direct", "running": True,
+        obj._direct_render({"mode": "A", "ip": "192.168.137.1", "interface": "direct", "running": True,
                             "listeners": ["192.168.137.1"], "fingerprint": "ab12", "peers": ["192.168.137.2"]})
         assert obj.direct_listen.get()
         assert "192.168.137.1:8765" in obj.direct_pair_hint.cget("text")
         assert "ab12" in obj.direct_pair_hint.cget("text")
-        assert "Mode: B" in obj.direct_status.cget("text")
+        assert "Mode: A" in obj.direct_status.cget("text")
         obj.direct_ssid.set("DIRECT-NC-old")
         obj.direct_password.set("generated-old")
         obj._direct_render({"running": False, "mode": "none"})

@@ -1,7 +1,7 @@
 """Optional Windows Wi-Fi Direct and outbound-only controller discovery.
 
 Adapter behaviour must still be checked on the actual laptops. WinRT is imported only
-when starting a group; an already running Windows Mobile Hotspot needs no WinRT package.
+when starting a group. Windows Mobile Hotspot is not used: the app runs its own group only.
 """
 from __future__ import annotations
 
@@ -88,16 +88,19 @@ def _read_adapter_rows() -> list[dict[str, Any]]:
     if sys.platform != "win32":
         return []
     # This command is constant: no SSID, address or credential is interpolated into PowerShell.
-    command = r"""$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8;
+    # One bulk query per cmdlet, joined by ifIndex: per-adapter Get-NetIPConfiguration took ~12 s and threw for
+    # hidden adapters without an IP interface. A failing cmdlet leaves its field empty instead of losing every row.
+    command = r"""$ErrorActionPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.Encoding]::UTF8;
+$ips=@(Get-NetIPAddress -AddressFamily IPv4); $routes=@(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0');
+$profiles=@(Get-NetConnectionProfile);
+$neigh=@(Get-NetNeighbor -AddressFamily IPv4 | Where-Object {$_.State -in @('Reachable','Stale','Delay','Probe','Permanent')});
 $rows=@(Get-NetAdapter -IncludeHidden | ForEach-Object {
- $a=$_; $c=Get-NetIPConfiguration -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue;
- $p=Get-NetConnectionProfile -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue;
- $ips=@(Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object {
-  @{ip=$_.IPAddress;prefix=$_.PrefixLength}});
- $peers=@(Get-NetNeighbor -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-  Where-Object {$_.State -in @('Reachable','Stale','Delay','Probe','Permanent')} | ForEach-Object {$_.IPAddress});
- @{name=$a.Name;description=$a.InterfaceDescription;up=($a.Status -eq 'Up');ips=$ips;
- gateway=[string](@($c.IPv4DefaultGateway.NextHop)[0]);category=[string](@($p.NetworkCategory)[0]);network_name=[string](@($p.Name)[0]);peers=$peers}
+ $i=$_.ifIndex; $p=@($profiles | Where-Object InterfaceIndex -eq $i)[0];
+ @{name=$_.Name;description=$_.InterfaceDescription;up=($_.Status -eq 'Up');
+ ips=@($ips | Where-Object InterfaceIndex -eq $i | ForEach-Object {@{ip=$_.IPAddress;prefix=$_.PrefixLength}});
+ gateway=[string](@($routes | Where-Object InterfaceIndex -eq $i | ForEach-Object NextHop)[0]);
+ category=[string]$p.NetworkCategory;network_name=[string]$p.Name;
+ peers=@($neigh | Where-Object InterfaceIndex -eq $i | ForEach-Object IPAddress)}
 }); ConvertTo-Json -InputObject $rows -Depth 5 -Compress"""
     proc = _run(["powershell", "-NoProfile", "-NonInteractive", "-Command", command], timeout=15)
     if proc.returncode:
@@ -227,7 +230,7 @@ def _create_publisher(ssid: str, passphrase: str) -> tuple[Any, Any]:
         from winrt.windows.devices.wifidirect import WiFiDirectAdvertisementPublisher, WiFiDirectAdvertisementPublisherStatus
         from winrt.windows.security.credentials import PasswordCredential
     except ImportError as exc:
-        raise DirectLinkError("Wi-Fi Direct support not installed. Install the 'wifidirect' extra, or start Windows Mobile Hotspot manually and try again.") from exc
+        raise DirectLinkError("Wi-Fi Direct support not installed. Install the 'wifidirect' extra and try again.") from exc
     publisher = WiFiDirectAdvertisementPublisher()
     publisher.advertisement.is_autonomous_group_owner_enabled = True
     legacy = publisher.advertisement.legacy_settings
@@ -386,10 +389,9 @@ class DirectGroup:
                 return self.status()
             iface = find_direct_interface()
             if iface and iface.is_owner:
-                # Mobile Hotspot must be configured/stopped in Settings; we do not claim its credentials.
-                with self._lock:
-                    self._info = GroupInfo(mode="B", running=True, status="Using existing Windows hotspot; manage its SSID and password in Settings")
-                return self.status()
+                # Something else (for example Windows Mobile Hotspot) already owns the adapter; we never adopt it.
+                raise DirectLinkError("Another Wi-Fi Direct group or Mobile Hotspot is already running on this PC. "
+                                      "Turn it off in Windows Settings, then start the group again.")
             if sys.platform != "win32":
                 raise DirectLinkError("Wi-Fi Direct is supported only on Windows.")
             ssid = ssid or "DIRECT-NC-" + "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(4))
@@ -403,7 +405,7 @@ class DirectGroup:
             if not self._ready.wait(12):
                 self._stop.set()
                 self._thread.join(timeout=5)
-                raise DirectLinkError("Wi-Fi Direct start timed out. Try Windows Mobile Hotspot manually.")
+                raise DirectLinkError("Wi-Fi Direct start timed out. Check that the adapter supports Wi-Fi Direct and the radio is on.")
             with self._lock:
                 error, running = self._info.error, self._info.running
             if error and not running:
@@ -423,7 +425,7 @@ class DirectGroup:
 
             def connection_failed() -> None:
                 with self._lock:
-                    self._info.error = "Windows could not accept a Wi-Fi connection; retry joining or use Mobile Hotspot."
+                    self._info.error = "Windows could not accept a Wi-Fi connection; retry joining."
 
             acceptor = _ConnectionAcceptor(connection_failed)
             self._acceptor = acceptor
@@ -435,13 +437,13 @@ class DirectGroup:
                         self._ready.set()
                     elif args.status == statuses.ABORTED:
                         self._info.running = False
-                        self._info.error = "Windows aborted Wi-Fi Direct. Check adapter support, radio state and permissions, or use Mobile Hotspot."
+                        self._info.error = "Windows aborted Wi-Fi Direct. Check adapter support, radio state and permissions."
                         self._ready.set()
                         self._stop.set()
                     elif args.status == getattr(statuses, "STOPPED", -1):
                         self._info.running = False
                         if not self._stop.is_set():
-                            self._info.error = "Windows stopped the Wi-Fi Direct group. Check the radio and adapter, or use Mobile Hotspot."
+                            self._info.error = "Windows stopped the Wi-Fi Direct group. Check the radio and adapter."
                         self._ready.set()
                         self._stop.set()
 
@@ -455,18 +457,18 @@ class DirectGroup:
                         self._info.running, self._info.status = True, "Group advertised"
                     self._ready.set()
                 elif status == statuses.ABORTED:
-                    raise DirectLinkError("Windows aborted Wi-Fi Direct. Check adapter support and permissions, or use Mobile Hotspot.")
+                    raise DirectLinkError("Windows aborted Wi-Fi Direct. Check adapter support and permissions.")
                 elif status == getattr(statuses, "STOPPED", -1):
-                    raise DirectLinkError("Windows stopped the Wi-Fi Direct group. Check the radio and adapter, or use Mobile Hotspot.")
+                    raise DirectLinkError("Windows stopped the Wi-Fi Direct group. Check the radio and adapter.")
                 if not self._ready.is_set() and time.monotonic() >= deadline:
-                    raise DirectLinkError("The Wi-Fi Direct publisher did not start. Try Windows Mobile Hotspot manually.")
+                    raise DirectLinkError("The Wi-Fi Direct publisher did not start. Check adapter support and the radio.")
         except DirectLinkError as exc:
             with self._lock:
                 self._info.error, self._info.running = str(exc), False
         except Exception as exc:
             # Do not expose API exception text: it might contain a credential supplied to Windows.
             with self._lock:
-                self._info.error = f"Wi-Fi Direct API failed ({type(exc).__name__}). Check permissions and adapter support, or use Windows Mobile Hotspot."
+                self._info.error = f"Wi-Fi Direct API failed ({type(exc).__name__}). Check permissions and adapter support."
                 self._info.running = False
         finally:
             if acceptor is not None:
@@ -498,20 +500,16 @@ class DirectGroup:
                 if self._thread.is_alive():
                     raise DirectLinkError("Windows has not released the Wi-Fi Direct publisher yet.")
             with self._lock:
-                self._info = GroupInfo(status="Stopped; an externally started Mobile Hotspot must be stopped in Windows Settings")
+                self._info = GroupInfo(status="Stopped")
 
     def status(self) -> GroupInfo:
         iface = find_direct_interface()
         with self._lock:
             info = GroupInfo(**vars(self._info))
-        if iface:
+        # Only our own group's adapter counts; a hotspot started elsewhere is never reported or listened on.
+        if iface and info.mode == "A":
             info.interface, info.ip, info.subnet = iface.name, iface.ip, iface.subnet
             info.category, info.peers = iface.category, list(iface.peers)
-            if info.mode == "none" and iface.is_owner:
-                info.mode, info.running = "B", True
-                info.status = "Existing Windows hotspot detected; manage its SSID, password and stop action in Settings"
-        if info.mode == "B" and not (iface and iface.is_owner):
-            info.running, info.status = False, "Windows hotspot is no longer active"
         return info
 
 

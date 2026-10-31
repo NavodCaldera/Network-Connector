@@ -33,7 +33,9 @@ def _ver(text: str) -> tuple[int, int, int]:
 
 def _run(args: list[str], cwd: Path, timeout: int = 300) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False)
+        # CREATE_NO_WINDOW: the GUI runs under pythonw, where each console child would open a window.
+        return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False,
+                              creationflags=0x08000000 if sys.platform == "win32" else 0)
     except subprocess.TimeoutExpired as exc:
         raise UpdateError(f"Update command timed out after {timeout}s.") from exc
     except OSError as exc:

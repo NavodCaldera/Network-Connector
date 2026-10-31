@@ -84,16 +84,16 @@ def test_adapter_discovery_uses_actual_prefix_gateway_and_filters_peers(monkeypa
     assert direct.candidate_controllers(None)  # no subnet scan, only a bounded gateway/.1 probe
 
 
-def test_hotspot_status_and_start_do_not_require_winrt(monkeypatch):
+def test_existing_hotspot_is_neither_adopted_nor_reported(monkeypatch):
     iface = direct.InterfaceInfo("hotspot", "Wi-Fi Direct adapter", "192.168.137.1", "192.168.137.0/24", is_owner=True)
     monkeypatch.setattr(direct, "find_direct_interface", lambda: iface)
-    factory = Mock(side_effect=AssertionError("must not invoke publisher for existing hotspot"))
+    factory = Mock(side_effect=AssertionError("must not start a publisher over an existing group"))
     monkeypatch.setattr(direct, "_create_publisher", factory)
     group = direct.DirectGroup()
-    assert group.status().mode == "B" and group.status().running
-    assert group.start().mode == "B"
-    group.stop()
-    assert group.status().running  # external hotspot is stopped only through Windows Settings
+    info = group.status()
+    assert info.mode == "none" and not info.running and not info.ip
+    with pytest.raises(direct.DirectLinkError, match="already running"):
+        group.start()
     factory.assert_not_called()
 
 
@@ -155,7 +155,7 @@ def test_listener_setup_never_replaces_an_incomplete_controller_identity(tmp_pat
 
 def test_dynamic_listener_keeps_certificate_and_admin_sources(tmp_path, monkeypatch):
     from conftest import free_port
-    monkeypatch.setattr("network_connector.controller.find_direct_interface", lambda: None)
+    monkeypatch.setattr("network_connector.wifidirect.find_direct_interface", lambda: None)
     rt = ControllerRuntime(ControllerConfig(bind_host="127.0.0.1", port=free_port()), tmp_path)
     fingerprint = rt.fingerprint
     try:

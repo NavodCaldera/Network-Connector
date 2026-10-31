@@ -51,6 +51,34 @@ def test_port_error_includes_process(monkeypatch):
     assert "PID 42, name example.exe" in port_in_use_message(8765)
 
 
+def test_port_error_ignores_own_listeners_and_names_missing_address(monkeypatch):
+    import os
+
+    import psutil
+    monkeypatch.setattr(psutil, "net_connections", lambda **_: [
+        SimpleNamespace(status=psutil.CONN_LISTEN, laddr=SimpleNamespace(ip="127.0.0.1", port=8765), pid=os.getpid())])
+    monkeypatch.setattr(psutil, "net_if_addrs", lambda: {})
+    message = port_in_use_message(8765, "192.168.137.1")
+    assert "another program" not in message and "no longer has the address 192.168.137.1" in message
+
+
+def test_start_skips_extra_address_this_pc_no_longer_has(tmp_path, monkeypatch):
+    from conftest import free_port
+
+    from network_connector import controller as controller_module
+
+    cfg = ControllerConfig(bind_host="127.0.0.1", bind_hosts=["127.0.0.1", "192.168.137.1"], port=free_port())
+    rt = ControllerRuntime(cfg, tmp_path)
+    monkeypatch.setattr(controller_module, "_host_assigned", lambda host: host == "127.0.0.1")
+    try:
+        rt.start()
+        assert rt.listener_hosts == ["127.0.0.1"]
+        assert "192.168.137.1" in rt.cfg.bind_hosts  # remembered for when the direct group is back
+    finally:
+        rt.stop()
+        rt.store.close()
+
+
 def test_gui_attaches_without_starting_runtime(monkeypatch, tmp_path):
     save_config(ControllerConfig(bind_host="192.168.1.20"), tmp_path / "controller.json")
     admin = Mock()

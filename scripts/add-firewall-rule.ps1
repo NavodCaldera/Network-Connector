@@ -13,7 +13,7 @@
   -Discovery (helpers, 0.3.0) instead allows the receive-only nearby announcements:
     - UDP only, only the discovery port (default 8766), only for the given python.exe (-Program)
     - the Private profile, from the local subnet
-    - with -LocalAddress: also the Public profile, but only to that direct-link/hotspot address and only
+    - with -LocalAddress: also the Public profile, but only to that Wi-Fi Direct group address and only
       from its /24 subnet. Never a blanket "allow python.exe".
 #>
 #Requires -RunAsAdministrator
@@ -69,7 +69,7 @@ if ($Discovery) {
         } else {
             New-NetFirewallRule -DisplayName $directName -Direction Inbound -Protocol UDP -LocalPort $DiscoveryPort `
                 -Profile Public -LocalAddress $LocalAddress -RemoteAddress $subnet -Program $Program -Action Allow `
-                -Description "Nearby announcements on the direct Wi-Fi or hotspot subnet only." | Out-Null
+                -Description "Nearby announcements on the Wi-Fi Direct group subnet only." | Out-Null
         }
         Write-Host "Also allowed UDP $DiscoveryPort to $LocalAddress from $subnet on the Public direct link." -ForegroundColor Green
     }

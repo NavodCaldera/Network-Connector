@@ -6,6 +6,7 @@ import ipaddress
 import json
 import subprocess
 import sys
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -13,6 +14,9 @@ from typing import Any
 
 from .config import WorkerConfig, load_config, save_config
 from .security import constant_time_equal, fingerprint_pem_file
+
+# The app runs under pythonw (no console), so each PowerShell child would otherwise open a visible window.
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 
 def discover_controller(cfg: WorkerConfig, directory: Path) -> dict[str, str]:
@@ -41,7 +45,7 @@ def firewall_status(host: str) -> str:
               "-ErrorAction SilentlyContinue; if($r){$a=$r|Get-NetFirewallAddressFilter; "
               "[pscustomobject]@{enabled=[string]$r.Enabled;action=[string]$r.Action;local=$a.LocalAddress;remote=$a.RemoteAddress}|ConvertTo-Json -Compress}")
     proc = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                          capture_output=True, text=True, timeout=10)
+                          capture_output=True, text=True, timeout=10, creationflags=_NO_WINDOW)
     if proc.returncode:
         return "Firewall status unavailable."
     if not proc.stdout.strip():
@@ -53,8 +57,15 @@ def firewall_status(host: str) -> str:
     remote = data.get("remote", [])
     if isinstance(remote, str):
         remote = [remote]
-    subnet = str(ipaddress.IPv4Network(f"{host}/24", strict=False))
-    safe = host in local and subnet in remote and data.get("enabled") == "True" and data.get("action") == "Allow"
+    subnet = ipaddress.IPv4Network(f"{host}/24", strict=False)
+    # Windows reports masks in dotted form ("192.168.137.0/255.255.255.0"), so compare networks, not strings.
+    networks = []
+    for value in remote:
+        try:
+            networks.append(ipaddress.IPv4Network(value, strict=False))
+        except ValueError:
+            pass
+    safe = host in local and subnet in networks and data.get("enabled") == "True" and data.get("action") == "Allow"
     return "Direct-link rule enabled for this address and subnet." if safe else "Firewall rule needs updating for this address."
 
 
@@ -73,7 +84,7 @@ def allow_direct_firewall(host: str, port: int) -> None:
                f"'-Port','{port}','-WiFiDirect','-LocalAddress','{address}'); exit $p.ExitCode")
     encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
     proc = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-                          capture_output=True, text=True, timeout=120)
+                          capture_output=True, text=True, timeout=120, creationflags=_NO_WINDOW)
     if proc.returncode:
         raise RuntimeError("Firewall setup was declined or failed. Run scripts/add-firewall-rule.ps1 as administrator.")
 
@@ -108,7 +119,7 @@ def discovery_firewall_command(port: int, local_address: str | None) -> str:
 def allow_discovery_firewall(port: int, local_address: str | None = None) -> None:
     encoded = base64.b64encode(discovery_firewall_command(port, local_address).encode("utf-16-le")).decode("ascii")
     proc = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-                          capture_output=True, text=True, timeout=120)
+                          capture_output=True, text=True, timeout=120, creationflags=_NO_WINDOW)
     if proc.returncode:
         raise RuntimeError("Firewall setup was declined or failed. Run scripts/add-firewall-rule.ps1 -Discovery as administrator.")
 
@@ -135,7 +146,7 @@ class ControllerDirectControls:
             ttk.Button(fields, text="Copy", command=lambda v=var: self._direct_copy(v.get())).grid(row=r, column=2)
         buttons = ttk.Frame(tab)
         buttons.pack(fill="x")
-        for label, fn in (("Start group / detect hotspot", self._direct_start), ("Stop group", self._direct_stop),
+        for label, fn in (("Start group", self._direct_start), ("Stop group", self._direct_stop),
                           ("Refresh status", self._direct_refresh), ("Allow through firewall", self._direct_firewall)):
             ttk.Button(buttons, text=label, command=fn).pack(side="left", padx=3)
         ttk.Checkbutton(tab, text="Listen on the direct link", variable=self.direct_listen,
@@ -148,8 +159,8 @@ class ControllerDirectControls:
         self.direct_qr = ttk.Label(tab)
         self.direct_qr.pack(anchor="w", pady=5)
         self._direct_qr_key = None
-        ttk.Label(tab, text="If the publisher is unavailable, start Windows Mobile Hotspot in Settings, then refresh. "
-                  "Stop a manually started hotspot in Settings. Install dependencies on both PCs before going offline.",
+        ttk.Label(tab, text="This PC needs a Wi-Fi adapter that supports Wi-Fi Direct. Turn off Windows Mobile Hotspot "
+                  "first: it uses the same adapter. Install dependencies on both PCs before going offline.",
                   wraplength=950).pack(anchor="w", pady=8)
         self.root.after(3000, self._direct_tick)
 
@@ -167,7 +178,7 @@ class ControllerDirectControls:
             return
         ssid, password, listen = self.direct_ssid.get().strip(), self.direct_password.get(), self.direct_listen.get()
         self._direct_busy = True
-        self.direct_status.config(text="Starting group or detecting an existing hotspot...")
+        self.direct_status.config(text="Starting Wi-Fi Direct group...")
         self.bg.run(lambda: admin.direct_start(ssid or None, password or None, listen), self._direct_render, self._direct_error)
 
     def _direct_stop(self) -> None:
@@ -211,9 +222,12 @@ class ControllerDirectControls:
         if hasattr(self, "direct_pair_hint"):
             hint = f"Controller certificate: {data.get('fingerprint', '')}"
             if host:
-                hint = f"Connect the worker to Wi-Fi {data.get('ssid') or '(your hotspot)'}, then use {host}:{self.cfg.port}.\n" + hint
+                hint = f"Connect the worker to Wi-Fi {data.get('ssid') or '(the direct group)'}, then use {host}:{self.cfg.port}.\n" + hint
             self.direct_pair_hint.config(text=hint)
-        if host:
+        # The firewall check is a ~4 s PowerShell call: repeat it only when the address changes or once a minute.
+        now = time.monotonic()
+        if host and (host != getattr(self, "_firewall_host", None) or now - getattr(self, "_firewall_checked", 0.0) > 60):
+            self._firewall_host, self._firewall_checked = host, now
             self.bg.run(lambda: firewall_status(host), lambda s: self.direct_firewall.config(text=s),
                         lambda _e: self.direct_firewall.config(text="Firewall status unavailable."))
         self._direct_render_qr(data)
@@ -244,6 +258,7 @@ class ControllerDirectControls:
             return
         port = self.cfg.port
         self.direct_firewall.config(text="Waiting for Windows administrator approval...")
+        self._firewall_host = None  # re-check the rule on the next render
         self.bg.run(lambda: allow_direct_firewall(host, port), lambda _r: self._direct_refresh(),
                     lambda e: self.direct_firewall.config(text=str(e)))
 

@@ -6,6 +6,25 @@ from network_connector.controller import ControllerRuntime
 from network_connector.security import fingerprint_pem_file
 
 
+def test_controller_starts_without_console_streams(tmp_path, monkeypatch):
+    import socket
+    import sys
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    rt = ControllerRuntime(ControllerConfig(bind_host="127.0.0.1", port=port), tmp_path)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, "stdout", None)
+            patch.setattr(sys, "stderr", None)
+            rt.start()
+            assert rt._server.started
+    finally:
+        rt.stop()
+        rt.store.close()
+
+
 @pytest.mark.parametrize("host", ["0.0.0.0", "8.8.8.8"])
 def test_runtime_refuses_wildcard_and_public_bind(tmp_path, host):
     with pytest.raises(ConfigError):
