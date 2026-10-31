@@ -520,3 +520,39 @@ class DirectGroup:
             info.category, info.peers = iface.category, list(iface.peers)
         return info
 
+
+
+# ------------------------------------------------------------------ no-password groups: name and password built in
+DIRECT_NC_RE = re.compile(r"^DIRECT-NC-[A-Z0-9]{4}$")
+# Not a secret: every copy of the app derives the same passphrase, so anyone with the app can join without typing it.
+_APP_SALT = b"network-connector/open-direct-group/v1"
+
+
+def default_ssid() -> str:
+    """DIRECT-NC-XXXX, fixed for this PC (from its computer name)."""
+    import hashlib
+    import socket
+
+    digest = hashlib.sha256(socket.gethostname().lower().encode()).digest()
+    alphabet = string.ascii_uppercase + string.digits
+    return "DIRECT-NC-" + "".join(alphabet[b % len(alphabet)] for b in digest[:4])
+
+
+def derived_passphrase(ssid: str) -> str:
+    """PBKDF2(ssid, app salt): the same on every copy of the app, 24 URL-safe characters."""
+    import base64
+    import hashlib
+
+    if not DIRECT_NC_RE.fullmatch(ssid or ""):
+        raise DirectLinkError("Only DIRECT-NC-XXXX groups use the built-in password.")
+    raw = hashlib.pbkdf2_hmac("sha256", ssid.encode("ascii"), _APP_SALT, 100_000, dklen=18)
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def scan_direct_groups() -> list[str]:
+    """Visible DIRECT-NC-XXXX networks, from `netsh wlan show networks`."""
+    if sys.platform != "win32":
+        return []
+    result = _run(["netsh", "wlan", "show", "networks"])
+    names = re.findall(r"\bDIRECT-NC-[A-Z0-9]{4}\b", result.stdout or "")
+    return sorted(set(names))

@@ -29,3 +29,17 @@ def test_hello_both_ways():
 def test_cli_send_reports_unreachable(capsys):
     assert cli.main(["send", "127.0.0.1", "--port", str(_free_port())]) == 1
     assert "Error" in capsys.readouterr().out
+
+
+def test_join_without_arguments_finds_group_and_uses_built_in_password(monkeypatch):
+    from network_connector import wifidirect
+
+    ssid = wifidirect.default_ssid()
+    joined = {}
+    monkeypatch.setattr(cli, "scan_direct_groups", lambda: [ssid])
+    monkeypatch.setattr(cli, "join", lambda s, p: joined.update(ssid=s, passphrase=p) or
+                        wifidirect.InterfaceInfo("w", "d", "192.168.137.5", "192.168.137.0/24"))
+    monkeypatch.setattr(cli, "candidate_controllers", lambda iface: [])
+    assert cli.main(["join"]) == 1  # nobody answers, but the join itself used the built-in password
+    assert joined == {"ssid": ssid, "passphrase": wifidirect.derived_passphrase(ssid)}
+    wifidirect.validate_credentials(ssid, joined["passphrase"])

@@ -15,6 +15,28 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (local, Windows) · `main`
+
+- **Asked:** run the app between two PCs; then make joining easier, with no password to type; then push `main` after
+  every change.
+- **Done:** merged PR #3 (Hello-only app) into `main`. Started `nc host` here and added the TCP 8765 firewall rule
+  (UAC). The second PC joined `DIRECT-NC-8OES` (got 192.168.137.168), but its Hello timed out. Cause: two enabled
+  inbound **Block** rules named "Python" (Public profile, `C:\program files\python312\python.exe`), which override
+  the allow rule. Claude Code would not disable them (security block); the owner was given the command.
+  New: `nc host` with no options uses `DIRECT-NC-XXXX` (from the computer name) and a PBKDF2-derived built-in
+  password; `nc join` with no arguments finds the group with `netsh wlan show networks` and joins with that password.
+  Test added. README updated.
+- **Decisions:** the built-in password is the same in every copy of the app (owner asked for no password); README
+  says so. Scanning uses netsh, so no new WinRT package is needed.
+- **Verified:** pytest 18 passed. `nc host` started `DIRECT-NC-JXSS` here. One `nc host` run in the owner's admin
+  window failed with "Windows aborted Wi-Fi Direct". A second run failed with "already running", because Claude's
+  host held the group. Starting again about 10 s after a stop worked.
+- **Not done / open:** `nc join` with no arguments is not yet tried on the second PC. The netsh scan only sees the
+  networks Windows has cached (it retries for 30 s). The "Python" block rules are still enabled unless the owner
+  ran the command.
+
+---
+
 ## 2026-11-01 · Claude Code (local, Windows) · `simple-hello` (new branch from cd2e4a3)
 
 - **Asked:** make the application very simple: two PCs just send a Hello message to each other. The owner chose
