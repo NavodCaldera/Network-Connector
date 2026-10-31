@@ -24,12 +24,17 @@ def _read_line(conn: socket.socket) -> str:
     return data.split(b"\n", 1)[0].decode("utf-8", "replace").strip()[:MAX_LINE]
 
 
-def serve(host: str = "0.0.0.0", port: int = PORT, once: bool = False, on_message=print) -> None:
-    """Answer every Hello with our own Hello. Stops after one exchange when `once` is set."""
+def serve(host: str = "0.0.0.0", port: int = PORT, once: bool = False, on_message=print, stop=None) -> None:
+    """Answer every Hello with our own Hello. Stops after one exchange when `once` is set, or when `stop`
+    (a threading.Event) is set."""
     with socket.create_server((host, port)) as server:
+        server.settimeout(0.5)  # wake up regularly to notice `stop`
         on_message(f"Waiting for Hello on {host}:{port} ...")
-        while True:
-            conn, (peer, _) = server.accept()
+        while not (stop and stop.is_set()):
+            try:
+                conn, (peer, _) = server.accept()
+            except socket.timeout:
+                continue
             with conn:
                 conn.settimeout(10)
                 try:

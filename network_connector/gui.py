@@ -28,6 +28,9 @@ class App:
         self.join_btn.pack(side="left", padx=8)
         self.send_btn = ttk.Button(top, text="Send Hello", command=self.on_send, state="disabled")
         self.send_btn.pack(side="left")
+        self.stop_btn = ttk.Button(top, text="Stop", command=self.on_stop, state="disabled")
+        self.stop_btn.pack(side="left", padx=8)
+        self.serving = threading.Event()  # set = stop the Hello listener
         self.retry_btn = ttk.Button(top, text="Retry", command=self.on_retry)  # packed only after a failure
         self.last_work = None
         self.status = ttk.Label(root, text="Click Host on one PC, then Join on the other.", padding=(10, 0))
@@ -54,6 +57,12 @@ class App:
                 self.status.config(text=text)
             elif kind == "enable_send":
                 self.send_btn.config(state="normal")
+            elif kind == "hosting":
+                self.stop_btn.config(state="normal")
+            elif kind == "stopped":
+                self.stop_btn.config(state="disabled")
+                self.host_btn.config(state="normal")
+                self.join_btn.config(state="normal")
             elif kind == "failed":  # let the user try again instead of restarting the app
                 self.host_btn.config(state="normal")
                 self.join_btn.config(state="normal")
@@ -115,7 +124,26 @@ class App:
                 self.say("<- " + msg, "in")
                 self.say(f"-> replied: {hello.greeting()}", "out")
                 self.set_status("Hello received and answered.")
-        threading.Thread(target=hello.serve, kwargs={"on_message": note}, daemon=True).start()
+        self.serving = threading.Event()
+        threading.Thread(target=hello.serve, kwargs={"on_message": note, "stop": self.serving}, daemon=True).start()
+        self.events.put(("hosting", "", ""))
+
+    def on_stop(self) -> None:
+        self.stop_btn.config(state="disabled")
+        self.set_status("Stopping...")
+
+        def work() -> None:
+            self.serving.set()
+            try:
+                if self.group:
+                    self.group.stop()
+                self.group = None
+                self.say("Stopped. The Wi-Fi Direct group is off.")
+                self.set_status("Stopped. Click Host to start again.")
+            except DirectLinkError as exc:
+                self.say(f"Error: {exc}", "err")
+            self.events.put(("stopped", "", ""))
+        threading.Thread(target=work, daemon=True).start()
 
     # ---- join
     def on_join(self) -> None:
@@ -155,6 +183,7 @@ class App:
             return False
 
     def on_close(self) -> None:
+        self.serving.set()
         if self.group:
             try:
                 self.group.stop()

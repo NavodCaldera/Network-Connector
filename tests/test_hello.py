@@ -87,3 +87,16 @@ def test_gui_send_shows_both_directions():
         assert f"-> {hello.greeting()}" in text and f"<- 127.0.0.1 replied: {hello.greeting()}" in text
     finally:
         root.destroy()
+
+
+def test_serve_stops_when_asked():
+    port, stop = _free_port(), threading.Event()
+    t = threading.Thread(target=hello.serve, args=("127.0.0.1", port), kwargs={"on_message": lambda m: None, "stop": stop},
+                         daemon=True)
+    t.start()
+    assert hello.send("127.0.0.1", port) == hello.greeting()
+    stop.set()
+    t.join(3)
+    assert not t.is_alive()
+    with socket.socket() as s:  # the port is free again
+        s.bind(("127.0.0.1", port))

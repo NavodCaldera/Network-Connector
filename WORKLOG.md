@@ -17,6 +17,19 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ## 2026-11-01 · Claude Code (local, Windows) · `main`
 
+- **Asked:** add a Stop button for the host.
+- **Result before the change:** first real two-PC run worked. In the window: Firewall fixed (one UAC Yes), group
+  DIRECT-NC-JXSS, and repeated Hellos from Windows_Laptop (192.168.137.50) answered by DESKTOP-VMRF6PJ.
+- **Done:** `hello.serve(..., stop=Event)` (0.5 s accept timeout). The window has a **Stop** button, enabled while
+  hosting: it stops the listener and the Wi-Fi Direct group, then re-enables Host/Join. Closing the window also stops
+  the listener.
+- **Verified:** pytest 21 passed (new: the listener exits on stop and frees the port). The Stop button was not
+  clicked on hardware.
+
+---
+
+## 2026-11-01 · Claude Code (local, Windows) · `main`
+
 - **Asked:** update the local copy; restart the app; explain the "Hosting DIRECT-NC-JXSS" screenshot.
 - **Done:** pulled 29f2976 (Retry button, from another session). Restarted the window. Found a bug: the firewall
   check matched only the interpreter that was running, so under the window's `pythonw.exe` it missed the Block
