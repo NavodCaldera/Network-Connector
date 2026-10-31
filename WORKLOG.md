@@ -15,6 +15,103 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (local, Windows) · `simple-hello` (new branch from cd2e4a3)
+
+- **Asked:** make the application very simple: two PCs just send a Hello message to each other. The owner chose
+  "strip the app down" and "plain TCP for now".
+- **Done:** removed every module except `wifidirect.py` (open groups, AutoJoin and TLS probe also removed;
+  `protect_path` moved in), and every test except `test_wifidirect.py` (trimmed) and the new `test_hello.py`. Added
+  `hello.py` (one line each way, 200-byte cap, 10 s timeout) and a new `cli.py`: `nc host` (start group, print
+  SSID/password, answer Hellos, stop group on exit), `nc join SSID PASS` (join, send Hello to gateway/.1),
+  `nc send IP`, `nc listen`. Removed examples, setup scripts and the GUI entry points. The firewall scripts now add one
+  inbound TCP 8765 rule (Private+Public, LocalSubnet). pyproject has no runtime dependencies; version 0.4.0. README
+  rewritten; notes added at the top of HANDOFF.md and AGENT.md; CHANGELOG entry.
+- **Decisions:** worked on a new branch so the full app stays intact on `claude/great-davinci-bch39n`. The plain TCP
+  Hello breaks AGENT.md's TLS invariant on purpose (owner's choice); recorded in the AGENT.md note. PLAN.md, docs/,
+  spikes/ and `.claude/agents` kept as history and not updated.
+- **Verified:** `.venv` pytest: 17 passed. `nc listen --bind 127.0.0.1 --once` plus `nc send 127.0.0.1` as two
+  processes: both sides printed the other's "Hello from DESKTOP-VMRF6PJ".
+- **Not done / open:** `nc host`/`nc join` not run on two real PCs (needs the i7 and i3). The firewall scripts were
+  not run.
+
+---
+
+## 2026-11-01 · Claude Code (local, Windows) · `claude/great-davinci-bch39n` · ae6c341
+
+- **Asked:** remove the Mobile Hotspot path (mode B) from the whole system; use Wi-Fi Direct only.
+- **Done:** `wifidirect.DirectGroup.start` no longer adopts an existing owner adapter: it refuses with "Another Wi-Fi
+  Direct group or Mobile Hotspot is already running". `status()` reports interface/IP only for our own group (mode A),
+  so mode "B" no longer exists. `controller._refresh_direct_subnets` uses the group status instead of any owner
+  adapter, so a hotspot subnet is no longer trusted as a direct subnet. Hotspot wording removed from errors, the GUI
+  Wi-Fi Direct tab, the CLI help and `add-firewall-rule.ps1`. Hotspot test replaced by
+  `test_existing_hotspot_is_neither_adopted_nor_reported`.
+- **Decisions:** refuse rather than silently reuse an external group. Design docs (PLAN/AGENT/HANDOFF/ACCEPTANCE)
+  still describe mode B; not edited, because the owner then asked to strip the app down to a Hello exchange.
+- **Verified:** full `.venv` pytest: 345 passed.
+- **Not done / open:** not tried on hardware. ae6c341 also carries the uncommitted 2026-10-29 changes below; this
+  entry was committed separately because the first edit failed.
+
+---
+
+## 2026-10-29 · Claude Code (local, Windows) · `claude/great-davinci-bch39n`
+
+- **Asked:** find out why Windows Mobile Hotspot was on, with a helper connected, but the Wi-Fi Direct tab still showed
+  "Mode: A | Stopped, Interface: -, IP: -".
+- **Done:** `wifidirect._read_adapter_rows`: `Get-NetIPConfiguration` threw for a hidden adapter that has no IP interface
+  (here ifIndex 17). `-ErrorAction SilentlyContinue` did not catch the error raised inside the module under
+  `$ErrorActionPreference='Stop'`, so the whole PowerShell query exited 1 and the app saw **no adapters at all**. It
+  then never detected the hotspot and fell back to starting its own Wi-Fi Direct publisher. That call is now wrapped in
+  `try { ... } catch { $null }` for each adapter.
+- **Decisions:** one-line fix. The command is still constant (nothing interpolated). Security invariants unchanged.
+- **Verified:** before the fix the query returned rc 1 and `direct_interfaces()` returned `[]`. After it,
+  `direct_interfaces()` returns the "Microsoft Wi-Fi Direct Virtual Adapter #4" at 192.168.137.1/24, owner=True,
+  peer 192.168.137.158. `.venv` pytest `-k "direct or wifi or link or discovery"`: 89 passed.
+- **Also:** `link_gui.firewall_status` always said "Firewall rule needs updating" because Windows reports the rule's
+  remote address as `192.168.137.0/255.255.255.0` and the code string-compared it to `192.168.137.0/24`. It now
+  compares parsed networks. With the real rule: "Direct-link rule enabled for this address and subnet."
+  `-k "firewall or link_gui or direct"`: 44 passed. App relaunched (owner approved); controller listens on 192.168.137.1:8765.
+- **Also:** owner reported PowerShell windows popping up. Under pythonw every console child opens a window unless
+  started with CREATE_NO_WINDOW; only `wifidirect._run` and the job runner did. Added it to the three PowerShell calls in
+  `link_gui.py` (firewall status runs on every Wi-Fi Direct refresh), `security.protect_path` (icacls) and the two
+  icacls calls in `sandbox.py` (Windows-only flag, 0 elsewhere). `-k "firewall or link or direct or sandbox or
+  security"`: 115 passed. Not yet seen in the relaunched GUI. Same flag added to `updater._run` (git/pip).
+- **Also (GUI slowness):** owner said the interface is very slow and asked about another UI technology. Measured: the
+  adapter query took 12.3 s per call and the firewall check 4.0 s, both started on every 5 s Wi-Fi Direct refresh.
+  Tkinter itself was not the cause (work already runs on background threads). Rewrote the adapter query as one bulk
+  call per cmdlet joined by ifIndex, without `Get-NetIPConfiguration` (gateway from `Get-NetRoute 0.0.0.0/0`): 2.6-2.9 s,
+  same detected interface and peer. The firewall check now reruns only when the address changes, once a minute, or
+  after "Allow through firewall". `-k "firewall or link or direct or wifi or discovery or config"`: 90 passed.
+  Recommended keeping Tkinter. Not yet seen in the GUI.
+- **Also (controller would not start):** popup "Port 8765 is used by another program (PID …, pythonw.exe)" where the
+  PID was the app itself. Cause: `controller.json` `bind_hosts` held 192.168.137.1, and the hotspot had turned off
+  (Windows hotspot power saving), so that bind failed after 10.63.182.8 and 127.0.0.1 had bound; `port_in_use_message`
+  then found the app's own listener. Fixes in `controller.py`: `start()` skips an extra saved address this PC no longer
+  has (logged, kept in config); main address and loopback still must bind. `port_in_use_message` ignores this
+  process's own listeners and says when the address is missing. Two tests added in `tests/test_local_connection.py`;
+  that file plus `test_controller.py`: 13 passed. App restarted at the owner's request.
+  Open: how 192.168.137.1 got persisted although the direct listener is added with `persist=False` (likely a later
+  `save_config` of the in-memory cfg); not investigated.
+- **Not done / open:** no regression test (the failure needs a real hidden adapter). The GUI was not re-run here.
+  Separately, the saved controller `bind_host` is 172.21.224.1, the WSL/Hyper-V vEthernet address, which the helper
+  cannot reach. The direct-link listener adds 192.168.137.1 once the hotspot is detected.
+
+---
+
+## 2026-10-29 · Codex · `claude/great-davinci-bch39n`
+
+- **Asked:** fix the controller startup popup, "Unable to configure formatter 'default'".
+- **Done:** explicitly disable Uvicorn console colours so its formatter does not call
+  `sys.stdout.isatty()` in Windows GUI/pythonw launches, where stdout is None.
+  Added a regression test starting a real TLS controller with stdout/stderr absent.
+- **Decisions:** logging-only change; TLS, binds and security invariants unchanged.
+- **Verified:** targeted controller tests: 4 passed, 1 cache-permission warning.
+  Initial sandboxed run: 4 setup errors due to temp-directory access; rerun outside
+  the execution sandbox passed. Full suite started; result pending.
+- **Not done / open:** the existing GUI process needs reopening to load this change;
+  Wi-Fi Direct hardware acceptance is still pending.
+
+---
+
 ## 2026-10-29 · Claude Code (local, Windows) · `claude/great-davinci-bch39n`
 
 ### Acceptance sections 1-2 on a third laptop (Ryzen), run as "i3"

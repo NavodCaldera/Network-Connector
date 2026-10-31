@@ -1,12 +1,13 @@
-"""Optional Windows Wi-Fi Direct and outbound-only controller discovery.
+"""Windows Wi-Fi Direct: start a group on one PC and join it from the other.
 
 Adapter behaviour must still be checked on the actual laptops. WinRT is imported only
-when starting a group; an already running Windows Mobile Hotspot needs no WinRT package.
+when starting a group. Windows Mobile Hotspot is not used: the app runs its own group only.
 """
 from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 import secrets
 import string
@@ -20,7 +21,20 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
-from .security import protect_path
+
+
+def protect_path(path: Path) -> None:
+    """Restrict a file holding the Wi-Fi password to the current user (best effort)."""
+    try:
+        if sys.platform == "win32":
+            user = os.environ.get("USERNAME", "")
+            if user:
+                subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F"], capture_output=True,
+                               check=False, timeout=15, creationflags=0x08000000)  # CREATE_NO_WINDOW
+        else:
+            path.chmod(0o600)
+    except Exception:  # noqa: BLE001 - never fail because ACL tightening failed
+        pass
 
 
 class DirectLinkError(RuntimeError):
@@ -88,16 +102,19 @@ def _read_adapter_rows() -> list[dict[str, Any]]:
     if sys.platform != "win32":
         return []
     # This command is constant: no SSID, address or credential is interpolated into PowerShell.
-    command = r"""$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8;
+    # One bulk query per cmdlet, joined by ifIndex: per-adapter Get-NetIPConfiguration took ~12 s and threw for
+    # hidden adapters without an IP interface. A failing cmdlet leaves its field empty instead of losing every row.
+    command = r"""$ErrorActionPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.Encoding]::UTF8;
+$ips=@(Get-NetIPAddress -AddressFamily IPv4); $routes=@(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0');
+$profiles=@(Get-NetConnectionProfile);
+$neigh=@(Get-NetNeighbor -AddressFamily IPv4 | Where-Object {$_.State -in @('Reachable','Stale','Delay','Probe','Permanent')});
 $rows=@(Get-NetAdapter -IncludeHidden | ForEach-Object {
- $a=$_; $c=Get-NetIPConfiguration -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue;
- $p=Get-NetConnectionProfile -InterfaceIndex $a.ifIndex -ErrorAction SilentlyContinue;
- $ips=@(Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object {
-  @{ip=$_.IPAddress;prefix=$_.PrefixLength}});
- $peers=@(Get-NetNeighbor -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-  Where-Object {$_.State -in @('Reachable','Stale','Delay','Probe','Permanent')} | ForEach-Object {$_.IPAddress});
- @{name=$a.Name;description=$a.InterfaceDescription;up=($a.Status -eq 'Up');ips=$ips;
- gateway=[string](@($c.IPv4DefaultGateway.NextHop)[0]);category=[string](@($p.NetworkCategory)[0]);network_name=[string](@($p.Name)[0]);peers=$peers}
+ $i=$_.ifIndex; $p=@($profiles | Where-Object InterfaceIndex -eq $i)[0];
+ @{name=$_.Name;description=$_.InterfaceDescription;up=($_.Status -eq 'Up');
+ ips=@($ips | Where-Object InterfaceIndex -eq $i | ForEach-Object {@{ip=$_.IPAddress;prefix=$_.PrefixLength}});
+ gateway=[string](@($routes | Where-Object InterfaceIndex -eq $i | ForEach-Object NextHop)[0]);
+ category=[string]$p.NetworkCategory;network_name=[string]$p.Name;
+ peers=@($neigh | Where-Object InterfaceIndex -eq $i | ForEach-Object IPAddress)}
 }); ConvertTo-Json -InputObject $rows -Depth 5 -Compress"""
     proc = _run(["powershell", "-NoProfile", "-NonInteractive", "-Command", command], timeout=15)
     if proc.returncode:
@@ -174,12 +191,6 @@ def candidate_controllers(iface: InterfaceInfo | None = None) -> list[str]:
     return out
 
 
-def probe(host: str, port: int, timeout: float = 2) -> str | None:
-    from .client import probe as cert_probe
-
-    return cert_probe(host, port, timeout)
-
-
 def join(ssid: str, passphrase: str) -> InterfaceInfo:
     validate_credentials(ssid, passphrase)
     if sys.platform != "win32":
@@ -227,7 +238,7 @@ def _create_publisher(ssid: str, passphrase: str) -> tuple[Any, Any]:
         from winrt.windows.devices.wifidirect import WiFiDirectAdvertisementPublisher, WiFiDirectAdvertisementPublisherStatus
         from winrt.windows.security.credentials import PasswordCredential
     except ImportError as exc:
-        raise DirectLinkError("Wi-Fi Direct support not installed. Install the 'wifidirect' extra, or start Windows Mobile Hotspot manually and try again.") from exc
+        raise DirectLinkError("Wi-Fi Direct support not installed. Install the 'wifidirect' extra and try again.") from exc
     publisher = WiFiDirectAdvertisementPublisher()
     publisher.advertisement.is_autonomous_group_owner_enabled = True
     legacy = publisher.advertisement.legacy_settings
@@ -386,10 +397,9 @@ class DirectGroup:
                 return self.status()
             iface = find_direct_interface()
             if iface and iface.is_owner:
-                # Mobile Hotspot must be configured/stopped in Settings; we do not claim its credentials.
-                with self._lock:
-                    self._info = GroupInfo(mode="B", running=True, status="Using existing Windows hotspot; manage its SSID and password in Settings")
-                return self.status()
+                # Something else (for example Windows Mobile Hotspot) already owns the adapter; we never adopt it.
+                raise DirectLinkError("Another Wi-Fi Direct group or Mobile Hotspot is already running on this PC. "
+                                      "Turn it off in Windows Settings, then start the group again.")
             if sys.platform != "win32":
                 raise DirectLinkError("Wi-Fi Direct is supported only on Windows.")
             ssid = ssid or "DIRECT-NC-" + "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(4))
@@ -403,7 +413,7 @@ class DirectGroup:
             if not self._ready.wait(12):
                 self._stop.set()
                 self._thread.join(timeout=5)
-                raise DirectLinkError("Wi-Fi Direct start timed out. Try Windows Mobile Hotspot manually.")
+                raise DirectLinkError("Wi-Fi Direct start timed out. Check that the adapter supports Wi-Fi Direct and the radio is on.")
             with self._lock:
                 error, running = self._info.error, self._info.running
             if error and not running:
@@ -423,7 +433,7 @@ class DirectGroup:
 
             def connection_failed() -> None:
                 with self._lock:
-                    self._info.error = "Windows could not accept a Wi-Fi connection; retry joining or use Mobile Hotspot."
+                    self._info.error = "Windows could not accept a Wi-Fi connection; retry joining."
 
             acceptor = _ConnectionAcceptor(connection_failed)
             self._acceptor = acceptor
@@ -435,13 +445,13 @@ class DirectGroup:
                         self._ready.set()
                     elif args.status == statuses.ABORTED:
                         self._info.running = False
-                        self._info.error = "Windows aborted Wi-Fi Direct. Check adapter support, radio state and permissions, or use Mobile Hotspot."
+                        self._info.error = "Windows aborted Wi-Fi Direct. Check adapter support, radio state and permissions."
                         self._ready.set()
                         self._stop.set()
                     elif args.status == getattr(statuses, "STOPPED", -1):
                         self._info.running = False
                         if not self._stop.is_set():
-                            self._info.error = "Windows stopped the Wi-Fi Direct group. Check the radio and adapter, or use Mobile Hotspot."
+                            self._info.error = "Windows stopped the Wi-Fi Direct group. Check the radio and adapter."
                         self._ready.set()
                         self._stop.set()
 
@@ -455,18 +465,18 @@ class DirectGroup:
                         self._info.running, self._info.status = True, "Group advertised"
                     self._ready.set()
                 elif status == statuses.ABORTED:
-                    raise DirectLinkError("Windows aborted Wi-Fi Direct. Check adapter support and permissions, or use Mobile Hotspot.")
+                    raise DirectLinkError("Windows aborted Wi-Fi Direct. Check adapter support and permissions.")
                 elif status == getattr(statuses, "STOPPED", -1):
-                    raise DirectLinkError("Windows stopped the Wi-Fi Direct group. Check the radio and adapter, or use Mobile Hotspot.")
+                    raise DirectLinkError("Windows stopped the Wi-Fi Direct group. Check the radio and adapter.")
                 if not self._ready.is_set() and time.monotonic() >= deadline:
-                    raise DirectLinkError("The Wi-Fi Direct publisher did not start. Try Windows Mobile Hotspot manually.")
+                    raise DirectLinkError("The Wi-Fi Direct publisher did not start. Check adapter support and the radio.")
         except DirectLinkError as exc:
             with self._lock:
                 self._info.error, self._info.running = str(exc), False
         except Exception as exc:
             # Do not expose API exception text: it might contain a credential supplied to Windows.
             with self._lock:
-                self._info.error = f"Wi-Fi Direct API failed ({type(exc).__name__}). Check permissions and adapter support, or use Windows Mobile Hotspot."
+                self._info.error = f"Wi-Fi Direct API failed ({type(exc).__name__}). Check permissions and adapter support."
                 self._info.running = False
         finally:
             if acceptor is not None:
@@ -498,125 +508,15 @@ class DirectGroup:
                 if self._thread.is_alive():
                     raise DirectLinkError("Windows has not released the Wi-Fi Direct publisher yet.")
             with self._lock:
-                self._info = GroupInfo(status="Stopped; an externally started Mobile Hotspot must be stopped in Windows Settings")
+                self._info = GroupInfo(status="Stopped")
 
     def status(self) -> GroupInfo:
         iface = find_direct_interface()
         with self._lock:
             info = GroupInfo(**vars(self._info))
-        if iface:
+        # Only our own group's adapter counts; a hotspot started elsewhere is never reported or listened on.
+        if iface and info.mode == "A":
             info.interface, info.ip, info.subnet = iface.name, iface.ip, iface.subnet
             info.category, info.peers = iface.category, list(iface.peers)
-            if info.mode == "none" and iface.is_owner:
-                info.mode, info.running = "B", True
-                info.status = "Existing Windows hotspot detected; manage its SSID, password and stop action in Settings"
-        if info.mode == "B" and not (iface and iface.is_owner):
-            info.running, info.status = False, "Windows hotspot is no longer active"
         return info
 
-
-# ------------------------------------------------------------------ open groups without a router (PLAN §15.3)
-DIRECT_NC_RE = re.compile(r"^DIRECT-NC-[A-Z0-9]{4}$")
-# Not a secret: every copy of the app derives the same passphrase, so anyone with the app can join in one
-# click. The Wi-Fi password is not the security boundary (sandbox, signatures, TLS and result checks are).
-_APP_SALT = b"network-connector/open-direct-group/v1"
-SCAN_INTERVAL_S = 30.0
-
-
-def open_group_ssid(device_id: str) -> str:
-    if not re.fullmatch(r"[0-9a-f]{64}", device_id or ""):
-        raise DirectLinkError("A full device ID is required for an open direct group.")
-    return f"DIRECT-NC-{device_id[:4].upper()}"
-
-
-def derived_passphrase(ssid: str) -> str:
-    """PBKDF2(ssid, app salt): the same on every copy of the app, 24 URL-safe characters."""
-    import base64
-    import hashlib
-
-    if not DIRECT_NC_RE.fullmatch(ssid or ""):
-        raise DirectLinkError("Only DIRECT-NC-XXXX groups use the derived passphrase.")
-    raw = hashlib.pbkdf2_hmac("sha256", ssid.encode("ascii"), _APP_SALT, 100_000, dklen=18)
-    return base64.urlsafe_b64encode(raw).decode("ascii")
-
-
-def connected_wlan_ssids() -> list[str] | None:
-    """SSIDs this PC's Wi-Fi is connected to now (WinRT NetworkInformation, not localized netsh text).
-    None when it can't be told; callers then assume "connected" and never join by themselves."""
-    if sys.platform != "win32":
-        return None
-    try:
-        from winrt.windows.networking.connectivity import NetworkInformation
-
-        out = []
-        for profile in NetworkInformation.get_connection_profiles():
-            if profile.is_wlan_connection_profile:
-                ssid = profile.wlan_connection_profile_details.get_connected_ssid()
-                if ssid:
-                    out.append(str(ssid))
-        return out
-    except Exception:  # noqa: BLE001 - missing package or API error: unknown
-        return None
-
-
-def scan_direct_groups() -> list[str]:
-    """Visible DIRECT-NC-XXXX networks (WinRT WiFiAdapter scan). Empty when scanning is not possible."""
-    if sys.platform != "win32":
-        return []
-    import asyncio
-
-    async def work() -> list[str]:
-        from winrt.windows.devices.wifi import WiFiAccessStatus, WiFiAdapter
-
-        if await WiFiAdapter.request_access_async() != WiFiAccessStatus.ALLOWED:
-            raise DirectLinkError("Windows did not allow a Wi-Fi scan. Check location access in Privacy settings.")
-        found: set[str] = set()
-        for adapter in await WiFiAdapter.find_all_adapters_async():
-            await adapter.scan_async()
-            found.update(n.ssid for n in adapter.network_report.available_networks if DIRECT_NC_RE.fullmatch(n.ssid or ""))
-        return sorted(found)
-
-    try:
-        return asyncio.run(work())
-    except DirectLinkError:
-        raise
-    except Exception:  # noqa: BLE001
-        return []
-
-
-def join_open_group(ssid: str) -> InterfaceInfo:
-    """One-click join of an open DIRECT-NC-XXXX group with the derived passphrase. leave(ssid) deletes the profile."""
-    return join(ssid, derived_passphrase(ssid))
-
-
-@dataclass
-class AutoJoin:
-    """When may a helper join a nearby DIRECT-NC group by itself? (Phase 6 report §2.)
-
-    - Only when it is on no Wi-Fi network at all: the i7's adapter supports no second station, so
-      joining would drop the owner's home Wi-Fi. Unknown connection state counts as connected.
-    - While on Wi-Fi it only *offers* the join: "Join (disconnects <SSID>)".
-    - Scans at most every 30 s.
-    """
-    interval_s: float = SCAN_INTERVAL_S
-    _last_scan: float = -1e9
-
-    def due(self, now: float) -> bool:
-        if now - self._last_scan < self.interval_s:
-            return False
-        self._last_scan = now
-        return True
-
-    @staticmethod
-    def decide(visible: list[str], connected: list[str] | None, own_ssid: str = "") -> tuple[str, str, str] | None:
-        """('join', ssid, '') / ('offer', ssid, current SSID) / None."""
-        groups = [s for s in visible if DIRECT_NC_RE.fullmatch(s) and s != own_ssid]
-        if not groups:
-            return None
-        if connected is None:
-            return ("offer", groups[0], "your current Wi-Fi")
-        if any(DIRECT_NC_RE.fullmatch(s) for s in connected):
-            return None  # already on a group
-        if connected:
-            return ("offer", groups[0], connected[0])
-        return ("join", groups[0], "")

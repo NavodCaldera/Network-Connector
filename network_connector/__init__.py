@@ -1,3 +1,3 @@
-"""Network Connector: distribute safe, independent jobs across LAN computers."""
+"""Network Connector: say Hello between two PCs over Wi-Fi Direct."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

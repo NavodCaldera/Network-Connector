@@ -1,5 +1,11 @@
 # Agents for Network Connector 0.2.0 and 0.3.0
 
+> **2026-11-01: stripped down.** On branch `simple-hello` the app only starts or joins a Wi-Fi Direct group and
+> exchanges a plain-TCP Hello (`network_connector/{cli,hello,wifidirect}.py`, see README). Everything below describes
+> the full 0.3.0 app, which is kept on `claude/great-davinci-bch39n`. It does not apply to this branch, and that
+> includes the TLS and pairing invariants, which the owner set aside for this version.
+
+
 Two implementation agents carry out [PLAN.md](PLAN.md). A **coordinator** (the main Claude session or
 you) assigns phases, reviews, and merges. Agent definitions that Claude Code can launch are in
 [.claude/agents/](.claude/agents/).

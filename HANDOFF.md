@@ -1,5 +1,11 @@
 # Handoff: what is left to do
 
+> **2026-11-01: stripped down.** On branch `simple-hello` the app only starts or joins a Wi-Fi Direct group and
+> exchanges a plain-TCP Hello (`network_connector/{cli,hello,wifidirect}.py`, see README). Everything below describes
+> the full 0.3.0 app, which is kept on `claude/great-davinci-bch39n`. It does not apply to this branch, and that
+> includes the TLS and pairing invariants, which the owner set aside for this version.
+
+
 ## 2026-10-29 Claude Code update: Windows validation done on the i7 (branch `claude/great-davinci-bch39n`)
 
 - **Full suite on Windows: 342 passed, 0 failed, 0 skipped** (first time the sandbox escape suite, wasm job tests, firewall

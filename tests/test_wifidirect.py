@@ -9,9 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from network_connector import client, wifidirect as direct
-from network_connector.config import ConfigError, ControllerConfig, WorkerConfig, load_config, save_config
-from network_connector.controller import ControllerRuntime
+from network_connector import wifidirect as direct
 
 
 @pytest.mark.parametrize("ssid,password", [("-option", "abcdefgh"), ("x\n", "abcdefgh"),
@@ -84,16 +82,16 @@ def test_adapter_discovery_uses_actual_prefix_gateway_and_filters_peers(monkeypa
     assert direct.candidate_controllers(None)  # no subnet scan, only a bounded gateway/.1 probe
 
 
-def test_hotspot_status_and_start_do_not_require_winrt(monkeypatch):
+def test_existing_hotspot_is_neither_adopted_nor_reported(monkeypatch):
     iface = direct.InterfaceInfo("hotspot", "Wi-Fi Direct adapter", "192.168.137.1", "192.168.137.0/24", is_owner=True)
     monkeypatch.setattr(direct, "find_direct_interface", lambda: iface)
-    factory = Mock(side_effect=AssertionError("must not invoke publisher for existing hotspot"))
+    factory = Mock(side_effect=AssertionError("must not start a publisher over an existing group"))
     monkeypatch.setattr(direct, "_create_publisher", factory)
     group = direct.DirectGroup()
-    assert group.status().mode == "B" and group.status().running
-    assert group.start().mode == "B"
-    group.stop()
-    assert group.status().running  # external hotspot is stopped only through Windows Settings
+    info = group.status()
+    assert info.mode == "none" and not info.running and not info.ip
+    with pytest.raises(direct.DirectLinkError, match="already running"):
+        group.start()
     factory.assert_not_called()
 
 
@@ -127,62 +125,6 @@ def test_missing_api_failure_is_clear_and_leaks_no_password(monkeypatch):
         group.start("DIRECT-NC-1234", "secretABC123!")
     assert "secretABC123!" not in str(error.value)
     assert not group._thread.is_alive()
-
-
-def test_probe_refuses_unsafe_hosts_and_never_sends_worker_token(monkeypatch):
-    fetch = Mock(return_value=("pem", "a" * 64))
-    monkeypatch.setattr(client, "fetch_server_cert", fetch)
-    assert client.probe("8.8.8.8", 8765) is None
-    assert client.probe("0.0.0.0", 8765) is None
-    fetch.assert_not_called()
-    assert client.probe("192.168.137.1", 8765, 0.5) == "a" * 64
-    fetch.assert_called_once_with("192.168.137.1", 8765, timeout=0.5)
-
-
-def test_multibind_configuration_rejects_wildcard_in_any_entry(tmp_path):
-    with pytest.raises(ConfigError):
-        ControllerRuntime(ControllerConfig(bind_host="127.0.0.1", bind_hosts=["0.0.0.0"]), tmp_path)
-
-
-def test_listener_setup_never_replaces_an_incomplete_controller_identity(tmp_path):
-    cert = tmp_path / "server.crt"
-    cert.write_text("existing-controller-certificate", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="refusing to replace"):
-        ControllerRuntime(ControllerConfig(bind_host="127.0.0.1"), tmp_path)
-    assert cert.read_text() == "existing-controller-certificate"
-    assert not (tmp_path / "server.key").exists()
-
-
-def test_dynamic_listener_keeps_certificate_and_admin_sources(tmp_path, monkeypatch):
-    from conftest import free_port
-    monkeypatch.setattr("network_connector.controller.find_direct_interface", lambda: None)
-    rt = ControllerRuntime(ControllerConfig(bind_host="127.0.0.1", port=free_port()), tmp_path)
-    fingerprint = rt.fingerprint
-    try:
-        rt.start()
-        rt.add_listener("127.0.0.2")
-        assert set(rt.listener_hosts) == {"127.0.0.1", "127.0.0.2"}
-        assert rt.fingerprint == fingerprint
-        assert "127.0.0.2" in rt.state.admin_hosts and "192.168.137.22" not in rt.state.admin_hosts
-        admin = client.AdminClient("127.0.0.2", rt.cfg.port, rt.cert, rt.admin_token)
-        try:
-            assert admin.health()["status"] == "ok"
-        finally:
-            admin.close()
-        with pytest.raises(ValueError, match="required"):
-            rt.remove_listener("127.0.0.1")
-        rt.remove_listener("127.0.0.2")
-        assert rt.listener_hosts == ["127.0.0.1"]
-        assert "127.0.0.2" not in rt.state.admin_hosts
-        assert rt.running and rt.fingerprint == fingerprint
-    finally:
-        rt.stop()
-        rt.store.close()
-
-
-def test_bind_hosts_environment_json_array(monkeypatch, tmp_path):
-    monkeypatch.setenv("NC_BIND_HOSTS", '["127.0.0.2", "192.168.137.1"]')
-    assert load_config(ControllerConfig, tmp_path / "missing").bind_hosts == ["127.0.0.2", "192.168.137.1"]
 
 
 def test_connection_acceptor_retains_device_until_disconnect():
@@ -224,52 +166,3 @@ def test_connection_acceptor_stop_cancels_pending_and_closes_devices():
     request.close.assert_called_once()
     device.remove_connection_status_changed.assert_called_once_with("device-token")
     device.close.assert_called_once()
-
-
-def test_open_group_name_and_derived_passphrase_are_the_same_everywhere():
-    from network_connector.wifidirect import DIRECT_NC_RE, derived_passphrase, open_group_ssid, validate_credentials
-
-    ssid = open_group_ssid("ab12" + "0" * 60)
-    assert ssid == "DIRECT-NC-AB12" and DIRECT_NC_RE.fullmatch(ssid)
-    secret = derived_passphrase(ssid)
-    assert secret == derived_passphrase("DIRECT-NC-AB12") and len(secret) == 24
-    assert secret != derived_passphrase("DIRECT-NC-AB13")
-    validate_credentials(ssid, secret)  # acceptable to the Wi-Fi Direct publisher and netsh
-    for bad in ("home-wifi", "DIRECT-NC-ab12", "DIRECT-NC-AB123"):
-        with pytest.raises(direct.DirectLinkError):
-            derived_passphrase(bad)
-
-
-def test_auto_join_only_when_on_no_wifi_and_at_most_every_30_seconds():
-    from network_connector.wifidirect import AutoJoin
-
-    auto = AutoJoin()
-    assert auto.due(100.0) and not auto.due(129.0) and auto.due(130.0)
-    assert AutoJoin.decide(["DIRECT-NC-AB12", "home"], []) == ("join", "DIRECT-NC-AB12", "")
-    assert AutoJoin.decide(["DIRECT-NC-AB12"], ["home"]) == ("offer", "DIRECT-NC-AB12", "home")
-    assert AutoJoin.decide(["DIRECT-NC-AB12"], None)[0] == "offer"  # unknown state is never joined by itself
-    assert AutoJoin.decide(["DIRECT-NC-AB12"], ["DIRECT-NC-CD34"]) is None
-    assert AutoJoin.decide(["DIRECT-NC-AB12"], [], own_ssid="DIRECT-NC-AB12") is None
-    assert AutoJoin.decide(["DIRECT-xy-Printer"], []) is None
-
-
-def test_open_requester_starts_its_group_with_derived_credentials(tmp_path, monkeypatch):
-    from unittest.mock import Mock
-
-    from network_connector.config import ControllerConfig
-    from network_connector.controller import ControllerRuntime
-    from network_connector.wifidirect import derived_passphrase, open_group_ssid
-
-    rt = ControllerRuntime(ControllerConfig(bind_host="127.0.0.1", join_policy="anyone"), tmp_path)
-    try:
-        rt.direct_group = Mock()
-        monkeypatch.setattr(rt, "direct_status", lambda: {})
-        rt.start_direct_group(listen=False)
-        ssid = open_group_ssid(rt.fingerprint)
-        rt.direct_group.start.assert_called_once_with(ssid, derived_passphrase(ssid))
-        rt.cfg.join_policy = "code"
-        rt.direct_group.start.reset_mock()
-        rt.start_direct_group(listen=False)
-        rt.direct_group.start.assert_called_once_with(None, None)  # closed groups keep random credentials
-    finally:
-        rt.store.close()

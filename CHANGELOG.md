@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0 (branch `simple-hello`)
+
+- Stripped down to one feature: start/join a Wi-Fi Direct group and exchange a plain-TCP Hello (`nc host|join|send|listen`).
+- Removed the controller, worker, jobs, sandbox, benchmarks, identity/pairing, discovery, GUI, tray and their tests.
+- Mobile Hotspot is not used. The firewall scripts now add a single TCP 8765 rule for the local subnet.
+
 ## 0.3.0
 
 Not yet accepted on real hardware: run PLAN §22.3 (and docs/JOINING.md, docs/SANDBOX.md checklists) before tagging.
