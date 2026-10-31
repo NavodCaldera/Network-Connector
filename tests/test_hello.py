@@ -57,3 +57,33 @@ def test_firewall_problems_parse_counts(monkeypatch):
     assert firewall.problems() == []
     monkeypatch.setattr(firewall, "_ps", lambda script, timeout=30: SimpleNamespace(stdout="garbage"))
     assert firewall.problems() == []  # unknown state never nags
+
+
+def test_gui_send_shows_both_directions():
+    import pytest
+    tk = pytest.importorskip("tkinter")
+    from network_connector import gui
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("no display")
+    root.withdraw()
+    port = _free_port()
+    threading.Thread(target=hello.serve, args=("127.0.0.1", port, True, lambda m: None), daemon=True).start()
+    try:
+        app = gui.App(root)
+        app.peer = "127.0.0.1"
+        orig = hello.send
+        hello.send = lambda host, p=hello.PORT, timeout=10: orig(host, port, timeout)
+        try:
+            for _ in range(20):
+                if app.send():
+                    break
+        finally:
+            hello.send = orig
+        app.pump()
+        text = app.log.get("1.0", "end")
+        assert f"-> {hello.greeting()}" in text and f"<- 127.0.0.1 replied: {hello.greeting()}" in text
+    finally:
+        root.destroy()

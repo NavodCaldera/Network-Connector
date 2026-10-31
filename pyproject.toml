@@ -24,6 +24,9 @@ wifidirect = [
 [project.scripts]
 nc = "network_connector.cli:main"
 
+[project.gui-scripts]
+nc-gui = "network_connector.gui:main"
+
 [tool.setuptools.dynamic]
 version = { attr = "network_connector.__version__" }
 

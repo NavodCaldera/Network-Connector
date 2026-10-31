@@ -6,14 +6,24 @@ Two Windows PCs, no router: one starts a Wi-Fi Direct group, the other joins it,
 This is the stripped-down version (0.4.0). The full app (jobs, sandbox, benchmarks,
 pairing, GUI) is on branch `claude/great-davinci-bch39n`.
 
-## Install (both PCs, while you still have internet)
+## The easy way (window)
+
+1. On both PCs, double-click **`Start.cmd`** in this folder. The first time, it installs the app, which needs
+   internet once.
+2. **PC 1:** click **Host**. If Windows asks for permission (firewall), click **Yes**.
+3. **PC 2:** click **Join the other PC**.
+
+Both windows show each Hello as it passes (`->` sent, `<-` received). On PC 2, **Send Hello** sends another one.
+Closing the window on PC 1 stops the group.
+
+## Command line
+
+Install (both PCs, while you still have internet):
 
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[wifidirect,test]"
 ```
-
-## Run
 
 **PC 1 (host):**
 

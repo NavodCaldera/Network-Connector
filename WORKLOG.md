@@ -17,6 +17,21 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ## 2026-11-01 · Claude Code (local, Windows) · `main`
 
+- **Asked:** a GUI on both PCs: run the app, click Yes, and see the messages passing.
+- **Done:** `gui.py` (Tkinter, one window for both roles). **Host** checks the firewall (one UAC prompt), starts
+  `DIRECT-NC-XXXX` (retries "aborted" twice after 10 s) and logs every Hello received and the reply sent.
+  **Join the other PC** scans, joins with the built-in password and sends Hello; **Send Hello** sends another.
+  `Start.cmd` (double-click) creates `.venv` and installs on first run, then opens the window with pythonw.
+  `nc-gui` gui-script added. README now leads with the window.
+- **Verified:** pytest 20 passed, including a GUI test where the window sends a Hello to a local server and logs
+  both directions. `Start.cmd` opened the "Network Connector - Hello" window on this PC.
+- **Not done / open:** Host and Join buttons not clicked on real hardware yet. The first-run install branch of
+  `Start.cmd` was not run here (`.venv` already existed).
+
+---
+
+## 2026-11-01 · Claude Code (local, Windows) · `main`
+
 - **Asked:** an easier fix for the firewall than pasting an admin PowerShell command.
 - **Done:** new `firewall.py`. `nc host` checks for enabled inbound Block rules on this Python
   (`sys._base_executable`) and for the Hello allow rule. If either is wrong, it shows one Windows admin prompt
