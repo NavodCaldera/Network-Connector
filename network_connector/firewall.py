@@ -14,8 +14,12 @@ RULE_NAME = f"Network Connector Hello (TCP {PORT})"
 _NO_WINDOW = 0x08000000
 
 
-def _python() -> str:
-    return getattr(sys, "_base_executable", "") or sys.executable
+def _pythons() -> list[str]:
+    """python.exe and pythonw.exe of the real interpreter: the CLI listens with one, the window with the other."""
+    import os
+
+    folder = os.path.dirname(getattr(sys, "_base_executable", "") or sys.executable)
+    return [os.path.join(folder, name) for name in ("python.exe", "pythonw.exe")]
 
 
 def _ps(script: str, timeout: float = 30) -> subprocess.CompletedProcess:
@@ -28,8 +32,9 @@ def _quote(text: str) -> str:
 
 
 def _find_blocks() -> str:
-    return (f"$py = {_quote(_python())}; Get-NetFirewallRule -Direction Inbound -Action Block -Enabled True | "
-            "Where-Object { ($_ | Get-NetFirewallApplicationFilter).Program -eq $py }")
+    return (f"$py = @({', '.join(_quote(p) for p in _pythons())}); "
+            "Get-NetFirewallRule -Direction Inbound -Action Block -Enabled True | "
+            "Where-Object { $py -contains ($_ | Get-NetFirewallApplicationFilter).Program }")
 
 
 def problems() -> list[str]:

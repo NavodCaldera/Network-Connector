@@ -17,6 +17,18 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ## 2026-11-01 · Claude Code (local, Windows) · `main`
 
+- **Asked:** update the local copy; restart the app; explain the "Hosting DIRECT-NC-JXSS" screenshot.
+- **Done:** pulled 29f2976 (Retry button, from another session). Restarted the window. Found a bug: the firewall
+  check matched only the interpreter that was running, so under the window's `pythonw.exe` it missed the Block
+  rules for `python.exe` (and the reverse). `firewall._pythons()` now matches both python.exe and pythonw.exe.
+- **Verified:** `problems()` under both python.exe and pythonw.exe reports "2 rule(s) block Python". pytest 20 passed.
+- **Not done / open:** the two "Python" Block rules (python.exe only) are still enabled here. They don't affect
+  the window, which listens as pythonw.exe; the next Host click offers to disable them.
+
+---
+
+## 2026-11-01 · Claude Code (local, Windows) · `main`
+
 - **Asked:** a GUI on both PCs: run the app, click Yes, and see the messages passing.
 - **Done:** `gui.py` (Tkinter, one window for both roles). **Host** checks the firewall (one UAC prompt), starts
   `DIRECT-NC-XXXX` (retries "aborted" twice after 10 s) and logs every Hello received and the reply sent.
