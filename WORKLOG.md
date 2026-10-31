@@ -17,6 +17,22 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ## 2026-11-01 · Claude Code (local, Windows) · `main`
 
+- **Asked:** an easier fix for the firewall than pasting an admin PowerShell command.
+- **Done:** new `firewall.py`. `nc host` checks for enabled inbound Block rules on this Python
+  (`sys._base_executable`) and for the Hello allow rule. If either is wrong, it shows one Windows admin prompt
+  (Start-Process -Verb RunAs, encoded command) that disables those Block rules and adds the TCP 8765 LocalSubnet
+  rule. Fixed README lines damaged by Python string escapes (`\a`, `\n`). Stopped Claude's own host so the owner can
+  run `nc host`.
+- **Decisions:** the fix runs only after the user clicks Yes on the UAC prompt. Claude did not run it itself
+  (Claude Code refused to weaken the firewall). It is limited to Block rules for this exact python.exe.
+- **Verified:** `firewall.problems()` here reports "2 rule(s) block Python" (the allow rule is present). pytest:
+  19 passed. `fix()` itself not run.
+- **Not done / open:** the elevated fix and the two-PC Hello are still untested.
+
+---
+
+## 2026-11-01 · Claude Code (local, Windows) · `main`
+
 - **Asked:** run the app between two PCs; then make joining easier, with no password to type; then push `main` after
   every change.
 - **Done:** merged PR #3 (Hello-only app) into `main`. Started `nc host` here and added the TCP 8765 firewall rule

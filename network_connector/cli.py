@@ -4,12 +4,16 @@ from __future__ import annotations
 import argparse
 import time
 
-from . import hello
+from . import firewall, hello
 from .wifidirect import (DirectGroup, DirectLinkError, candidate_controllers, default_ssid, derived_passphrase, join, leave,
                          scan_direct_groups)
 
 
 def cmd_host(args: argparse.Namespace) -> int:
+    issues = firewall.problems()
+    if issues:
+        print(f"Firewall: {'; '.join(issues)}. Click Yes on the Windows prompt to fix it...")
+        print("Firewall fixed." if firewall.fix() else "Firewall not fixed; the other PC's Hello may time out.")
     group = DirectGroup()
     ssid = args.ssid or default_ssid()
     info = group.start(ssid, args.passphrase or (None if args.ssid else derived_passphrase(ssid)))

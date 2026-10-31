@@ -15,7 +15,7 @@ py -m venv .venv
 
 ## Run
 
-**PC 1 (host)**, once as administrator: `powershell -File scriptsdd-firewall-rule.ps1`. Then:
+**PC 1 (host):**
 
 ```powershell
 .\.venv\Scripts\nc host
@@ -23,6 +23,7 @@ py -m venv .venv
 
 It starts a group named `DIRECT-NC-XXXX` (fixed for this PC) and waits. Turn off Windows Mobile Hotspot first, because
 it uses the same adapter. If Windows says "aborted", wait about 10 seconds and run it again.
+If Windows Firewall would block the other PC, it asks to fix that: click **Yes** on the Windows admin prompt.
 
 **PC 2:**
 

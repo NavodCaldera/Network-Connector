@@ -43,3 +43,17 @@ def test_join_without_arguments_finds_group_and_uses_built_in_password(monkeypat
     assert cli.main(["join"]) == 1  # nobody answers, but the join itself used the built-in password
     assert joined == {"ssid": ssid, "passphrase": wifidirect.derived_passphrase(ssid)}
     wifidirect.validate_credentials(ssid, joined["passphrase"])
+
+
+def test_firewall_problems_parse_counts(monkeypatch):
+    from types import SimpleNamespace
+
+    from network_connector import firewall
+
+    monkeypatch.setattr(firewall.sys, "platform", "win32")
+    monkeypatch.setattr(firewall, "_ps", lambda script, timeout=30: SimpleNamespace(stdout="2 0\r\n"))
+    assert len(firewall.problems()) == 2
+    monkeypatch.setattr(firewall, "_ps", lambda script, timeout=30: SimpleNamespace(stdout="0 1\r\n"))
+    assert firewall.problems() == []
+    monkeypatch.setattr(firewall, "_ps", lambda script, timeout=30: SimpleNamespace(stdout="garbage"))
+    assert firewall.problems() == []  # unknown state never nags
