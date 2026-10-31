@@ -15,6 +15,23 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (local, Windows) · `claude/great-davinci-bch39n` · ae6c341
+
+- **Asked:** remove the Mobile Hotspot path (mode B) from the whole system; use Wi-Fi Direct only.
+- **Done:** `wifidirect.DirectGroup.start` no longer adopts an existing owner adapter: it refuses with "Another Wi-Fi
+  Direct group or Mobile Hotspot is already running". `status()` reports interface/IP only for our own group (mode A),
+  so mode "B" no longer exists. `controller._refresh_direct_subnets` uses the group status instead of any owner
+  adapter, so a hotspot subnet is no longer trusted as a direct subnet. Hotspot wording removed from errors, the GUI
+  Wi-Fi Direct tab, the CLI help and `add-firewall-rule.ps1`. Hotspot test replaced by
+  `test_existing_hotspot_is_neither_adopted_nor_reported`.
+- **Decisions:** refuse rather than silently reuse an external group. Design docs (PLAN/AGENT/HANDOFF/ACCEPTANCE)
+  still describe mode B; not edited, because the owner then asked to strip the app down to a Hello exchange.
+- **Verified:** full `.venv` pytest: 345 passed.
+- **Not done / open:** not tried on hardware. ae6c341 also carries the uncommitted 2026-10-29 changes below; this
+  entry was committed separately because the first edit failed.
+
+---
+
 ## 2026-10-29 · Claude Code (local, Windows) · `claude/great-davinci-bch39n`
 
 - **Asked:** find out why Windows Mobile Hotspot was on, with a helper connected, but the Wi-Fi Direct tab still showed
