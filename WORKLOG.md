@@ -15,6 +15,17 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (coordinator) · `main`
+
+- **Asked:** start Phase 0; give the owner tasks for Codex that don't collide with the Claude agents; keep a log.
+- **Done:** launched app-agent on task 0.1 (branch `feat/app-skeleton`, running). Added `TASKS.md` (task board with
+  owner, branch and allowed files per task). Assigned to Codex: 0.4 tariff engine (after 0.1 merges), 0.9b Play
+  policy document, 0.10 iOS feasibility document. AGENT.md §2 now points to TASKS.md.
+- **Decisions:** coordinator: Codex gets self-contained tasks only (one crate or one document) so file sets never
+  overlap; every Codex branch is reviewed by the coordinator before merge.
+- **Verified:** documents only.
+- **Not done / open:** 0.1 still running.
+
 ## 2026-11-01 · Claude Code (coordinator, local Windows) · `main`
 
 - **Asked:** bring the platform work to `main`; delete all unnecessary files, code and folders.
