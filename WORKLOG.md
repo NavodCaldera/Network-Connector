@@ -15,6 +15,20 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Claude (coordinator) - `main`
+
+- **Commits:** this merge of `feat/app-ui` (f5020d6).
+- **Asked:** review app-agent task 1.A1 (Limits, Night data, settings file, navigation).
+- **Done:** merged; TASKS.md 1.A1 set to done.
+- **Decisions:** the presets stay labelled "check your own package", not ISP facts. Settings validation lives only in
+  Rust (nc-policy/nc-tariff).
+- **Verified:** relied on the agent's real results: nc-bridge 22 tests, fmt/clippy/deny clean, flutter analyze
+  clean, 12 widget tests, real-bridge test (Stop 4.5 ms), release build, corrupt settings file kept as .bad.
+  CI run 41349837273: flutter, Docker stack, deny and server jobs green; the core jobs fail only on the existing
+  nc-identity Linux test and the 11 nc-exec Windows sandbox tests (Codex is fixing them in 1.P7).
+- **Not done / open:** the owner click-through (save limits, restart, Stop) has not been done. nc-agent still needs
+  `update_network_budget` and today's counters. The Android 0.9a build is paused while the owner copies files.
+
 ## 2026-11-02 - Claude (app-agent) - `feat/app-ui`
 
 - **Commits:** this commit (task 1.A1).
