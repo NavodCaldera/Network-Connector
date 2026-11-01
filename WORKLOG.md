@@ -15,6 +15,15 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Codex · `feat/codex-mobile-research`
+
+- **Commits:** this commit (Phase 0 mobile research hand-back).
+- **Asked:** research tasks 0.9b and 0.10 only in a separate checkout; commit and push without a PR or merge.
+- **Done:** added `spikes/phase0/ios-feasibility.md` and `spikes/phase0/mobile-policy.md` with linked, dated official evidence, explicit unknowns, policy/runtime distinctions and conditional role decisions. Set only TASKS.md rows 0.9b/0.10 to review.
+- **Decisions:** Codex recommendation: iPhone requester/monitor GO, bounded bundled-kernel helper GO-WITH-LIMITS, unattended overnight helper NO-GO; Android sessions GO-WITH-LIMITS pending runtime containment and Play service review. No security invariant relaxed.
+- **Verified:** cloned into `E:\Projects\New\nc-codex`, created the requested branch, read AGENT.md/PLAN.md/TASKS.md, checked current official Apple/Android/Play/Wasmtime/WAMR sources via web tools on 2026-11-01. Don't Kill My App used only as the requested secondary OEM source. `git diff --check` passed; TASKS.md diff contains only the two status edits. Git emitted a nonfatal permission warning reading the user's global ignore file.
+- **Not done / open:** no code/workspace/app touched, so cargo fmt/clippy/test and Flutter checks are not applicable. No phone/Mac builds, benchmarks, sandbox validation or store approvals; wasm3 current feasibility unknown under the permitted sources. Task 0.9a remains with app-agent. Coordinator must review before merge.
+
 ## 2026-11-01 · Claude Code (coordinator) · `main`
 
 - **Asked:** start Phase 0; give the owner tasks for Codex that don't collide with the Claude agents; keep a log.
