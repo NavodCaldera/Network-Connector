@@ -17,6 +17,51 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ## 2026-11-02 - Claude (coordinator) - `main`
 
+- **Commits:** this merge of `feat/codex-ci-stack` (4fdfaa2).
+- **Asked:** review Codex 1.P5 (CI Docker stack) and Codex's stop report on 1.P6.
+- **Done:** merged 1.P5 and set it to done. 1.P6 set to blocked; added 1.P6a (real job contract in proto and server) as its prerequisite.
+- **Decisions:** Codex was right to stop 1.P6. The coordinator only hands out dummy leases, with no manifest, blob or
+  failure endpoints, and the agent must not invent wire semantics. The contract comes first.
+- **Verified:** Review result for 1.P5: PASS. Actions pinned by SHA, `contents: read`, secrets from `openssl rand` and masked
+  with `::add-mask::`, EXIT trap cleanup. Real Actions run 41341787288: stack job passed (healthz ok, uid 999, lease
+  cycle 1 passed, cleanup done). Overall CI is still red because of the existing nc-identity Linux test.
+- **Not done / open:** 1.P6a, then 1.P6; fix the CI failures on main (1.P7).
+
+## 2026-11-02 - Codex - `feat/codex-ci-stack`
+
+- **Commits:** 505942f (implementation), b1a6ec7 (workflow-context correction), this verification follow-up.
+- **Asked:** add an Ubuntu full-stack CI check on main pushes/PRs with GHA build cache, runtime-masked
+  credentials, health/non-root checks, the existing lease cycle and unconditional teardown.
+- **Done:** added Docker stack job to existing CI (also runs on feature pushes for real verification).
+  SHA-pinned official Docker Buildx/Bake actions build the Compose targets with separate GHA cache
+  scopes and load their shared image. Added executable LF-only infra/verify.sh with process-only
+  CSPRNG credentials, pre-use add-mask commands, health/UID checks, lease cycle and EXIT/signal cleanup.
+  Added a separate always() cleanup step. Task 1.P5 set to review; no Rust or dependency edits.
+- **Decisions:** contents: read only; checkout credentials not persisted; no image/build record published.
+  Build/teardown parsing uses non-secret placeholders. Real credentials are generated only inside the
+  verifier, never written to .env/GITHUB_ENV or echoed. Existing loopback bindings unchanged. Existing
+  workflow events already cover main pushes/PRs and feature branches. All actions use full official SHAs.
+- **Verified:** actual Ubuntu stack job PASSED at
+  https://github.com/NavodCaldera/Network-Connector/actions/runs/41341787288/job/124953168299
+  (run https://github.com/NavodCaldera/Network-Connector/actions/runs/41341787288, commit b1a6ec7).
+  Build: release profile finished in 1m 54s; both targets exported GitHub Actions cache. Runtime:
+  /healthz ok; coordinator/relay UIDs both 999. Existing lease cycle: 1 passed, 0 failed, 0 ignored
+  (0.03s). Trap teardown removed three containers, network and both volumes; independent always-cleanup
+  step and all action post steps also passed. Both server matrix jobs and both cargo-deny jobs passed.
+  bash -n, git diff --check, LF-byte/action-pin checks and local Bake --print validation also passed.
+- **Failures recorded:** initial run 41341498628 failed before scheduling jobs because runner.temp was
+  used in job-level env, where runner context is unavailable (official GitHub contexts reference).
+  Corrected to a fixed Ubuntu /tmp target path; subsequent stack job passed. Local actionlint download
+  failed because C: is full; no files deleted or caches moved. Logs were fetched through the API into
+  memory and sanitized, not saved locally. No run logs or secret files committed.
+- **Not done / open:** overall CI is not claimed green: the separate Ubuntu core matrix fails
+  corrupt_key_file_is_refused_not_replaced in nc-identity. Verified the same failure existed in baseline
+  run 41339242475 before this task. That Rust test is outside the allowed files.
+- **Requests:** core owner should fix the existing identity-test failure; owner should free C: space
+  before further local tool installs. This task's Docker stack job is verified successfully.
+
+## 2026-11-02 - Claude (coordinator) - `main`
+
 - **Commits:** this merge of `feat/app-shell` (a1146f3, 91dda78).
 - **Asked:** review app-agent task 0.8 (Flutter shell + bridge).
 - **Done:** merged; TASKS.md 0.8 set to done. Worklog conflict resolved by keeping both entries.
