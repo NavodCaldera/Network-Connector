@@ -13,9 +13,9 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 0.2 | Wasmtime executor + Windows sandbox | core-agent (Claude) | `feat/core-exec` | `core/crates/nc-exec` | in progress |
 | 0.3 | Identity, manifests, lease store | core-agent (Claude) | `feat/core-store` | `proto/`, `core/crates/nc-{identity,protocol,store}` | in progress |
 | 0.4 | Tariff profiles, planner, simulator | **Codex** | `feat/codex-tariff` | `core/crates/nc-tariff` only | todo (ready to start) |
-| 0.5 | libp2p direct/DCUtR/relay test kit | net-agent (Claude) | `feat/net-p2p` | `core/crates/nc-net`, `spikes/phase0/net/` | in progress |
-| 0.6 | mDNS + QR pairing | net-agent (Claude) | `feat/net-p2p` | `core/crates/nc-net` | in progress |
-| 0.7 | Coordinator + relay (Docker) | net-agent (Claude) | `feat/net-server` | `server/`, `infra/` | in progress |
+| 0.5 | libp2p direct/DCUtR/relay test kit | net-agent (Claude) | `feat/net-p2p` | `core/crates/nc-net`, `spikes/phase0/net/` | review (kit done; two-ISP owner run pending) |
+| 0.6 | mDNS + QR pairing | net-agent (Claude) | `feat/net-p2p` | `core/crates/nc-net` | review |
+| 0.7 | Coordinator + relay (Docker) | net-agent (Claude) | `feat/net-server` | `server/`, `infra/` | review |
 | 0.8 | Flutter shell + bridge | app-agent (Claude) | `feat/app-shell` | `app/`, `core/crates/nc-bridge` | blocked (C: disk space, VS CMake component) |
 | 0.9a | Android runtime footprint + foreground-service spike | app-agent (Claude) | `feat/app-android` | `spikes/phase0/android/` | in progress |
 | 0.9b | Google Play policy assessment (document) | **Codex** | `feat/codex-mobile-research` | `spikes/phase0/mobile-policy.md` only | todo |
