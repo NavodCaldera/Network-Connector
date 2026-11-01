@@ -15,6 +15,33 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (core-agent) · `feat/core-exec`
+
+- **Asked:** Phase 0 task 0.2: `nc-exec` Wasmtime executor (`cpu-core-v1`) with fuel, epoch, external watchdog,
+  memory/stack/output caps, separate worker process inside AppContainer + Job Object on Windows, refuse if any layer
+  fails, teardown + start-up sweep, Stop < 1 s, hash check, malicious-job tests.
+- **Done:** `core/crates/nc-exec`: `runtime.rs` (Wasmtime 50.0.1 pinned; import allowlist `nc.*` only, no WASI;
+  fuel, epoch tick thread, `ResourceLimiter`, `max_wasm_stack`, output/checkpoint caps), `ipc.rs` (length-capped
+  stdin/stdout framing to the worker), `bin/nc-exec-worker.rs`, `executor.rs` (hash + `ModuleVerifier` checks before
+  spawn, 5 ms watchdog/cancel loop, capped pipe reader, suspended start), `sandbox/windows.rs` (AppContainer with 0
+  capabilities, Job Object with memory cap / 1 process / kill-on-close / UI limits / completion port,
+  child-process policy, `JOB_LIST`, teardown in `Drop`, `sweep_leftovers()` via the registry, `warm_up()`),
+  `sandbox/unsupported.rs` (non-Windows: refuse). Tests: `tests/runtime_limits.rs`, `tests/refusals.rs`,
+  `tests/sandbox_windows.rs`, test-only `examples/sandbox_probe.rs`. `core/Cargo.toml` workspace deps added.
+  REPORT.md §0.2 written. TASKS.md 0.2 → review.
+- **Decisions:** core-agent: worker IPC is a private framing, not in `proto/` (same binary, never on the network).
+  No permissive `ModuleVerifier` exists in the crate; Ed25519 verifier comes with 0.3. Worker starts suspended so a
+  Stop during a slow `CreateProcessW` never runs guest code. Ported the legacy spike's launch recipe
+  (`legacy/python-v0.3:spikes/0.3-sandbox`).
+- **Verified:** on this PC: fmt ok; clippy `--all-targets -D warnings` clean; `cargo test` all green (nc-exec: 5 unit,
+  5 refusals, 12 runtime, 12 sandbox + 1 ignored measurement); `cargo deny check` advisories/bans/licenses/sources ok
+  (6 duplicate-version warnings). Cancel → return 7–150 ms; escape probe denied files, loopback, internet, DNS and
+  child processes. Numbers in REPORT.md §0.2.
+- **Not done / open:** no Linux/macOS sandbox (jobs refused there). Cold first launch of a new worker binary took
+  2.1–4.8 s inside `CreateProcessW` (cause not proven); `run()` cannot return before that call does. One warm run under
+  heavy machine load hung until the watchdog killed it at 62 s; cause not confirmed. C: had 0 bytes free and commit
+  memory ran out several times (rustc "paging file too small"); builds used `CARGO_HOME`/`TEMP` on D: and `-j 1/2`.
+
 ## 2026-11-01 · Claude Code (coordinator) · `main`
 
 - **Asked:** review and merge task 0.1; start the parallel Phase 0 tasks.

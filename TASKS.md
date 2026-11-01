@@ -10,7 +10,7 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | Task | What | Owner | Branch | Files it may touch | Status |
 |---|---|---|---|---|---|
 | 0.1 | Toolchains, Cargo workspaces, CI | app-agent (Claude) | `feat/app-skeleton` | repo skeleton, `.github/`, `rust-toolchain.toml`, `deny.toml` | done |
-| 0.2 | Wasmtime executor + Windows sandbox | core-agent (Claude) | `feat/core-exec` | `core/crates/nc-exec` | in progress |
+| 0.2 | Wasmtime executor + Windows sandbox | core-agent (Claude) | `feat/core-exec` | `core/crates/nc-exec` | review |
 | 0.3 | Identity, manifests, lease store | core-agent (Claude) | `feat/core-store` | `proto/`, `core/crates/nc-{identity,protocol,store}` | in progress |
 | 0.4 | Tariff profiles, planner, simulator | **Codex** | `feat/codex-tariff` | `core/crates/nc-tariff` only | todo (ready to start) |
 | 0.5 | libp2p direct/DCUtR/relay test kit | net-agent (Claude) | `feat/net-p2p` | `core/crates/nc-net`, `spikes/phase0/net/` | in progress |
