@@ -7,5 +7,15 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[lib]
+# cdylib: loaded by the Flutter app (nc_bridge.dll / libnc_bridge.so). rlib: for `cargo test`.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+nc-agent = { path = "../nc-agent", version = "0.1.0" }
+nc-policy = { path = "../nc-policy", version = "0.1.0" }
+# Pinned exactly; must match `flutter_rust_bridge` in app/pubspec.yaml and the codegen CLI version.
+flutter_rust_bridge = "=2.13.0"
+
 [lints]
 workspace = true

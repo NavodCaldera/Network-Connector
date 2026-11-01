@@ -1,16 +1,16 @@
 //! `nc-bridge`: flutter_rust_bridge API surface: wraps the nc-agent API 1:1 for the Flutter app.
 //!
-//! Phase 0 skeleton (PLAN.md §4). Real functionality arrives in later tasks.
+//! `api` is hand-written; `frb_generated` is produced by `flutter_rust_bridge_codegen generate`
+//! (run from `app/`, config in `app/flutter_rust_bridge.yaml`). Do not edit the generated file.
 
-/// Name of this crate, used by the skeleton test and diagnostics.
-pub const CRATE_NAME: &str = "nc-bridge";
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn crate_name_matches() {
-        assert_eq!(CRATE_NAME, "nc-bridge");
-    }
-}
+pub mod api;
+#[allow(
+    unsafe_code,
+    clippy::all,
+    clippy::pedantic,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    missing_docs,
+    unused_qualifications
+)]
+mod frb_generated;

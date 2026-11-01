@@ -7,9 +7,16 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "nc-agent"
 path = "src/main.rs"
+
+[dependencies]
+nc-policy = { path = "../nc-policy", version = "0.1.0" }
+thiserror = { workspace = true }
 
 [lints]
 workspace = true
