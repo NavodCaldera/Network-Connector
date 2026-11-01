@@ -35,7 +35,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String dco_decode_String(dynamic raw);
 
   @protected
+  AppSettings dco_decode_app_settings(dynamic raw);
+
+  @protected
   bool dco_decode_bool(dynamic raw);
+
+  @protected
+  AppSettings dco_decode_box_autoadd_app_settings(dynamic raw);
+
+  @protected
+  NightDataSettings dco_decode_box_autoadd_night_data_settings(dynamic raw);
 
   @protected
   PolicySummary dco_decode_box_autoadd_policy_summary(dynamic raw);
@@ -53,7 +62,40 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<TariffPreset> dco_decode_list_tariff_preset(dynamic raw);
+
+  @protected
+  List<TimeWindow> dco_decode_list_time_window(dynamic raw);
+
+  @protected
+  LoadedSettings dco_decode_loaded_settings(dynamic raw);
+
+  @protected
+  NightDataSettings dco_decode_night_data_settings(dynamic raw);
+
+  @protected
+  NightDataStatus dco_decode_night_data_status(dynamic raw);
+
+  @protected
+  String? dco_decode_opt_String(dynamic raw);
+
+  @protected
   PolicySummary dco_decode_policy_summary(dynamic raw);
+
+  @protected
+  TariffPreset dco_decode_tariff_preset(dynamic raw);
+
+  @protected
+  TimeWindow dco_decode_time_window(dynamic raw);
+
+  @protected
+  TodaySummary dco_decode_today_summary(dynamic raw);
+
+  @protected
+  int dco_decode_u_16(dynamic raw);
+
+  @protected
+  int dco_decode_u_32(dynamic raw);
 
   @protected
   BigInt dco_decode_u_64(dynamic raw);
@@ -76,7 +118,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
+  AppSettings sse_decode_app_settings(SseDeserializer deserializer);
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer);
+
+  @protected
+  AppSettings sse_decode_box_autoadd_app_settings(SseDeserializer deserializer);
+
+  @protected
+  NightDataSettings sse_decode_box_autoadd_night_data_settings(
+    SseDeserializer deserializer,
+  );
 
   @protected
   PolicySummary sse_decode_box_autoadd_policy_summary(
@@ -96,7 +149,44 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  List<TariffPreset> sse_decode_list_tariff_preset(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<TimeWindow> sse_decode_list_time_window(SseDeserializer deserializer);
+
+  @protected
+  LoadedSettings sse_decode_loaded_settings(SseDeserializer deserializer);
+
+  @protected
+  NightDataSettings sse_decode_night_data_settings(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  NightDataStatus sse_decode_night_data_status(SseDeserializer deserializer);
+
+  @protected
+  String? sse_decode_opt_String(SseDeserializer deserializer);
+
+  @protected
   PolicySummary sse_decode_policy_summary(SseDeserializer deserializer);
+
+  @protected
+  TariffPreset sse_decode_tariff_preset(SseDeserializer deserializer);
+
+  @protected
+  TimeWindow sse_decode_time_window(SseDeserializer deserializer);
+
+  @protected
+  TodaySummary sse_decode_today_summary(SseDeserializer deserializer);
+
+  @protected
+  int sse_decode_u_16(SseDeserializer deserializer);
+
+  @protected
+  int sse_decode_u_32(SseDeserializer deserializer);
 
   @protected
   BigInt sse_decode_u_64(SseDeserializer deserializer);
@@ -123,7 +213,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
+  void sse_encode_app_settings(AppSettings self, SseSerializer serializer);
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_app_settings(
+    AppSettings self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_night_data_settings(
+    NightDataSettings self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_policy_summary(
@@ -147,7 +252,55 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_tariff_preset(
+    List<TariffPreset> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_time_window(
+    List<TimeWindow> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_loaded_settings(
+    LoadedSettings self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_night_data_settings(
+    NightDataSettings self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_night_data_status(
+    NightDataStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_String(String? self, SseSerializer serializer);
+
+  @protected
   void sse_encode_policy_summary(PolicySummary self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_tariff_preset(TariffPreset self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_time_window(TimeWindow self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_today_summary(TodaySummary self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_u_16(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_u_32(int self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_64(BigInt self, SseSerializer serializer);

@@ -7,11 +7,45 @@ import 'frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `agent`, `to_policy`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `from`, `from`
+// These functions are ignored because they are not marked as `pub`: `agent`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
 
-/// The nc-policy safe defaults (no consent, charging only, 25 % CPU, ...).
+/// The nc-policy safe defaults (no consent, charging only, 25 % CPU, no hours, ...).
 PolicySummary defaultPolicy() => RustLib.instance.api.crateApiDefaultPolicy();
+
+/// Safe defaults for everything the app saves.
+AppSettings defaultSettings() => RustLib.instance.api.crateApiDefaultSettings();
+
+/// Checks owner limits with nc-policy. `None` means valid; otherwise a plain-English sentence.
+String? validatePolicy({required PolicySummary policy}) =>
+    RustLib.instance.api.crateApiValidatePolicy(policy: policy);
+
+/// Checks night-data settings with nc-tariff. `None` means valid.
+String? validateNightData({required NightDataSettings nightData}) =>
+    RustLib.instance.api.crateApiValidateNightData(nightData: nightData);
+
+/// Built-in night windows to start from.
+List<TariffPreset> tariffPresets() =>
+    RustLib.instance.api.crateApiTariffPresets();
+
+/// Current or next free window and the budget left, from nc-tariff at the device clock.
+NightDataStatus nightDataStatus({required NightDataSettings nightData}) =>
+    RustLib.instance.api.crateApiNightDataStatus(nightData: nightData);
+
+/// The platform app-support folder for `settings.json` (desktop only for now; mobile needs a platform
+/// adapter). Errors are plain English.
+String settingsDir() => RustLib.instance.api.crateApiSettingsDir();
+
+/// Loads `settings.json` from `dir`. Never fails: a missing file gives defaults, a bad one is kept as
+/// `settings.json.bad` and defaults are used.
+Future<LoadedSettings> loadSettings({required String dir}) =>
+    RustLib.instance.api.crateApiLoadSettings(dir: dir);
+
+/// Validates, then writes `settings.json` in `dir` atomically (temp file + rename).
+Future<void> saveSettings({
+  required String dir,
+  required AppSettings settings,
+}) => RustLib.instance.api.crateApiSaveSettings(dir: dir, settings: settings);
 
 /// `Agent::start_helper_session(policy)`. Errors are plain-English sentences for the UI.
 Future<void> startHelperSession({required PolicySummary policy}) =>
@@ -21,9 +55,37 @@ Future<void> startHelperSession({required PolicySummary policy}) =>
 Future<void> stopHelperSession() =>
     RustLib.instance.api.crateApiStopHelperSession();
 
+/// Version of the Rust core (nc-bridge), for the About page.
+String coreVersion() => RustLib.instance.api.crateApiCoreVersion();
+
+/// Today's helping summary.
+TodaySummary todaySummary() => RustLib.instance.api.crateApiTodaySummary();
+
 /// `Agent::watch_status()` as a Dart `Stream`. Ends when Dart cancels the stream.
 Stream<HelperStatus> watchStatus() =>
     RustLib.instance.api.crateApiWatchStatus();
+
+/// Everything the app saves. One versioned JSON file; no secrets.
+class AppSettings {
+  /// Owner limits.
+  final PolicySummary policy;
+
+  /// Night-data settings.
+  final NightDataSettings nightData;
+
+  const AppSettings({required this.policy, required this.nightData});
+
+  @override
+  int get hashCode => policy.hashCode ^ nightData.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AppSettings &&
+          runtimeType == other.runtimeType &&
+          policy == other.policy &&
+          nightData == other.nightData;
+}
 
 /// Session state, mirrored from `nc_agent::SessionState`.
 enum HelperState {
@@ -65,12 +127,124 @@ class HelperStatus {
           seq == other.seq;
 }
 
-/// The owner settings the UI shows and edits. Everything else keeps the nc-policy safe default.
+/// Result of [`load_settings`].
+class LoadedSettings {
+  /// The settings to use (safe defaults if the file was missing or bad).
+  final AppSettings settings;
+
+  /// Set when the file could not be used and was kept as `settings.json.bad`.
+  final String? resetNotice;
+
+  const LoadedSettings({required this.settings, this.resetNotice});
+
+  @override
+  int get hashCode => settings.hashCode ^ resetNotice.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LoadedSettings &&
+          runtimeType == other.runtimeType &&
+          settings == other.settings &&
+          resetNotice == other.resetNotice;
+}
+
+/// Night-data (tariff) settings. Windows are owner-configured, never ISP facts (PLAN.md §6).
+class NightDataSettings {
+  /// Id of the chosen preset from [`tariff_presets`], or `custom`.
+  final String presetId;
+
+  /// The window in use (copied from the preset, or the owner's own).
+  final TimeWindow window;
+
+  /// Most data to use in one night window, MB (10^6 bytes).
+  final BigInt nightlyBudgetMb;
+
+  /// Never use data outside the free window, not even status messages.
+  final bool neverPaidData;
+
+  /// IANA time zone, e.g. `Asia/Colombo`.
+  final String timezone;
+
+  const NightDataSettings({
+    required this.presetId,
+    required this.window,
+    required this.nightlyBudgetMb,
+    required this.neverPaidData,
+    required this.timezone,
+  });
+
+  @override
+  int get hashCode =>
+      presetId.hashCode ^
+      window.hashCode ^
+      nightlyBudgetMb.hashCode ^
+      neverPaidData.hashCode ^
+      timezone.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is NightDataSettings &&
+          runtimeType == other.runtimeType &&
+          presetId == other.presetId &&
+          window == other.window &&
+          nightlyBudgetMb == other.nightlyBudgetMb &&
+          neverPaidData == other.neverPaidData &&
+          timezone == other.timezone;
+}
+
+/// Next free window and budget, computed by nc-tariff.
+class NightDataStatus {
+  /// The free window is open now.
+  final bool openNow;
+
+  /// Start of the next window, local time text (e.g. `Tue 00:00`). None while open or if none found.
+  final String? windowStart;
+
+  /// End of that window (after the safety margin), local time text.
+  final String? windowEnd;
+
+  /// Bytes still allowed in that window.
+  final BigInt budgetLeftBytes;
+
+  /// Nightly budget, bytes.
+  final BigInt budgetTotalBytes;
+
+  const NightDataStatus({
+    required this.openNow,
+    this.windowStart,
+    this.windowEnd,
+    required this.budgetLeftBytes,
+    required this.budgetTotalBytes,
+  });
+
+  @override
+  int get hashCode =>
+      openNow.hashCode ^
+      windowStart.hashCode ^
+      windowEnd.hashCode ^
+      budgetLeftBytes.hashCode ^
+      budgetTotalBytes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is NightDataStatus &&
+          runtimeType == other.runtimeType &&
+          openNow == other.openNow &&
+          windowStart == other.windowStart &&
+          windowEnd == other.windowEnd &&
+          budgetLeftBytes == other.budgetLeftBytes &&
+          budgetTotalBytes == other.budgetTotalBytes;
+}
+
+/// The owner limits the UI shows and edits (nc-policy `OwnerPolicy`). Other fields keep the safe default.
 class PolicySummary {
   /// Explicit consent to run jobs for paired peers.
   final bool acceptJobs;
 
-  /// CPU budget, percent.
+  /// CPU budget, percent (best effort).
   final int cpuBudgetPercent;
 
   /// Memory cap for all jobs, MiB.
@@ -88,8 +262,17 @@ class PolicySummary {
   /// Longest single job, minutes.
   final BigInt maxTaskMinutes;
 
-  /// Pause when the owner uses the device.
+  /// Work only when the device is idle.
   final bool pauseOnUserActivity;
+
+  /// Idle time needed before work starts, minutes.
+  final int idleMinutes;
+
+  /// IANA time zone for `hours`, e.g. `Asia/Colombo`.
+  final String timezone;
+
+  /// Allowed working hours. Empty means never (nc-policy safe default).
+  final List<TimeWindow> hours;
 
   const PolicySummary({
     required this.acceptJobs,
@@ -100,6 +283,9 @@ class PolicySummary {
     required this.minBatteryPercent,
     required this.maxTaskMinutes,
     required this.pauseOnUserActivity,
+    required this.idleMinutes,
+    required this.timezone,
+    required this.hours,
   });
 
   @override
@@ -111,7 +297,10 @@ class PolicySummary {
       chargingOnly.hashCode ^
       minBatteryPercent.hashCode ^
       maxTaskMinutes.hashCode ^
-      pauseOnUserActivity.hashCode;
+      pauseOnUserActivity.hashCode ^
+      idleMinutes.hashCode ^
+      timezone.hashCode ^
+      hours.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -125,5 +314,83 @@ class PolicySummary {
           chargingOnly == other.chargingOnly &&
           minBatteryPercent == other.minBatteryPercent &&
           maxTaskMinutes == other.maxTaskMinutes &&
-          pauseOnUserActivity == other.pauseOnUserActivity;
+          pauseOnUserActivity == other.pauseOnUserActivity &&
+          idleMinutes == other.idleMinutes &&
+          timezone == other.timezone &&
+          hours == other.hours;
+}
+
+/// A starting point for the night window. The owner must check it against their own package.
+class TariffPreset {
+  /// Stable id; the app shows its label from `strings.dart`.
+  final String id;
+
+  /// The window.
+  final TimeWindow window;
+
+  const TariffPreset({required this.id, required this.window});
+
+  @override
+  int get hashCode => id.hashCode ^ window.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TariffPreset &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          window == other.window;
+}
+
+/// One weekly time window, local time of `timezone`. Minutes count from midnight (0..1440).
+/// `end_minute` before `start_minute` means the window crosses midnight.
+class TimeWindow {
+  /// Weekdays the window starts on, 0 = Monday .. 6 = Sunday.
+  final Uint8List days;
+
+  /// Start, minutes after local midnight (inclusive).
+  final int startMinute;
+
+  /// End, minutes after local midnight (exclusive).
+  final int endMinute;
+
+  const TimeWindow({
+    required this.days,
+    required this.startMinute,
+    required this.endMinute,
+  });
+
+  @override
+  int get hashCode => days.hashCode ^ startMinute.hashCode ^ endMinute.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TimeWindow &&
+          runtimeType == other.runtimeType &&
+          days == other.days &&
+          startMinute == other.startMinute &&
+          endMinute == other.endMinute;
+}
+
+/// Today's helping summary (local date of the device clock in the policy time zone).
+class TodaySummary {
+  /// Seconds a helper session ran today.
+  final BigInt helpingSeconds;
+
+  /// Jobs finished today. Always 0 until nc-agent reports jobs.
+  final BigInt jobsDone;
+
+  const TodaySummary({required this.helpingSeconds, required this.jobsDone});
+
+  @override
+  int get hashCode => helpingSeconds.hashCode ^ jobsDone.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TodaySummary &&
+          runtimeType == other.runtimeType &&
+          helpingSeconds == other.helpingSeconds &&
+          jobsDone == other.jobsDone;
 }

@@ -1,21 +1,34 @@
 //! Functions and types exposed to Dart. Wraps `nc_agent::Agent` 1:1 (AGENT.md §3).
 //!
 //! Only owner settings and low-frequency status cross this boundary. Job payloads never do.
+//! All validation happens here in Rust (nc-policy, nc-tariff); Dart only shows the messages.
 
 use flutter_rust_bridge::frb;
 use nc_agent::{Agent, SessionState};
-use nc_policy::OwnerPolicy;
+use std::path::Path;
 use std::sync::OnceLock;
-use std::time::Duration;
 
 use crate::frb_generated::StreamSink;
+use crate::{night, settings, today};
 
-/// The owner settings the UI shows and edits. Everything else keeps the nc-policy safe default.
+/// One weekly time window, local time of `timezone`. Minutes count from midnight (0..1440).
+/// `end_minute` before `start_minute` means the window crosses midnight.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimeWindow {
+    /// Weekdays the window starts on, 0 = Monday .. 6 = Sunday.
+    pub days: Vec<u8>,
+    /// Start, minutes after local midnight (inclusive).
+    pub start_minute: u16,
+    /// End, minutes after local midnight (exclusive).
+    pub end_minute: u16,
+}
+
+/// The owner limits the UI shows and edits (nc-policy `OwnerPolicy`). Other fields keep the safe default.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PolicySummary {
     /// Explicit consent to run jobs for paired peers.
     pub accept_jobs: bool,
-    /// CPU budget, percent.
+    /// CPU budget, percent (best effort).
     pub cpu_budget_percent: u8,
     /// Memory cap for all jobs, MiB.
     pub max_memory_mb: u64,
@@ -27,39 +40,80 @@ pub struct PolicySummary {
     pub min_battery_percent: u8,
     /// Longest single job, minutes.
     pub max_task_minutes: u64,
-    /// Pause when the owner uses the device.
+    /// Work only when the device is idle.
     pub pause_on_user_activity: bool,
+    /// Idle time needed before work starts, minutes.
+    pub idle_minutes: u32,
+    /// IANA time zone for `hours`, e.g. `Asia/Colombo`.
+    pub timezone: String,
+    /// Allowed working hours. Empty means never (nc-policy safe default).
+    pub hours: Vec<TimeWindow>,
 }
 
-impl From<&OwnerPolicy> for PolicySummary {
-    fn from(p: &OwnerPolicy) -> Self {
-        Self {
-            accept_jobs: p.accept_jobs,
-            cpu_budget_percent: p.cpu_budget_percent,
-            max_memory_mb: p.max_memory_mb,
-            max_disk_mb: p.max_disk_mb,
-            charging_only: p.charging_only,
-            min_battery_percent: p.min_battery_percent,
-            max_task_minutes: p.max_task_duration.as_secs() / 60,
-            pause_on_user_activity: p.pause_on_user_activity,
-        }
-    }
+/// Night-data (tariff) settings. Windows are owner-configured, never ISP facts (PLAN.md §6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NightDataSettings {
+    /// Id of the chosen preset from [`tariff_presets`], or `custom`.
+    pub preset_id: String,
+    /// The window in use (copied from the preset, or the owner's own).
+    pub window: TimeWindow,
+    /// Most data to use in one night window, MB (10^6 bytes).
+    pub nightly_budget_mb: u64,
+    /// Never use data outside the free window, not even status messages.
+    pub never_paid_data: bool,
+    /// IANA time zone, e.g. `Asia/Colombo`.
+    pub timezone: String,
 }
 
-impl PolicySummary {
-    fn to_policy(&self) -> OwnerPolicy {
-        OwnerPolicy {
-            accept_jobs: self.accept_jobs,
-            cpu_budget_percent: self.cpu_budget_percent,
-            max_memory_mb: self.max_memory_mb,
-            max_disk_mb: self.max_disk_mb,
-            charging_only: self.charging_only,
-            min_battery_percent: self.min_battery_percent,
-            max_task_duration: Duration::from_secs(self.max_task_minutes.saturating_mul(60)),
-            pause_on_user_activity: self.pause_on_user_activity,
-            ..OwnerPolicy::default()
-        }
-    }
+/// A starting point for the night window. The owner must check it against their own package.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TariffPreset {
+    /// Stable id; the app shows its label from `strings.dart`.
+    pub id: String,
+    /// The window.
+    pub window: TimeWindow,
+}
+
+/// Everything the app saves. One versioned JSON file; no secrets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppSettings {
+    /// Owner limits.
+    pub policy: PolicySummary,
+    /// Night-data settings.
+    pub night_data: NightDataSettings,
+}
+
+/// Result of [`load_settings`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadedSettings {
+    /// The settings to use (safe defaults if the file was missing or bad).
+    pub settings: AppSettings,
+    /// Set when the file could not be used and was kept as `settings.json.bad`.
+    pub reset_notice: Option<String>,
+}
+
+/// Next free window and budget, computed by nc-tariff.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NightDataStatus {
+    /// The free window is open now.
+    pub open_now: bool,
+    /// Start of the next window, local time text (e.g. `Tue 00:00`). None while open or if none found.
+    pub window_start: Option<String>,
+    /// End of that window (after the safety margin), local time text.
+    pub window_end: Option<String>,
+    /// Bytes still allowed in that window.
+    pub budget_left_bytes: u64,
+    /// Nightly budget, bytes.
+    pub budget_total_bytes: u64,
+}
+
+/// Today's helping summary (local date of the device clock in the policy time zone).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TodaySummary {
+    /// Seconds a helper session ran today.
+    pub helping_seconds: u64,
+    /// Jobs finished today. Always 0 until nc-agent reports jobs.
+    pub jobs_done: u64,
 }
 
 /// Session state, mirrored from `nc_agent::SessionState`.
@@ -109,22 +163,84 @@ pub fn init_app() {
     flutter_rust_bridge::setup_default_user_utils();
 }
 
-/// The nc-policy safe defaults (no consent, charging only, 25 % CPU, ...).
+/// The nc-policy safe defaults (no consent, charging only, 25 % CPU, no hours, ...).
 #[frb(sync)]
 pub fn default_policy() -> PolicySummary {
-    PolicySummary::from(&OwnerPolicy::default())
+    settings::default_settings().policy
+}
+
+/// Safe defaults for everything the app saves.
+#[frb(sync)]
+pub fn default_settings() -> AppSettings {
+    settings::default_settings()
+}
+
+/// Checks owner limits with nc-policy. `None` means valid; otherwise a plain-English sentence.
+#[frb(sync)]
+pub fn validate_policy(policy: PolicySummary) -> Option<String> {
+    settings::to_policy(&policy).err()
+}
+
+/// Checks night-data settings with nc-tariff. `None` means valid.
+#[frb(sync)]
+pub fn validate_night_data(night_data: NightDataSettings) -> Option<String> {
+    night::to_profile(&night_data).err()
+}
+
+/// Built-in night windows to start from.
+#[frb(sync)]
+pub fn tariff_presets() -> Vec<TariffPreset> {
+    night::presets()
+}
+
+/// Current or next free window and the budget left, from nc-tariff at the device clock.
+#[frb(sync)]
+pub fn night_data_status(night_data: NightDataSettings) -> Result<NightDataStatus, String> {
+    night::status_at(&night_data, chrono::Utc::now())
+}
+
+/// The platform app-support folder for `settings.json` (desktop only for now; mobile needs a platform
+/// adapter). Errors are plain English.
+#[frb(sync)]
+pub fn settings_dir() -> Result<String, String> {
+    settings::app_support_dir().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Loads `settings.json` from `dir`. Never fails: a missing file gives defaults, a bad one is kept as
+/// `settings.json.bad` and defaults are used.
+pub fn load_settings(dir: String) -> LoadedSettings {
+    settings::load(Path::new(&dir))
+}
+
+/// Validates, then writes `settings.json` in `dir` atomically (temp file + rename).
+pub fn save_settings(dir: String, settings: AppSettings) -> Result<(), String> {
+    settings::save(Path::new(&dir), &settings)
 }
 
 /// `Agent::start_helper_session(policy)`. Errors are plain-English sentences for the UI.
 pub fn start_helper_session(policy: PolicySummary) -> Result<(), String> {
-    agent()
-        .start_helper_session(policy.to_policy())
-        .map_err(|e| e.to_string())
+    let p = settings::to_policy(&policy)?;
+    agent().start_helper_session(p).map_err(|e| e.to_string())?;
+    today::session_started(&policy.timezone);
+    Ok(())
 }
 
 /// `Agent::stop_helper_session()`. Returns when the session is `Stopped`.
 pub fn stop_helper_session() {
     agent().stop_helper_session();
+    today::session_stopped();
+}
+
+/// Version of the Rust core (nc-bridge), for the About page.
+#[frb(sync)]
+pub fn core_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// Today's helping summary.
+#[frb(sync)]
+pub fn today_summary() -> TodaySummary {
+    today::summary()
 }
 
 /// `Agent::watch_status()` as a Dart `Stream`. Ends when Dart cancels the stream.
@@ -153,25 +269,28 @@ pub fn watch_status(sink: StreamSink<HelperStatus>) {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use nc_policy::OwnerPolicy;
 
     #[test]
     fn summary_round_trips_and_keeps_safe_defaults() {
         let s = default_policy();
         assert!(!s.accept_jobs);
-        let p = s.to_policy();
-        assert_eq!(p, OwnerPolicy::default());
-        assert!(p.validate().is_ok());
+        let p = settings::to_policy(&s).unwrap();
+        assert_eq!(
+            p,
+            OwnerPolicy {
+                timezone: chrono_tz::Asia::Colombo,
+                ..OwnerPolicy::default()
+            }
+        );
     }
 
     #[test]
     fn invalid_summary_is_refused_with_plain_message() {
         let mut s = default_policy();
         s.cpu_budget_percent = 0;
-        let err = Agent::new()
-            .start_helper_session(s.to_policy())
-            .unwrap_err();
         assert_eq!(
-            err.to_string(),
+            start_helper_session(s).unwrap_err(),
             "CPU budget must be between 1 and 100 percent."
         );
     }

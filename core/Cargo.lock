@@ -2819,9 +2819,15 @@ dependencies = [
 name = "nc-bridge"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "chrono-tz",
  "flutter_rust_bridge",
  "nc-agent",
  "nc-policy",
+ "nc-tariff",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

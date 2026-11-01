@@ -32,6 +32,7 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.P6 | Helper supervisor `nc-agent` (lib + daemon) wiring coordinator, store, policy, tariff, executor | **Codex** | `feat/codex-agent` | `core/crates/nc-agent`, `core/crates/nc-cli`, `core/Cargo.toml` members/deps only | blocked (needs 1.P6a) |
 | 1.P5 | Ubuntu CI Docker stack build and live lease-cycle check | **Codex** | `feat/codex-ci-stack` | `.github/workflows/`, `infra/verify.sh` | done |
 | 1.P6a | Real job contract: signed manifests in leases, job submit, blob up/download, lease failure | **Codex** | `feat/codex-jobs-api` | `proto/`, `core/crates/nc-protocol`, `server/`, `infra/` (migrations) | todo |
+| 1.A1 | Owner UI: limits, night data, settings file, Home summary, navigation | app-agent (Claude) | `feat/app-ui` | `app/`, `core/crates/nc-bridge` | review |
 
 ## Rules for Codex work
 

@@ -15,6 +15,56 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Claude (app-agent) - `feat/app-ui`
+
+- **Commits:** this commit (task 1.A1).
+- **Asked:** build the real owner UI on the 0.8 shell: a Limits screen (nc-policy), a Night data screen (nc-tariff), a
+  persisted settings file, a Home summary with Stop always on, and Home/Limits/Night data/About navigation. Tests
+  in Dart and Rust.
+- **Done:**
+  - nc-bridge: `api.rs` gains `TimeWindow`, extended `PolicySummary` (idle minutes, time zone, hours),
+    `NightDataSettings`, `TariffPreset`, `AppSettings`, `LoadedSettings`, `NightDataStatus`, `TodaySummary`, and the
+    functions `default_settings`, `validate_policy`, `validate_night_data`, `tariff_presets`, `night_data_status`,
+    `settings_dir`, `load_settings`, `save_settings`, `today_summary` and `core_version`. Logic lives in the new
+    `settings.rs` (OwnerPolicy conversion and validation, versioned file, atomic write, corrupt file moved to `.bad`,
+    256 KiB cap, `deny_unknown_fields`), `night.rs` (TariffProfile built from the settings; next window and budget
+    left from `nc_tariff::decide` and `BudgetLedger`) and `today.rs` (helping time today, in memory). frb glue
+    regenerated (2.13.0).
+  - app: `AppModel` (state, save then apply to a running session), `AppShell` (NavigationBar, with the Stop bar on
+    every screen), `home_page`, `limits_page`, `night_data_page`, `about_page` (versions, `showLicensePage`),
+    `widgets.dart`. All text is in `strings.dart`. The tests use `test/fake_agent.dart`.
+  - TASKS.md row 1.A1 (review), app/README.md.
+- **Decisions (app-agent):**
+  - Night-data presets (midnight-8 am, midnight-6 am, 10 pm-6 am, every day, Asia/Colombo) are starting points that
+    the owner confirms, not ISP facts (PLAN.md §6). Labels are in strings.dart, not Rust.
+  - Default time zone is Asia/Colombo; every other default is nc-policy's. No hours set means no work (the
+    nc-policy safe default), and Home says so.
+  - The "never use paid data" switch on means strict zero outside the window. Off allows only Control traffic.
+    Cellular fallback is always off. The boundary guard is 60 s. There is no monthly cap yet.
+  - The connection binding is a placeholder (`owner-confirmation-pending`) until a platform adapter confirms the
+    network, so the profile authorises no real transfer.
+  - I dropped `path_provider`: Flutter plugins need symlinks (Windows Developer Mode, which is off). Rust's
+    `settings_dir()` gives the folder instead (`%APPDATA%\NetworkConnector`; macOS and Linux paths too). Mobile
+    returns an error, and the app then keeps settings in memory only.
+- **Verified (real results):**
+  - From core/: `cargo test -j 2 -p nc-bridge` reported 22 passed, 0 failed. `cargo fmt --all --check` exit 0.
+    `cargo clippy -p nc-bridge --all-targets -- -D warnings` exit 0. `cargo deny check` reported "advisories ok,
+    bans ok, licenses ok, sources ok".
+  - From app/: `flutter analyze` reported "No issues found!". `flutter test` reported 12 passed and 1 skipped (the
+    real bridge test). With `NC_BRIDGE_DLL` set to the release `nc_bridge.dll`, `flutter test
+    test/rust_bridge_test.dart` passed: start, Stop (4465 us), validation, tariff status, and settings save, load
+    and corrupt-to-.bad through real Rust.
+  - `flutter build windows --release`: built `network_connector.exe` and `nc_bridge.dll` (2.1 MB).
+  - Manual: launched the release exe with a corrupt `%APPDATA%\NetworkConnector\settings.json`. It was still
+    running after 8 s, and the file had become `settings.json.bad`. I then removed the test folder.
+- **Failures recorded:** the first `cargo test` died with rustc out-of-memory (STATUS_STACK_BUFFER_OVERRUN). C: was
+  at about 1 GB, so I stopped as instructed and removed my target dir. Resumed at 5.85 GB with `-j 2`.
+  `flutter pub get` with path_provider failed (it needs symlinks), so the dependency was removed.
+- **Not done / open:** I did not do the click-through manual run (change limits in the window, restart, see them
+  persist, press Stop): I cannot drive the GUI. Persistence is covered by the Rust tests and the real-bridge test.
+  Owner steps are in the hand-back. Job counts on Home stay 0 until nc-agent reports jobs. Helping time resets when
+  the app restarts. There is no settings folder on mobile yet.
+
 ## 2026-11-02 - Claude (coordinator) - `main`
 
 - **Commits:** this merge of `feat/codex-ci-stack` (4fdfaa2).

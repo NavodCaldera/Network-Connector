@@ -45,5 +45,42 @@ void main() {
 
     // frb completes cancel() only when Rust drops the sink, i.e. at the next status change; do not wait.
     unawaited(sub.cancel());
+
+    // Settings, validation and tariff queries through the real Rust code.
+    final bad = PolicySummary(
+      acceptJobs: false,
+      cpuBudgetPercent: 0,
+      maxMemoryMb: policy.maxMemoryMb,
+      maxDiskMb: policy.maxDiskMb,
+      chargingOnly: true,
+      minBatteryPercent: 20,
+      maxTaskMinutes: policy.maxTaskMinutes,
+      pauseOnUserActivity: true,
+      idleMinutes: 5,
+      timezone: 'Asia/Colombo',
+      hours: const [],
+    );
+    expect(
+      validatePolicy(policy: bad),
+      'CPU budget must be between 1 and 100 percent.',
+    );
+    final defaults = defaultSettings();
+    expect(validateNightData(nightData: defaults.nightData), isNull);
+    final night = nightDataStatus(nightData: defaults.nightData);
+    expect(night.budgetTotalBytes, BigInt.from(1000000000));
+
+    final dir = await Directory.systemTemp.createTemp('nc-settings-');
+    try {
+      expect((await loadSettings(dir: dir.path)).resetNotice, isNull);
+      await saveSettings(dir: dir.path, settings: defaults);
+      final loaded = await loadSettings(dir: dir.path);
+      expect(loaded.settings.policy.cpuBudgetPercent, 25);
+      File('${dir.path}/settings.json').writeAsStringSync('{ broken');
+      final reset = await loadSettings(dir: dir.path);
+      expect(reset.resetNotice, isNotNull);
+      expect(File('${dir.path}/settings.json.bad').existsSync(), isTrue);
+    } finally {
+      dir.deleteSync(recursive: true);
+    }
   }, skip: skip);
 }

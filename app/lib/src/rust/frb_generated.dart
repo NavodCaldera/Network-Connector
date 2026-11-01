@@ -69,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -731915216;
+  int get rustContentHash => 37182947;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -81,13 +81,38 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
 }
 
 abstract class RustLibApi extends BaseApi {
+  String crateApiCoreVersion();
+
   PolicySummary crateApiDefaultPolicy();
 
+  AppSettings crateApiDefaultSettings();
+
   Future<void> crateApiInitApp();
+
+  Future<LoadedSettings> crateApiLoadSettings({required String dir});
+
+  NightDataStatus crateApiNightDataStatus({
+    required NightDataSettings nightData,
+  });
+
+  Future<void> crateApiSaveSettings({
+    required String dir,
+    required AppSettings settings,
+  });
+
+  String crateApiSettingsDir();
 
   Future<void> crateApiStartHelperSession({required PolicySummary policy});
 
   Future<void> crateApiStopHelperSession();
+
+  List<TariffPreset> crateApiTariffPresets();
+
+  TodaySummary crateApiTodaySummary();
+
+  String? crateApiValidateNightData({required NightDataSettings nightData});
+
+  String? crateApiValidatePolicy({required PolicySummary policy});
 
   Stream<HelperStatus> crateApiWatchStatus();
 }
@@ -101,12 +126,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   });
 
   @override
-  PolicySummary crateApiDefaultPolicy() {
+  String crateApiCoreVersion() {
     return handler.executeSync(
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 1)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiCoreVersionConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiCoreVersionConstMeta =>
+      const TaskConstMeta(debugName: "core_version", argNames: []);
+
+  @override
+  PolicySummary crateApiDefaultPolicy() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 2)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_policy_summary,
@@ -123,6 +170,28 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "default_policy", argNames: []);
 
   @override
+  AppSettings crateApiDefaultSettings() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 3)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_app_settings,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiDefaultSettingsConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiDefaultSettingsConstMeta =>
+      const TaskConstMeta(debugName: "default_settings", argNames: []);
+
+  @override
   Future<void> crateApiInitApp() {
     return handler.executeNormal(
       NormalTask(
@@ -131,7 +200,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 2,
+            funcId: 4,
             port: port_,
           );
         },
@@ -150,6 +219,117 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "init_app", argNames: []);
 
   @override
+  Future<LoadedSettings> crateApiLoadSettings({required String dir}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(dir, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 5,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_loaded_settings,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiLoadSettingsConstMeta,
+        argValues: [dir],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiLoadSettingsConstMeta =>
+      const TaskConstMeta(debugName: "load_settings", argNames: ["dir"]);
+
+  @override
+  NightDataStatus crateApiNightDataStatus({
+    required NightDataSettings nightData,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_night_data_settings(nightData, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 6)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_night_data_status,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiNightDataStatusConstMeta,
+        argValues: [nightData],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiNightDataStatusConstMeta => const TaskConstMeta(
+    debugName: "night_data_status",
+    argNames: ["nightData"],
+  );
+
+  @override
+  Future<void> crateApiSaveSettings({
+    required String dir,
+    required AppSettings settings,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(dir, serializer);
+          sse_encode_box_autoadd_app_settings(settings, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 7,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiSaveSettingsConstMeta,
+        argValues: [dir, settings],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSaveSettingsConstMeta => const TaskConstMeta(
+    debugName: "save_settings",
+    argNames: ["dir", "settings"],
+  );
+
+  @override
+  String crateApiSettingsDir() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 8)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiSettingsDirConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSettingsDirConstMeta =>
+      const TaskConstMeta(debugName: "settings_dir", argNames: []);
+
+  @override
   Future<void> crateApiStartHelperSession({required PolicySummary policy}) {
     return handler.executeNormal(
       NormalTask(
@@ -159,7 +339,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 3,
+            funcId: 9,
             port: port_,
           );
         },
@@ -188,7 +368,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 4,
+            funcId: 10,
             port: port_,
           );
         },
@@ -207,6 +387,98 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "stop_helper_session", argNames: []);
 
   @override
+  List<TariffPreset> crateApiTariffPresets() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 11)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_tariff_preset,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiTariffPresetsConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiTariffPresetsConstMeta =>
+      const TaskConstMeta(debugName: "tariff_presets", argNames: []);
+
+  @override
+  TodaySummary crateApiTodaySummary() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_today_summary,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiTodaySummaryConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiTodaySummaryConstMeta =>
+      const TaskConstMeta(debugName: "today_summary", argNames: []);
+
+  @override
+  String? crateApiValidateNightData({required NightDataSettings nightData}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_night_data_settings(nightData, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiValidateNightDataConstMeta,
+        argValues: [nightData],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiValidateNightDataConstMeta => const TaskConstMeta(
+    debugName: "validate_night_data",
+    argNames: ["nightData"],
+  );
+
+  @override
+  String? crateApiValidatePolicy({required PolicySummary policy}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_box_autoadd_policy_summary(policy, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiValidatePolicyConstMeta,
+        argValues: [policy],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiValidatePolicyConstMeta =>
+      const TaskConstMeta(debugName: "validate_policy", argNames: ["policy"]);
+
+  @override
   Stream<HelperStatus> crateApiWatchStatus() {
     final sink = RustStreamSink<HelperStatus>();
     unawaited(
@@ -218,7 +490,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 5,
+              funcId: 15,
               port: port_,
             );
           },
@@ -259,9 +531,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  AppSettings dco_decode_app_settings(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return AppSettings(
+      policy: dco_decode_policy_summary(arr[0]),
+      nightData: dco_decode_night_data_settings(arr[1]),
+    );
+  }
+
+  @protected
   bool dco_decode_bool(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as bool;
+  }
+
+  @protected
+  AppSettings dco_decode_box_autoadd_app_settings(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_app_settings(raw);
+  }
+
+  @protected
+  NightDataSettings dco_decode_box_autoadd_night_data_settings(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_night_data_settings(raw);
   }
 
   @protected
@@ -301,11 +597,71 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<TariffPreset> dco_decode_list_tariff_preset(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_tariff_preset).toList();
+  }
+
+  @protected
+  List<TimeWindow> dco_decode_list_time_window(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_time_window).toList();
+  }
+
+  @protected
+  LoadedSettings dco_decode_loaded_settings(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return LoadedSettings(
+      settings: dco_decode_app_settings(arr[0]),
+      resetNotice: dco_decode_opt_String(arr[1]),
+    );
+  }
+
+  @protected
+  NightDataSettings dco_decode_night_data_settings(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return NightDataSettings(
+      presetId: dco_decode_String(arr[0]),
+      window: dco_decode_time_window(arr[1]),
+      nightlyBudgetMb: dco_decode_u_64(arr[2]),
+      neverPaidData: dco_decode_bool(arr[3]),
+      timezone: dco_decode_String(arr[4]),
+    );
+  }
+
+  @protected
+  NightDataStatus dco_decode_night_data_status(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return NightDataStatus(
+      openNow: dco_decode_bool(arr[0]),
+      windowStart: dco_decode_opt_String(arr[1]),
+      windowEnd: dco_decode_opt_String(arr[2]),
+      budgetLeftBytes: dco_decode_u_64(arr[3]),
+      budgetTotalBytes: dco_decode_u_64(arr[4]),
+    );
+  }
+
+  @protected
+  String? dco_decode_opt_String(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_String(raw);
+  }
+
+  @protected
   PolicySummary dco_decode_policy_summary(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return PolicySummary(
       acceptJobs: dco_decode_bool(arr[0]),
       cpuBudgetPercent: dco_decode_u_8(arr[1]),
@@ -315,7 +671,59 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       minBatteryPercent: dco_decode_u_8(arr[5]),
       maxTaskMinutes: dco_decode_u_64(arr[6]),
       pauseOnUserActivity: dco_decode_bool(arr[7]),
+      idleMinutes: dco_decode_u_32(arr[8]),
+      timezone: dco_decode_String(arr[9]),
+      hours: dco_decode_list_time_window(arr[10]),
     );
+  }
+
+  @protected
+  TariffPreset dco_decode_tariff_preset(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return TariffPreset(
+      id: dco_decode_String(arr[0]),
+      window: dco_decode_time_window(arr[1]),
+    );
+  }
+
+  @protected
+  TimeWindow dco_decode_time_window(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return TimeWindow(
+      days: dco_decode_list_prim_u_8_strict(arr[0]),
+      startMinute: dco_decode_u_16(arr[1]),
+      endMinute: dco_decode_u_16(arr[2]),
+    );
+  }
+
+  @protected
+  TodaySummary dco_decode_today_summary(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return TodaySummary(
+      helpingSeconds: dco_decode_u_64(arr[0]),
+      jobsDone: dco_decode_u_64(arr[1]),
+    );
+  }
+
+  @protected
+  int dco_decode_u_16(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as int;
+  }
+
+  @protected
+  int dco_decode_u_32(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as int;
   }
 
   @protected
@@ -359,9 +767,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  AppSettings sse_decode_app_settings(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_policy = sse_decode_policy_summary(deserializer);
+    var var_nightData = sse_decode_night_data_settings(deserializer);
+    return AppSettings(policy: var_policy, nightData: var_nightData);
+  }
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getUint8() != 0;
+  }
+
+  @protected
+  AppSettings sse_decode_box_autoadd_app_settings(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_app_settings(deserializer));
+  }
+
+  @protected
+  NightDataSettings sse_decode_box_autoadd_night_data_settings(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_night_data_settings(deserializer));
   }
 
   @protected
@@ -401,6 +833,87 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<TariffPreset> sse_decode_list_tariff_preset(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <TariffPreset>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_tariff_preset(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<TimeWindow> sse_decode_list_time_window(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <TimeWindow>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_time_window(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  LoadedSettings sse_decode_loaded_settings(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_settings = sse_decode_app_settings(deserializer);
+    var var_resetNotice = sse_decode_opt_String(deserializer);
+    return LoadedSettings(settings: var_settings, resetNotice: var_resetNotice);
+  }
+
+  @protected
+  NightDataSettings sse_decode_night_data_settings(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_presetId = sse_decode_String(deserializer);
+    var var_window = sse_decode_time_window(deserializer);
+    var var_nightlyBudgetMb = sse_decode_u_64(deserializer);
+    var var_neverPaidData = sse_decode_bool(deserializer);
+    var var_timezone = sse_decode_String(deserializer);
+    return NightDataSettings(
+      presetId: var_presetId,
+      window: var_window,
+      nightlyBudgetMb: var_nightlyBudgetMb,
+      neverPaidData: var_neverPaidData,
+      timezone: var_timezone,
+    );
+  }
+
+  @protected
+  NightDataStatus sse_decode_night_data_status(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_openNow = sse_decode_bool(deserializer);
+    var var_windowStart = sse_decode_opt_String(deserializer);
+    var var_windowEnd = sse_decode_opt_String(deserializer);
+    var var_budgetLeftBytes = sse_decode_u_64(deserializer);
+    var var_budgetTotalBytes = sse_decode_u_64(deserializer);
+    return NightDataStatus(
+      openNow: var_openNow,
+      windowStart: var_windowStart,
+      windowEnd: var_windowEnd,
+      budgetLeftBytes: var_budgetLeftBytes,
+      budgetTotalBytes: var_budgetTotalBytes,
+    );
+  }
+
+  @protected
+  String? sse_decode_opt_String(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_String(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   PolicySummary sse_decode_policy_summary(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_acceptJobs = sse_decode_bool(deserializer);
@@ -411,6 +924,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_minBatteryPercent = sse_decode_u_8(deserializer);
     var var_maxTaskMinutes = sse_decode_u_64(deserializer);
     var var_pauseOnUserActivity = sse_decode_bool(deserializer);
+    var var_idleMinutes = sse_decode_u_32(deserializer);
+    var var_timezone = sse_decode_String(deserializer);
+    var var_hours = sse_decode_list_time_window(deserializer);
     return PolicySummary(
       acceptJobs: var_acceptJobs,
       cpuBudgetPercent: var_cpuBudgetPercent,
@@ -420,7 +936,54 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       minBatteryPercent: var_minBatteryPercent,
       maxTaskMinutes: var_maxTaskMinutes,
       pauseOnUserActivity: var_pauseOnUserActivity,
+      idleMinutes: var_idleMinutes,
+      timezone: var_timezone,
+      hours: var_hours,
     );
+  }
+
+  @protected
+  TariffPreset sse_decode_tariff_preset(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_id = sse_decode_String(deserializer);
+    var var_window = sse_decode_time_window(deserializer);
+    return TariffPreset(id: var_id, window: var_window);
+  }
+
+  @protected
+  TimeWindow sse_decode_time_window(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_days = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_startMinute = sse_decode_u_16(deserializer);
+    var var_endMinute = sse_decode_u_16(deserializer);
+    return TimeWindow(
+      days: var_days,
+      startMinute: var_startMinute,
+      endMinute: var_endMinute,
+    );
+  }
+
+  @protected
+  TodaySummary sse_decode_today_summary(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_helpingSeconds = sse_decode_u_64(deserializer);
+    var var_jobsDone = sse_decode_u_64(deserializer);
+    return TodaySummary(
+      helpingSeconds: var_helpingSeconds,
+      jobsDone: var_jobsDone,
+    );
+  }
+
+  @protected
+  int sse_decode_u_16(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getUint16();
+  }
+
+  @protected
+  int sse_decode_u_32(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return deserializer.buffer.getUint32();
   }
 
   @protected
@@ -473,9 +1036,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_app_settings(AppSettings self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_policy_summary(self.policy, serializer);
+    sse_encode_night_data_settings(self.nightData, serializer);
+  }
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putUint8(self ? 1 : 0);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_app_settings(
+    AppSettings self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_app_settings(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_night_data_settings(
+    NightDataSettings self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_night_data_settings(self, serializer);
   }
 
   @protected
@@ -517,6 +1105,76 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_tariff_preset(
+    List<TariffPreset> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_tariff_preset(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_time_window(
+    List<TimeWindow> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_time_window(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_loaded_settings(
+    LoadedSettings self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_app_settings(self.settings, serializer);
+    sse_encode_opt_String(self.resetNotice, serializer);
+  }
+
+  @protected
+  void sse_encode_night_data_settings(
+    NightDataSettings self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.presetId, serializer);
+    sse_encode_time_window(self.window, serializer);
+    sse_encode_u_64(self.nightlyBudgetMb, serializer);
+    sse_encode_bool(self.neverPaidData, serializer);
+    sse_encode_String(self.timezone, serializer);
+  }
+
+  @protected
+  void sse_encode_night_data_status(
+    NightDataStatus self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.openNow, serializer);
+    sse_encode_opt_String(self.windowStart, serializer);
+    sse_encode_opt_String(self.windowEnd, serializer);
+    sse_encode_u_64(self.budgetLeftBytes, serializer);
+    sse_encode_u_64(self.budgetTotalBytes, serializer);
+  }
+
+  @protected
+  void sse_encode_opt_String(String? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_String(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_policy_summary(PolicySummary self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bool(self.acceptJobs, serializer);
@@ -527,6 +1185,43 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_8(self.minBatteryPercent, serializer);
     sse_encode_u_64(self.maxTaskMinutes, serializer);
     sse_encode_bool(self.pauseOnUserActivity, serializer);
+    sse_encode_u_32(self.idleMinutes, serializer);
+    sse_encode_String(self.timezone, serializer);
+    sse_encode_list_time_window(self.hours, serializer);
+  }
+
+  @protected
+  void sse_encode_tariff_preset(TariffPreset self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.id, serializer);
+    sse_encode_time_window(self.window, serializer);
+  }
+
+  @protected
+  void sse_encode_time_window(TimeWindow self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_prim_u_8_strict(self.days, serializer);
+    sse_encode_u_16(self.startMinute, serializer);
+    sse_encode_u_16(self.endMinute, serializer);
+  }
+
+  @protected
+  void sse_encode_today_summary(TodaySummary self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self.helpingSeconds, serializer);
+    sse_encode_u_64(self.jobsDone, serializer);
+  }
+
+  @protected
+  void sse_encode_u_16(int self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putUint16(self);
+  }
+
+  @protected
+  void sse_encode_u_32(int self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    serializer.buffer.putUint32(self);
   }
 
   @protected
