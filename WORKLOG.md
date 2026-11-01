@@ -15,6 +15,27 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (app-agent) · `feat/app-skeleton`
+
+- **Asked:** Phase 0 task 0.1: install toolchains, create the `core/` and `server/` Cargo workspaces, add
+  `rust-toolchain.toml`, `deny.toml` and CI for Windows and Linux.
+- **Done:** installed rustup 1.29.1, Rust 1.99.1 (MSVC), MSVC Build Tools 2022 17.14 (minimal: x64 tools + Win11 SDK,
+  at `D:\BuildTools`), cargo-deny 0.20.2, Flutter 3.47.9 (`C:\src\flutter`, added to user PATH). Created
+  `core/` (nc-protocol, nc-identity, nc-policy, nc-tariff, nc-store, nc-blob, nc-exec, nc-net, nc-bridge libs;
+  nc-agent bin; nc-cli bin `nc`) and `server/` (nc-coordinator, nc-relay bins), each with a crate doc comment and one
+  test. Shared `[workspace.package]` (edition 2021, MIT, rust-version 1.99), placeholder `[workspace.dependencies]`,
+  `[workspace.lints]` with `unsafe_code = "deny"`. `proto/` README + placeholder `nc/v1/common.proto`; `infra/`
+  and `app/` READMEs; `spikes/phase0/REPORT.md` with headings 0.1–0.10 and the 0.1 section filled in.
+  `rust-toolchain.toml`, `deny.toml`, `.github/workflows/ci.yml` (actions pinned by SHA). TASKS.md row 0.1 set to
+  review.
+- **Decisions:** app-agent: `deny`, not `forbid`, for `unsafe_code`, so nc-exec/nc-identity can allow it per module.
+  Clippy `unwrap_used`/`expect_used` set to warn (errors in CI through `-D warnings`). Build Tools went to D: because C:
+  is short of space.
+- **Verified:** fmt ok, clippy clean, tests core 11/11 and server 2/2 passed, `cargo deny check` ok for both. The first
+  Build Tools install failed with 0x80070070 (disk full on C:). CI result: see the hand-back.
+- **Not done / open:** `flutter doctor` still flags Visual Studio as missing "C++ CMake tools"; this blocks Flutter
+  Windows builds (0.8) and needs space on C: (about 1.4 GB free now). No Android SDK (0.9).
+
 ## 2026-11-01 · Claude Code (coordinator) · `main`
 
 - **Asked:** start Phase 0; give the owner tasks for Codex that don't collide with the Claude agents; keep a log.

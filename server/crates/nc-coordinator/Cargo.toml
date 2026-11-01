@@ -1,0 +1,15 @@
+[package]
+name = "nc-coordinator"
+description = "Axum control plane: accounts, registry, scheduler, leases and verifier."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "nc-coordinator"
+path = "src/main.rs"
+
+[lints]
+workspace = true

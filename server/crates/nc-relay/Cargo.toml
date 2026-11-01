@@ -1,0 +1,15 @@
+[package]
+name = "nc-relay"
+description = "libp2p relay v2 with short-lived tokens and quotas."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "nc-relay"
+path = "src/main.rs"
+
+[lints]
+workspace = true
