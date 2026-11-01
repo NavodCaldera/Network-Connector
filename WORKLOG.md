@@ -15,6 +15,40 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (net-agent) · `feat/net-p2p` + `feat/net-server`
+
+- **Asked:** Phase 0 tasks 0.5 (libp2p two-ISP test kit), 0.6 (mDNS + QR pairing in `nc-net`), 0.7 (minimal
+  coordinator + relay, local Docker).
+- **Done:**
+  - `feat/net-p2p`: `core/crates/nc-net` on rust-libp2p 0.57.1 (pinned): QUIC + TCP/Noise/Yamux, relay client,
+    AutoNAT, DCUtR, identify, ping, mDNS. QR pairing with nonces, HMAC proofs bound to both peer keys and a 6-digit
+    SAS confirmed on both sides; single-use 10-min offers, lock after 5 bad proofs. Trust store keyed by peer id
+    (optional file). Connection gate closes unpaired peers; mDNS only dials trusted peers. Stream API for Core keyed
+    by peer id (`open_stream`/`accept`). Ladder rung per connection and direct/relayed byte counters. Probe binary
+    `nc-netprobe` (`id`, `relay`, `listen`, `dial` + throughput) and `spikes/phase0/net/RUN.md` for the owner.
+  - `feat/net-server`: `nc-coordinator` (Axum + sqlx/PostgreSQL, migrations; signed requests with replay check,
+    enrolment secret, 16 KiB cap, schema validation, one error format; register, heartbeat, lease
+    request/complete with idempotent attempt-checked commit, relay token). `nc-relay` (relay v2, coordinator
+    tokens bound to peer id, per-peer and per-account quotas, refuses to start without a token key).
+    `infra/docker-compose.yml`, `infra/Dockerfile`, `.env.example`, README.
+  - REPORT.md sections 0.5 (local results, owner run pending), 0.6, 0.7; TASKS.md rows 0.5-0.7 set to review.
+- **Decisions (net-agent):** coordinator wire structs live in `nc-coordinator/src/api.rs` with TODO(proto)
+  (requested move to `proto/`). Phase 0 enrolment uses an owner secret instead of OIDC. Relay byte quota charges
+  each circuit its full cap (libp2p does not report circuit bytes). A relay circuit is closed 3 s after a direct
+  path exists, never during pairing. The probe binds 0.0.0.0 by default (needed for LAN/internet tests; `--bind`
+  narrows it). Cargo home, target and TEMP were put on D: because C: was full.
+- **Verified (real output):** core: `cargo fmt --check` ok, `cargo clippy --all-targets -D warnings` clean,
+  `cargo test` all passed (nc-net: unit 6, loopback 9, relayed 1). server: fmt ok, clippy clean, `cargo test`
+  13 passed + 1 ignored; compose stack up, `lease_cycle -- --ignored` passed, psql shows 1 committed task.
+  Probe self-test on loopback: relay reservation, relayed connection, pairing, DCUtR ok, test over direct path.
+  `cargo deny check`: bans/licenses/sources ok in both workspaces; **advisories FAILED** in both on
+  RUSTSEC-2024-0436 (`paste` unmaintained, via libp2p `if-watch` -> `netlink-packet-core`, Linux only).
+- **Not done / open:** two-ISP measurements (owner run, `spikes/phase0/net/RUN.md`; test 3 needs a reachable relay,
+  and a cloud VM needs owner approval). mDNS between two physical PCs not run. TLS/443 fallback rung not
+  implemented. No TLS cert tested on the coordinator. Relay not exercised from `nc-net` through the compose
+  ports. `deny.toml` needs an ignore entry for RUSTSEC-2024-0436 (App agent owns it). During the work the PC ran
+  out of memory and C: space several times (rustc and the linker crashed); builds used `-j 1`/`-j 2`.
+
 ## 2026-11-01 · Claude Code (coordinator) · `main`
 
 - **Asked:** review Codex task 1.P1 (nc-policy).

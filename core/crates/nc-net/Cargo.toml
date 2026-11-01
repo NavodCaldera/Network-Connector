@@ -7,5 +7,45 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[dependencies]
+# Pinned to the latest release at the time of task 0.6 (2026-11-01).
+libp2p = { version = "=0.57.1", default-features = false, features = [
+    "tokio",
+    "quic",
+    "tcp",
+    "noise",
+    "yamux",
+    "mdns",
+    "relay",
+    "autonat",
+    "dcutr",
+    "identify",
+    "ping",
+    "macros",
+    "ed25519",
+    "dns",
+] }
+libp2p-stream = "=0.5.0-alpha"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+futures = "0.3"
+thiserror = "2"
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hmac = "0.12"
+sha2 = "0.10"
+rand = "0.8"
+base64 = "0.22"
+subtle = "2"
+
+# Probe binary (spike kit, task 0.5) only.
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[bin]]
+name = "nc-netprobe"
+path = "src/bin/nc-netprobe.rs"
+
 [lints]
 workspace = true
