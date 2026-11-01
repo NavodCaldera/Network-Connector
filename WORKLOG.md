@@ -15,6 +15,17 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (coordinator) · `main`
+
+- **Asked:** review and merge task 0.1; start the parallel Phase 0 tasks.
+- **Done:** reviewed app-agent hand-back for 0.1 (40 files, skeleton only), merged `feat/app-skeleton` into `main`
+  (053ab24; TASKS.md/WORKLOG.md conflicts resolved with the branch versions, which already contained the
+  coordinator commit). Set user env `CARGO_TARGET_DIR=D:
+c-target` because C: has 1.4 GB and E: 3.8 GB free.
+  TASKS.md: 0.1 done; 0.4 ready for Codex; 0.2, 0.3, 0.5–0.7, 0.9a in progress; 0.8 blocked.
+- **Verified:** relied on the agent's CI run 41292475565 (all 6 jobs green) and its local results; did not re-run.
+- **Not done / open:** 0.8 blocked until the owner frees ≥3 GB on C: and the VS "C++ CMake tools" component is added.
+
 ## 2026-11-01 · Claude Code (app-agent) · `feat/app-skeleton`
 
 - **Asked:** Phase 0 task 0.1: install toolchains, create the `core/` and `server/` Cargo workspaces, add
