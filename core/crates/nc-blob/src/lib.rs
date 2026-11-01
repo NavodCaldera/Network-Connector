@@ -1,16 +1,17 @@
-//! `nc-blob`: Chunked, hashed, resumable and encrypted blob cache.
+//! Synchronous encrypted, resumable local blob storage.
 //!
-//! Phase 0 skeleton (PLAN.md §4). Real functionality arrives in later tasks.
+//! The caller owns keys, authenticates manifests and enforces policy/tariff limits.
+//! This local manifest is not a replacement for the protocol's wire messages.
+//! See the crate README for storage format, locking and durability boundaries.
+#![doc = include_str!("../README.md")]
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
 
-/// Name of this crate, used by the skeleton test and diagnostics.
-pub const CRATE_NAME: &str = "nc-blob";
+mod model;
+mod store;
+pub use model::*;
+pub use store::*;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn crate_name_matches() {
-        assert_eq!(CRATE_NAME, "nc-blob");
-    }
-}
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests;
