@@ -18,8 +18,8 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 0.7 | Coordinator + relay (Docker) | net-agent (Claude) | `feat/net-server` | `server/`, `infra/` | in progress |
 | 0.8 | Flutter shell + bridge | app-agent (Claude) | `feat/app-shell` | `app/`, `core/crates/nc-bridge` | blocked (C: disk space, VS CMake component) |
 | 0.9a | Android runtime footprint + foreground-service spike | app-agent (Claude) | `feat/app-android` | `spikes/phase0/android/` | in progress |
-| 0.9b | Google Play policy assessment (document) | **Codex** | `feat/codex-mobile-research` | `spikes/phase0/mobile-policy.md` only | todo |
-| 0.10 | iOS feasibility (document) | **Codex** | `feat/codex-mobile-research` | `spikes/phase0/ios-feasibility.md` only | todo |
+| 0.9b | Google Play policy assessment (document) | **Codex** | `feat/codex-mobile-research` | `spikes/phase0/mobile-policy.md` only | done |
+| 0.10 | iOS feasibility (document) | **Codex** | `feat/codex-mobile-research` | `spikes/phase0/ios-feasibility.md` only | done |
 
 ## Rules for Codex work
 

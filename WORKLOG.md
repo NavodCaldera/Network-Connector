@@ -17,6 +17,26 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ## 2026-11-01 · Claude Code (coordinator) · `main`
 
+- **Asked:** review Codex's tasks 0.9b and 0.10 and plan Codex's next task.
+- **Done:** reviewed `feat/codex-mobile-research` (c5345e3) and merged it into `main`. The TASKS.md conflict was
+  resolved by keeping main's board and marking 0.9b and 0.10 done. Added `.claude/worktrees/` to `.gitignore`.
+- **Review result: PASS.** Only the 4 allowed files changed. Every claim cites an official source with a check date,
+  and unknowns are stated rather than guessed. Verdicts: iOS requester **GO**, bounded helper **GO-WITH-LIMITS**
+  (bundled kernels only), overnight helper **NO-GO**; Android helper sessions **GO-WITH-LIMITS** (`specialUse`
+  FGS, interpreted Wasm only, no mining). These match PLAN.md §1. No links were opened to re-verify them.
+- **Not done / open:** the research does not replace real-device checks (0.9a is still running).
+
+## 2026-11-01 · Codex · `feat/codex-mobile-research`
+
+- **Commits:** this commit (Phase 0 mobile research hand-back).
+- **Asked:** research tasks 0.9b and 0.10 only in a separate checkout; commit and push without a PR or merge.
+- **Done:** added `spikes/phase0/ios-feasibility.md` and `spikes/phase0/mobile-policy.md` with linked, dated official evidence, explicit unknowns, policy/runtime distinctions and conditional role decisions. Set only TASKS.md rows 0.9b/0.10 to review.
+- **Decisions:** Codex recommendation: iPhone requester/monitor GO, bounded bundled-kernel helper GO-WITH-LIMITS, unattended overnight helper NO-GO; Android sessions GO-WITH-LIMITS pending runtime containment and Play service review. No security invariant relaxed.
+- **Verified:** cloned into `E:\Projects\New\nc-codex`, created the requested branch, read AGENT.md/PLAN.md/TASKS.md, checked current official Apple/Android/Play/Wasmtime/WAMR sources via web tools on 2026-11-01. Don't Kill My App used only as the requested secondary OEM source. `git diff --check` passed; TASKS.md diff contains only the two status edits. Git emitted a nonfatal permission warning reading the user's global ignore file.
+- **Not done / open:** no code/workspace/app touched, so cargo fmt/clippy/test and Flutter checks are not applicable. No phone/Mac builds, benchmarks, sandbox validation or store approvals; wasm3 current feasibility unknown under the permitted sources. Task 0.9a remains with app-agent. Coordinator must review before merge.
+
+## 2026-11-01 · Claude Code (coordinator) · `main`
+
 - **Asked:** review and merge task 0.1; start the parallel Phase 0 tasks.
 - **Done:** reviewed app-agent hand-back for 0.1 (40 files, skeleton only), merged `feat/app-skeleton` into `main`
   (053ab24; TASKS.md/WORKLOG.md conflicts resolved with the branch versions, which already contained the
