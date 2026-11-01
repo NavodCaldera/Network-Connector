@@ -15,6 +15,30 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Codex · `feat/codex-blob`
+
+- **Commits:** this commit (task 1.P2 implementation and hand-back).
+- **Asked:** build a synchronous, chunked, content-addressed, resumable encrypted local blob cache.
+- **Done:** nc-blob model/store modules, documented storage/API contract, 15 unit/property tests and one
+  doctest; dependency lock update; TASKS.md 1.P2 set to review. SHA-256 manifests, XChaCha20-Poly1305,
+  per-blob/index authentication, bounded reads, atomic publication, quota, root locking and GC.
+- **Decisions:** put/has/missing take an explicit key so writes encrypt and resume authenticates. Quota
+  includes staging and encryption overhead; replacement requires temporary headroom. Private local root
+  required; manifests and keys are caller-managed. All filenames are hex hashes. C: used for tool caches,
+  target and temp paths per owner rule. No network wire schema added.
+- **Verified:** cargo fmt --all --check passed; whole-workspace cargo clippy --all-targets -- -D warnings
+  passed; cargo test -p nc-blob passed (15 tests plus one doctest, including two 48-case properties);
+  cargo deny check passed (10 duplicate-version warnings; advisories/bans/licenses/sources all ok).
+  Initial 13-test suite passed. A subsequent plaintext-copy refactor introduced a tuple typo (E0599/E0308);
+  corrected it and reran final Clippy and blob tests successfully. Full workspace cargo test passed (141 tests and 3 doctests; one existing launch-measurement test ignored).
+- **Requests:** local caret dependencies not in workspace.dependencies: chacha20poly1305 0.10.1,
+  serde 1 (derive), serde_json 1 (tests). Existing shared dependencies inherit workspace versions.
+- **Not done / open:** Linux/macOS execution and real power-loss tests not performed. Atomic rename is not
+  a power-loss durability guarantee. Owner policy/tariff enforcement and secure key/manifest persistence
+  remain caller responsibilities. Kept-blob crash staging counts toward quota until blob removal.
+
+---
+
 ## 2026-11-01 · Claude Code (coordinator) · `main`
 
 - **Asked:** review Codex task 1.P1 (nc-policy).

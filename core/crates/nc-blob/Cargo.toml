@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "nc-blob"
 description = "Chunked, hashed, resumable and encrypted blob cache."
 version.workspace = true
@@ -6,6 +6,20 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish = false
+
+[dependencies]
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+zeroize = { workspace = true }
+getrandom = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+chacha20poly1305 = "0.10.1"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+proptest = { workspace = true }
+serde_json = "1"
 
 [lints]
 workspace = true
