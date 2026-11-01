@@ -15,6 +15,22 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (coordinator, local Windows) · `platform/v1`
+
+- **Asked:** on a new branch, write AGENT.md and PLAN.md for the new platform and create three agents to build it.
+- **Done:** created branch `platform/v1` from `main`. Rewrote `PLAN.md` (goal, device roles, decided stack, hybrid
+  architecture, repo layout, security model, night-data tariff scheduling, owner control, phases 0–3, engineering
+  standards) and `AGENT.md` (11 security invariants, work method, Phase 0 task split, ownership and contracts).
+  New agents `.claude/agents/{core,net,app}-agent.md`; the Python-era `link-agent`/`perf-agent` were removed here
+  (still on `legacy/python-v0.3`). Banner added to HANDOFF.md.
+- **Decisions:** owner: adopt the researched stack, LAN + internet, industry grade, new branch. Coordinator:
+  desktop + Raspberry Pi MVP before Android, iOS last; the Python app stays on this branch as read-only reference;
+  three agents split by core / networking + server / app + CI.
+- **Verified:** documents only; no code built. `cargo`, `rustc`, `flutter` are **not installed** on this PC
+  (checked with Get-Command). Git and Docker are present.
+- **Not done / open:** Phase 0 not started. Needs the Rust and Flutter toolchains installed first (task 0.1).
+  `main` was not changed in this step because the owner asked for a new branch.
+
 ## 2026-11-01 · Claude Code (local, Windows) · `main`, `legacy/python-v0.3`
 
 - **Asked:** keep the current Python version safe in a branch; do not start on new technologies yet; give a

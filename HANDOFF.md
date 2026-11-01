@@ -1,5 +1,10 @@
 # Handoff: what is left to do
 
+> **Branch `platform/v1` (2026-11-01):** the project is being rebuilt as a cross-platform platform (Rust core,
+> Flutter UI, Wasm jobs, LAN + internet). The new design is in [PLAN.md](PLAN.md), the rules and the three agents
+> (core, net, app) are in [AGENT.md](AGENT.md). Nothing has been built yet: no Rust or Flutter toolchain is installed
+> on this PC. The rest of this file describes the legacy Python app, which is kept on `legacy/python-v0.3`.
+
 > **2026-11-01: stripped down.** On branch `simple-hello` the app only starts or joins a Wi-Fi Direct group and
 > exchanges a plain-TCP Hello (`network_connector/{cli,hello,wifidirect}.py`, see README). Everything below describes
 > the full 0.3.0 app, which is kept on `claude/great-davinci-bch39n`. It does not apply to this branch, and that
