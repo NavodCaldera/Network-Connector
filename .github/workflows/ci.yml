@@ -68,7 +68,7 @@ jobs:
       contents: read
     env:
       COMPOSE_PROJECT_NAME: nc-stack-${{ github.run_id }}-${{ github.run_attempt }}
-      CARGO_TARGET_DIR: ${{ runner.temp }}/nc-target
+      CARGO_TARGET_DIR: /tmp/nc-stack-target
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

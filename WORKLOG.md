@@ -33,7 +33,10 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 - **Verified:** bash -n and git diff --check passed; Docker Bake --print confirmed both targets, root
   context, Dockerfile and GHA cache options. Checked every workflow action uses a full 40-hex SHA;
   verified Bash file LF bytes. Action release commits resolved directly from official GitHub APIs.
-  Actual Actions verification is pending the first authorized branch push; results will be recorded here.
+  First push created run 41341498628 but no jobs: runner.temp was used in job-level env, where the
+  runner context is unavailable (official GitHub contexts reference). Changed the target to a fixed
+  Linux /tmp path. A local actionlint download failed because C: is full; no files were deleted and no
+  caches moved. GitHub-hosted execution is being retried after the workflow correction.
 - **Not done / open:** GitHub-hosted stack execution not yet run; do not treat static checks as a CI pass.
 
 ## 2026-11-02 - Claude (coordinator) - `main`
