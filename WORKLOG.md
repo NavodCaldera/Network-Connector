@@ -26,9 +26,9 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
   `.controller-debug`, `.ryzen-test`, three `.test-app-*` folders.
 - **Decisions:** owner: clean `main`. Coordinator: keep LICENSE, CLAUDE.md, WORKLOG.md, .gitattributes.
 - **Verified:** `git status` clean after commit; top-level now holds only docs, LICENSE and `.claude/`.
-- **Not done / open:** 14 local, git-ignored folders (`.pytest_cache`, `.test-app`, `.test-app2`, `.test-policy*`,
-  `.test-stop`, `.test-tmp-*`) refused deletion with "Access is denied" even after `icacls` (ACL-protected by the old
-  app); they need an elevated `takeown`. The other PC still pulling `main` will no longer get the Python app; it must
+- **Follow-up:** the 14 ACL-locked local folders (`.pytest_cache`, `.test-*`) were then deleted with an elevated
+  `takeown` + `icacls /reset` (owner approved the UAC prompt). Project folder now holds only the tracked files.
+- **Not done / open:** The other PC still pulling `main` will no longer get the Python app; it must
   switch to `legacy/python-v0.3`.
 
 ## 2026-11-01 · Claude Code (coordinator, local Windows) · `platform/v1`
