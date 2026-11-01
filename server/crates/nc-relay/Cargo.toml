@@ -7,9 +7,40 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "nc-relay"
 path = "src/main.rs"
+
+[dependencies]
+libp2p = { version = "=0.57.1", default-features = false, features = [
+    "tokio",
+    "quic",
+    "tcp",
+    "noise",
+    "yamux",
+    "relay",
+    "identify",
+    "ping",
+    "macros",
+    "ed25519",
+] }
+libp2p-stream = "=0.5.0-alpha"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2"
+hex = "0.4"
+base64 = "0.22"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
 
 [lints]
 workspace = true

@@ -1,35 +1,28 @@
-﻿# Task board
+# Task board
 
 Who is doing what, so Claude agents and Codex never edit the same files. Update this file when a task starts,
 finishes or changes owner. Details of each change go in [WORKLOG.md](WORKLOG.md).
 
-Status: `todo` Â· `in progress` Â· `review` (waiting for coordinator check) Â· `done` Â· `blocked`
+Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `done` · `blocked`
 
-## Phase 0 (PLAN.md Â§8)
+## Phase 0 (PLAN.md §8)
 
 | Task | What | Owner | Branch | Files it may touch | Status |
 |---|---|---|---|---|---|
 | 0.1 | Toolchains, Cargo workspaces, CI | app-agent (Claude) | `feat/app-skeleton` | repo skeleton, `.github/`, `rust-toolchain.toml`, `deny.toml` | done |
-| 0.2 | Wasmtime executor + Windows sandbox | core-agent (Claude) | `feat/core-exec` | `core/crates/nc-exec` | done |
-| 0.3 | Identity, manifests, lease store | core-agent (Claude) | `feat/core-store` | `proto/`, `core/crates/nc-{identity,protocol,store}` | done |
-| 0.4 | Tariff profiles, planner, simulator | **Codex** | `feat/codex-tariff` | `core/crates/nc-tariff` only | done |
-| 0.5 | libp2p direct/DCUtR/relay test kit | net-agent (Claude) | `feat/net-p2p` | `core/crates/nc-net`, `spikes/phase0/net/` | in progress |
-| 0.6 | mDNS + QR pairing | net-agent (Claude) | `feat/net-p2p` | `core/crates/nc-net` | in progress |
-| 0.7 | Coordinator + relay (Docker) | net-agent (Claude) | `feat/net-server` | `server/`, `infra/` | in progress |
+| 0.2 | Wasmtime executor + Windows sandbox | core-agent (Claude) | `feat/core-exec` | `core/crates/nc-exec` | in progress |
+| 0.3 | Identity, manifests, lease store | core-agent (Claude) | `feat/core-store` | `proto/`, `core/crates/nc-{identity,protocol,store}` | in progress |
+| 0.4 | Tariff profiles, planner, simulator | **Codex** | `feat/codex-tariff` | `core/crates/nc-tariff` only | todo (ready to start) |
+| 0.5 | libp2p direct/DCUtR/relay test kit | net-agent (Claude) | `feat/net-p2p` | `core/crates/nc-net`, `spikes/phase0/net/` | review (kit done; two-ISP owner run pending) |
+| 0.6 | mDNS + QR pairing | net-agent (Claude) | `feat/net-p2p` | `core/crates/nc-net` | review |
+| 0.7 | Coordinator + relay (Docker) | net-agent (Claude) | `feat/net-server` | `server/`, `infra/` | review |
 | 0.8 | Flutter shell + bridge | app-agent (Claude) | `feat/app-shell` | `app/`, `core/crates/nc-bridge` | blocked (C: disk space, VS CMake component) |
-| 0.9a | Android runtime footprint + foreground-service spike | app-agent (Claude) | `feat/app-android` | `spikes/phase0/android/` | in progress (code merged; APK build after tools move to C:, phone test by owner) |
-| 0.9b | Google Play policy assessment (document) | **Codex** | `feat/codex-mobile-research` | `spikes/phase0/mobile-policy.md` only | done |
-| 0.10 | iOS feasibility (document) | **Codex** | `feat/codex-mobile-research` | `spikes/phase0/ios-feasibility.md` only | done |
-
-## Phase 1 prep (pure libraries, no collisions with Phase 0)
-
-| Task | What | Owner | Branch | Files it may touch | Status |
-|---|---|---|---|---|---|
-| 1.P1 | Owner policy engine (`nc-policy`) | **Codex** | `feat/codex-policy` | `core/crates/nc-policy` only | done |
-| 1.P2 | Chunked, hashed, resumable, encrypted blob cache (`nc-blob`) | **Codex** | `feat/codex-blob` | `core/crates/nc-blob` only | todo (ready) |
+| 0.9a | Android runtime footprint + foreground-service spike | app-agent (Claude) | `feat/app-android` | `spikes/phase0/android/` | in progress |
+| 0.9b | Google Play policy assessment (document) | **Codex** | `feat/codex-mobile-research` | `spikes/phase0/mobile-policy.md` only | todo |
+| 0.10 | iOS feasibility (document) | **Codex** | `feat/codex-mobile-research` | `spikes/phase0/ios-feasibility.md` only | todo |
 
 ## Rules for Codex work
 
-- Same rules as the Claude agents: [AGENT.md](AGENT.md) Â§1 (security invariants, work log, hand-back format).
+- Same rules as the Claude agents: [AGENT.md](AGENT.md) §1 (security invariants, work log, hand-back format).
 - Codex never edits `main` or files outside its row. It pushes its branch; the coordinator (Claude) reviews,
   runs the checks and merges, then records the review result in WORKLOG.md.

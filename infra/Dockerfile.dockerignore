@@ -1,0 +1,5 @@
+# Build context is the repo root; send only what the server image needs (and never infra/.env).
+*
+!rust-toolchain.toml
+!server/
+server/target/
