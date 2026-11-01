@@ -25,7 +25,7 @@ Status: `todo` Â· `in progress` Â· `review` (waiting for coordinator check) 
 
 | Task | What | Owner | Branch | Files it may touch | Status |
 |---|---|---|---|---|---|
-| 1.P1 | Owner policy engine (`nc-policy`) | **Codex** | `feat/codex-policy` | `core/crates/nc-policy` only | todo |
+| 1.P1 | Owner policy engine (`nc-policy`) | **Codex** | `feat/codex-policy` | `core/crates/nc-policy` only | review |
 | 1.P2 | Chunked, hashed, resumable, encrypted blob cache (`nc-blob`) | **Codex** | `feat/codex-blob` | `core/crates/nc-blob` only | todo (after 1.P1) |
 
 ## Rules for Codex work
