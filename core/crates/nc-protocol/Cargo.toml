@@ -7,5 +7,18 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[dependencies]
+prost.workspace = true
+ed25519-dalek.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+prost-build.workspace = true
+protoc-bin-vendored.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+getrandom.workspace = true
+
 [lints]
 workspace = true

@@ -1,0 +1,59 @@
+// Task manifest: what a helper is asked to run. Owner: Core agent.
+//
+// Signing rule (nc-protocol): a SignedManifest carries the *exact encoded bytes* of a TaskManifest plus an
+// Ed25519 signature over "nc.v1.TaskManifest\0" || manifest_bytes. Verifiers check the signature over the bytes
+// they received and only then decode; nothing is ever re-encoded before verification.
+syntax = "proto3";
+
+package nc.v1;
+
+import "nc/v1/common.proto";
+
+// Resource limits for one attempt. A helper may run with lower limits than asked (owner policy wins) but never
+// higher.
+message Limits {
+  uint64 fuel = 1;
+  uint64 wall_ms = 2;
+  uint64 memory_bytes = 3;
+  uint64 stack_bytes = 4;
+  uint64 output_bytes = 5;
+  uint64 checkpoint_bytes = 6;
+}
+
+// One input blob, addressed by content hash.
+message InputRef {
+  bytes sha256 = 1;   // 32 bytes
+  uint64 size = 2;    // bytes
+}
+
+// How results are checked before commit (PLAN.md §5 "Verification (v1)").
+message Verifier {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    // Deterministic: `replicas` independent helpers must return the same result hash.
+    REPLICATE_EXACT = 1;
+    // A trusted verifier re-runs or checks the result.
+    TRUSTED_VERIFIER = 2;
+  }
+  Kind kind = 1;
+  uint32 replicas = 2;
+}
+
+message TaskManifest {
+  ProtocolVersion version = 1;
+  bytes task_id = 2;            // 16 bytes, unique per task
+  string profile = 3;           // execution profile, "cpu-core-v1"
+  bytes module_sha256 = 4;      // 32 bytes
+  bytes publisher_key = 5;      // Ed25519 public key of the module publisher (32 bytes)
+  bytes module_signature = 6;   // publisher signature over "nc.v1.module\0" || module_sha256 (64 bytes)
+  repeated InputRef inputs = 7;
+  Limits limits = 8;
+  Verifier verifier = 9;
+  int64 expires_at_unix_ms = 10;  // the manifest is refused after this instant
+}
+
+message SignedManifest {
+  bytes manifest = 1;     // encoded TaskManifest
+  bytes signer_key = 2;   // Ed25519 public key of the issuer (coordinator or requester device), 32 bytes
+  bytes signature = 3;    // 64 bytes
+}

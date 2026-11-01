@@ -15,6 +15,29 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (core-agent) · `feat/core-store` (based on `feat/core-exec`)
+
+- **Asked:** Phase 0 task 0.3: `nc-identity` (Ed25519 root key, software keystore + adapter trait, session certs),
+  `proto/` TaskManifest with prost + vendored protoc, `nc-protocol` manifest sign/verify, `nc-store` SQLite lease
+  state machine with property tests.
+- **Done:** `proto/nc/v1/manifest.proto`, `proto/nc/v1/identity.proto`. `nc-protocol`: `build.rs` (prost-build +
+  protoc-bin-vendored), `sign.rs` (domain-separated Ed25519, `verify_manifest`), tests incl. proptests.
+  `nc-identity`: `DeviceKeyStore`, `RootSigner`, `SoftwareKeyStore` (DPAPI on Windows, 0600 elsewhere, the only
+  `unsafe` is in `platform.rs` with SAFETY comments), session certs ≤ 24 h. `nc-store`: migrations, `Store` with
+  enqueue/lease_next/start/renew/upload/verify/commit/fail/expire_leases, unit + property tests. `nc-exec`:
+  `Ed25519Publishers` + `Job::from_manifest` (closes the 0.2 signature TODO). Workspace deps added. REPORT.md §0.3.
+  TASKS.md 0.3 → review.
+- **Decisions:** core-agent: signatures always cover the exact received bytes with a per-type domain prefix; nothing
+  is re-encoded before verification. Commit of an already-committed task by the same attempt returns
+  `AlreadyCommitted` (idempotent); any other attempt gets `StaleAttempt`. A corrupt key file is an error, never
+  replaced with a new key. Time is a parameter (`now_ms`) in the store so the tests are deterministic.
+- **Verified:** fmt, clippy `-D warnings`, `cargo test`, `cargo deny check`: see the hand-back and REPORT.md §0.3
+  (manifest 11, identity 9, lease 10 incl. 2 proptests × 300 cases, refusals 9). `tpmtool getdeviceinformation`:
+  TPM 2.0 (Intel) present and ready.
+- **Not done / open:** no hardware keystore adapter yet (TPM, Android, Secure Enclave); not checked whether the TPM
+  can hold Ed25519. Linux key file protection is only 0600. The unix code paths were not run on this PC (CI runs
+  them).
+
 ## 2026-11-01 · Claude Code (core-agent) · `feat/core-exec`
 
 - **Asked:** Phase 0 task 0.2: `nc-exec` Wasmtime executor (`cpu-core-v1`) with fuel, epoch, external watchdog,

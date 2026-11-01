@@ -12,6 +12,7 @@ name = "nc-exec-worker"
 path = "src/bin/nc-exec-worker.rs"
 
 [dependencies]
+nc-protocol = { path = "../nc-protocol" }
 thiserror.workspace = true
 sha2.workspace = true
 hex.workspace = true
@@ -33,6 +34,8 @@ windows = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+ed25519-dalek.workspace = true
+getrandom.workspace = true
 wat.workspace = true
 tempfile.workspace = true
 

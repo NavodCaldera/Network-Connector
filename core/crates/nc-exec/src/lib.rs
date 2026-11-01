@@ -1,7 +1,7 @@
 //! `nc-exec`: executor for other people's code (AGENT.md §1 rules 3–5).
 //!
 //! Layers, all required (if one cannot be set up the job is refused, never run with less):
-//! 1. module SHA-256 checked against the manifest, publisher signature checked by a [`ModuleVerifier`];
+//! 1. module SHA-256 checked against the manifest, publisher signature checked by a [`ModuleVerifier`] ([`Ed25519Publishers`]);
 //! 2. a separate, single-use `nc-exec-worker` process;
 //! 3. inside it, Wasmtime with profile `cpu-core-v1` ([`runtime`]): narrow `nc.*` host API only (no WASI),
 //!    fuel, epoch deadline, memory/table/instance limits, stack limit, output and checkpoint caps;
@@ -20,4 +20,4 @@ pub mod verify;
 
 pub use executor::{CancelToken, ExecError, Executor, ExecutorConfig, Job, Outcome, Termination};
 pub use limits::Limits;
-pub use verify::{sha256, ModuleVerifier, PublisherSignature};
+pub use verify::{sha256, Ed25519Publishers, ModuleVerifier, PublisherSignature};

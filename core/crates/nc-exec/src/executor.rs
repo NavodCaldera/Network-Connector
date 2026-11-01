@@ -51,6 +51,45 @@ pub struct Job {
     pub limits: Limits,
 }
 
+impl Job {
+    /// Build a job from a manifest that `nc_protocol::verify_manifest` has already accepted, plus the module and
+    /// input bytes fetched for it. The executor re-checks hash and publisher signature before running.
+    pub fn from_manifest(
+        m: &nc_protocol::pb::v1::TaskManifest,
+        module: Vec<u8>,
+        input: Vec<u8>,
+    ) -> Result<Self, ExecError> {
+        let module_sha256: [u8; 32] = m
+            .module_sha256
+            .as_slice()
+            .try_into()
+            .map_err(|_| ExecError::HashMismatch)?;
+        let l = m
+            .limits
+            .as_ref()
+            .ok_or(ExecError::BadLimits("limits missing"))?;
+        let limits = Limits {
+            fuel: l.fuel,
+            wall: Duration::from_millis(l.wall_ms),
+            memory_bytes: l.memory_bytes,
+            stack_bytes: l.stack_bytes,
+            output_bytes: l.output_bytes,
+            checkpoint_bytes: l.checkpoint_bytes,
+        };
+        limits.validate().map_err(ExecError::BadLimits)?;
+        Ok(Self {
+            module,
+            module_sha256,
+            publisher: PublisherSignature {
+                public_key: m.publisher_key.clone(),
+                signature: m.module_signature.clone(),
+            },
+            input,
+            limits,
+        })
+    }
+}
+
 /// Executor settings.
 #[derive(Debug, Clone)]
 pub struct ExecutorConfig {
