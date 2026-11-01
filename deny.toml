@@ -7,7 +7,11 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    # paste is unmaintained (not vulnerable); compile-time only, pulled in by libp2p via if-watch/netlink on Linux.
+    # Remove when libp2p drops it. Accepted by the coordinator 2026-11-01.
+    { id = "RUSTSEC-2024-0436", reason = "transitive via libp2p if-watch; unmaintained, no known vulnerability" },
+]
 
 [licenses]
 version = 2

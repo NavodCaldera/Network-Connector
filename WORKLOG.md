@@ -15,6 +15,23 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (coordinator) · `main`
+
+- **Asked:** review and merge net-agent tasks 0.5–0.7; clean up disk use (owner: tools on C: only).
+- **Done:** merged `feat/net-p2p` (7a62a82) and `feat/net-server` (82bb534). TASKS/WORKLOG/Cargo.lock conflicts
+  resolved with main's versions and the lockfile regenerated. `deny.toml`: ignored RUSTSEC-2024-0436 (`paste`,
+  unmaintained, no vulnerability, transitive via libp2p if-watch) with the reason recorded. Disk: deleted
+  `D:
+c-target` (18.3 GB), duplicate Rust copies on D: (2.2 GB) and `~/.gradle` (2.3 GB). User env
+  `CARGO_TARGET_DIR=C:\dev
+c-target` (one shared build folder).
+- **Review result: PASS (local).** Coordinator ran it on the merged tree. core: fmt 0, clippy `-D warnings` 0, 30 test
+  suites, exit 0, deny ok. server: fmt 0, clippy 0, 9 suites, exit 0, deny ok. The Docker lease cycle and probe
+  numbers are the agent's; the coordinator did not re-run them.
+- **Not done / open:** two-ISP test (owner, `spikes/phase0/net/RUN.md`) needs a relay reachable from both ISPs:
+  a public-IP machine or a paid VM (owner decision). TLS/443 fallback rung not built. Relay token peer-id binding
+  at registration not built. Wire types still local (TODO(proto)). D:\BuildTools still to be reinstalled on C:.
+
 ## 2026-11-01 · Claude Code (net-agent) · `feat/net-p2p` + `feat/net-server`
 
 - **Asked:** Phase 0 tasks 0.5 (libp2p two-ISP test kit), 0.6 (mDNS + QR pairing in `nc-net`), 0.7 (minimal
