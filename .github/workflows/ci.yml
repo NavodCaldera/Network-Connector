@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  rust:
+    name: rust (${{ matrix.os }}, ${{ matrix.workspace }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        workspace: [core, server]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The toolchain comes from rust-toolchain.toml (rustup on the runner reads it).
+      - name: Install pinned toolchain
+        shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ${{ matrix.workspace }}
+      - name: fmt
+        working-directory: ${{ matrix.workspace }}
+        run: cargo fmt --all --check
+      - name: clippy
+        working-directory: ${{ matrix.workspace }}
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test
+        working-directory: ${{ matrix.workspace }}
+        run: cargo test --all-targets --locked
+
+  deny:
+    name: cargo-deny (${{ matrix.workspace }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [core, server]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: ${{ matrix.workspace }}/Cargo.toml
+          arguments: --all-features
+          command: check

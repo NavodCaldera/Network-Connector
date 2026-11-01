@@ -1,0 +1,10 @@
+// Placeholder for shared types. Owner: Core agent (task 0.3 fills this in).
+syntax = "proto3";
+
+package nc.v1;
+
+// Protocol version carried by every message envelope.
+message ProtocolVersion {
+  uint32 major = 1;
+  uint32 minor = 2;
+}

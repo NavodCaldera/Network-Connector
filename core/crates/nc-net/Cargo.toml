@@ -1,0 +1,11 @@
+[package]
+name = "nc-net"
+description = "libp2p transport, local discovery, pairing and relay client."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true

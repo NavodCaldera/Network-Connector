@@ -1,0 +1,11 @@
+[package]
+name = "nc-bridge"
+description = "flutter_rust_bridge API surface: wraps the nc-agent API 1:1 for the Flutter app."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
