@@ -1,0 +1,6 @@
+target/
+app-spike/.gradle/
+app-spike/build/
+app-spike/app/build/
+app-spike/local.properties
+app-spike/app/src/*/jniLibs/

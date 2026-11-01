@@ -1,0 +1,42 @@
+# Phase 0 task 0.9a spike. Standalone workspace on purpose: it is NOT part of core/.
+# Build exactly one runtime feature at a time (see ../build-so.sh):
+#   cargo ndk -t arm64-v8a build --release --no-default-features --features rt-pulley
+#   cargo ndk -t arm64-v8a build --release --no-default-features --features rt-cranelift
+#   cargo ndk -t arm64-v8a build --release --no-default-features --features rt-wasmi
+[package]
+name = "nc_wasm_spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["rt-pulley"]
+# (a) Wasmtime runtime + Pulley interpreter, no compiler on the device. The module is
+#     precompiled to Pulley bytecode on the build host (build.rs) and deserialized at runtime.
+rt-pulley = ["dep:wasmtime", "wasmtime/pulley"]
+# (b) Wasmtime + Cranelift JIT on the device. Size comparison only (JIT may be disallowed).
+rt-cranelift = ["dep:wasmtime", "wasmtime/cranelift"]
+# (c) wasmi pure interpreter.
+rt-wasmi = ["dep:wasmi"]
+
+[dependencies]
+wasmtime = { version = "=50.0.1", default-features = false, features = ["runtime", "std"], optional = true }
+wasmi = { version = "=2.0.0", optional = true }
+
+[build-dependencies]
+wat = "=1.263.0"
+# Host-side compiler used only to produce Pulley bytecode for rt-pulley. Never shipped in the .so.
+wasmtime = { version = "=50.0.1", default-features = false, features = ["cranelift", "pulley", "runtime", "std"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

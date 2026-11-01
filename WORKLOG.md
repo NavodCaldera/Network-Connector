@@ -15,6 +15,19 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (App agent) · `feat/app-android`
+
+- **Asked:** task 0.9a, Android spike: Wasm job in a foreground service with a Stop button, three runtimes compared.
+- **Done:** `spikes/phase0/android/`: `wasm-spike` (Rust cdylib, features `rt-pulley`, `rt-wasmi`, `rt-cranelift`;
+  Pulley bytecode precompiled on the host in `build.rs`), `app-spike` (Kotlin app, `specialUse` foreground service,
+  notification Stop, JNI bridge, one flavor per runtime), `build-so.sh`, and `RUN.md` (owner test steps on a phone).
+- **Decisions:** Pulley (interpreter, no JIT on device) is the v1 candidate; Cranelift is built for size comparison only.
+- **Verified:** on the Windows host, `cargo test --release` passes for all three features (2/2 each:
+  `sums_match_native`, `stop_halts_within_one_second`), including loading host-precompiled Pulley bytecode.
+- **Not done / open:** the Android `.so` files and APKs were **not** built in this run (no APK exists; disk has about
+  4 GB free on D: and E:). No phone or emulator was available, so there are no on-device numbers (Stop latency,
+  Doze, OEM killing, APK size). fmt/clippy were not re-run in this session. The owner needs to run `RUN.md`.
+
 ## 2026-11-01 · Claude Code (coordinator) · `main`
 
 - **Asked:** review and merge core-agent tasks 0.2 (executor + Windows sandbox) and 0.3 (identity, manifests, store).
