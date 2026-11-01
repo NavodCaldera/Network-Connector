@@ -15,6 +15,17 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Codex · `feat/codex-policy`
+
+- **Commits:** this commit (task 1.P1 hand-back).
+- **Asked:** implement the pure owner-policy engine in the separate nc-codex-b checkout, validate, commit and push; no merge, PR or committed run logs.
+- **Done:** added versioned/default-closed serde OwnerPolicy, fixed-length hex PeerKey, validated working/resource/sensor/peer/runtime rules, offer and complete running-task snapshots, owner-readable Reason enums, admit/check_running/next_change APIs, shared nc-tariff working-hour/calendar calls and real transfer-decision gating. Added integration README, 28 unit/property tests (including two 256-case proptests) and one doctest. Set only task 1.P1 to review.
+- **Decisions:** Codex: blocked beats trusted; hard revocations/critical thermal/expired tasks Stop before temporary Pause rules. Unknown thermal always blocks; battery is required when minimum > 0, including on AC (owner can choose 0 for batteryless devices). Thermal thresholds are inclusive. Running-task vector includes authenticated keys/profile/start times and counts paused tasks. Working hours reuse nc-tariff's conservative DST behavior through a private no-transport projection; real transfers independently require fresh tariff decisions/reservations. CPU percent is best effort; supervisor owns actual enforcement and one-second Stop.
+- **Verified:** every shell set CARGO_TARGET_DIR=D:\nc-target\codex, TEMP=D:\tmp and TMP=D:\tmp; Cargo cache also on D:. From core/: cargo fmt --all --check exit 0; cargo clippy -p nc-policy --all-targets -- -D warnings exit 0; cargo test -p nc-policy: 28 passed, 0 failed plus one passing doctest; cargo deny check: advisories ok, bans ok, licenses ok, sources ok. AGENT.md workspace-wide strict Clippy and cargo test also passed. Production source scan found no unwrap/expect calls or unsafe code; all public items have enforced doc comments. Actual output will be pasted in the hand-back, not committed as a run log.
+- **Failures corrected:** initial formatting rejected a PowerShell-encoded non-ASCII test fixture; replaced it with an ASCII Rust Unicode escape and UTF-8 source. Clippy required fixed-size as_chunks parsing instead of chunks_exact. All final checks passed. No os error 112 occurred. Git's global-ignore permission warning was nonfatal.
+- **Requests:** exact local dependencies: nc-tariff path ../nc-tariff version 0.1.0; chrono 0.4.42, chrono-tz 0.10.4, serde 1.0.228, thiserror 2.0.17; dev serde_json 1.0.145 and proptest 1.9.0. Coordinator must regenerate/review core/Cargo.lock (only the nc-policy dependency list changed during validation); generated changes were restored to HEAD for ownership compliance. core/Cargo.toml is unchanged.
+- **Not done / open:** no supervisor/platform/transport implementation, cryptographic authentication, persistence, atomic resource reservation, CPU throttling or executor teardown; those remain integration responsibilities. Stateless snapshots cannot detect every backward clock jump or observation staleness, so the supervisor must detect events and enforce a monotonic watchdog. No files outside nc-policy plus this log and the assigned task row are included; no run logs, merge or PR.
+
 ## 2026-11-01 · Claude Code (coordinator) · `main`
 
 - **Asked:** review Codex task 0.4 (nc-tariff).

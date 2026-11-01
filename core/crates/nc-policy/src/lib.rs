@@ -1,16 +1,29 @@
-//! `nc-policy`: Owner policy engine: consent, resource limits, time windows, battery and thermal rules.
+//! Pure owner-policy decisions. No I/O, clock reads or enforcement side effects.
 //!
-//! Phase 0 skeleton (PLAN.md §4). Real functionality arrives in later tasks.
+//! The supervisor supplies authenticated peer identities and fresh device snapshots,
+//! reserves resources atomically after admission, and acts on Pause/Stop immediately.
+//! CPU percentages are best effort; these decisions do not implement CPU throttling
+//! or promise the supervisor's one-second Stop. Recheck on every relevant event.
+//!
+//! ```
+//! use nc_policy::OwnerPolicy;
+//! let policy = OwnerPolicy::default();
+//! assert!(!policy.accept_jobs);
+//! policy.validate()?;
+//! # Ok::<(), nc_policy::ValidationError>(())
+//! ```
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
 
-/// Name of this crate, used by the skeleton test and diagnostics.
-pub const CRATE_NAME: &str = "nc-policy";
+mod engine;
+mod hours;
+mod key;
+mod model;
+
+pub use engine::*;
+pub use key::*;
+pub use model::*;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn crate_name_matches() {
-        assert_eq!(CRATE_NAME, "nc-policy");
-    }
-}
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests;
