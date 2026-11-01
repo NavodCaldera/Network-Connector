@@ -34,6 +34,8 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.P6a | Real job contract: signed manifests in leases, job submit, blob up/download, lease failure | **Codex** | `feat/codex-jobs-api` | `proto/`, `core/crates/nc-protocol`, `server/`, `infra/` (migrations) | todo |
 | 1.A1 | Owner UI: limits, night data, settings file, Home summary, navigation | app-agent (Claude) | `feat/app-ui` | `app/`, `core/crates/nc-bridge` | done |
 
+| 1.P7 | Make core CI green without weakening security | **Codex** | `feat/codex-ci-fix` | `core/crates/nc-{identity,exec}`, core CI test step, own task/log entries | review |
+
 ## Rules for Codex work
 
 - Same rules as the Claude agents: [AGENT.md](AGENT.md) §1 (security invariants, work log, hand-back format).
