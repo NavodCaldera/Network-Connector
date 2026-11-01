@@ -15,6 +15,17 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Codex · `feat/codex-tariff`
+
+- **Commits:** this commit (Phase 0 task 0.4 hand-back).
+- **Asked:** implement the pure nc-tariff library, ledger, window planner and synthetic night simulation in a separate checkout; validate, commit and push without merging or opening a PR.
+- **Done:** only `core/crates/nc-tariff/**`, this log and TASKS.md row 0.4 changed. Added serde profile types; IANA/weekly cross-midnight calendar and conservative DST handling; class/binding/throughput/guard decisions; mutex-atomic reservations with actual-byte overage reports; monthly resets and backward-clock rejection; deterministic serial planning/jitter; pure simulator and `night` example; 26 tests (including two 128-case proptests), one doctest, integration README and real command transcript `core/crates/nc-tariff/VALIDATION.txt`. Task 0.4 is review.
+- **Decisions:** Codex: windows reject overlap/equal endpoints; ambiguous starts use later time, ends earlier time, nonexistent endpoints skip occurrences. Reserve rounds upwards. Settle outstanding reservations before renewal; IDs never repeat. A profile's remaining allocation renews monthly (no provider query). Planner is provisional/serial, not cost-optimal; callers must reauthorize chunks on network/clock/throughput changes and enforce consent/power/thermal/Stop. No real ISP names/packages or performance claims.
+- **Verified:** all shells set `CARGO_TARGET_DIR=D:\nc-target\codex`; Rust `1.99.1 (58cf8f9c3 2026-10-13)`, Cargo cache on D:. From `core/`: `cargo fmt --all --check` exit 0; `cargo clippy -p nc-tariff --all-targets -- -D warnings` exit 0; `cargo test -p nc-tariff` reports `26 passed; 0 failed` plus `1 passed; 0 failed` doctest; `cargo run -p nc-tariff --example night` reports `EXAMPLE ONLY: nights=90, completed=335, deferred=2545, committed_bytes=1399813443; window/budget assertions passed`; `cargo deny check` reports `advisories ok, bans ok, licenses ok, sources ok`. AGENT.md workspace-wide `cargo clippy --all-targets -- -D warnings` and `cargo test` also exit 0 (36 unit tests plus one doctest). `git diff --check` passed.
+- **Failures corrected:** initial Clippy found unused TimeZone import and an eight-argument planner; grouped jitter configuration and fixed test call sites after E0061. First cargo-deny rejected serde_yaml_ng's unsafe-libyaml with RUSTSEC-2024-0449; replaced it with serde-saphyr 2.0.0, then all final checks passed. Git emitted a nonfatal global-ignore permission warning. No policy exceptions added.
+- **Requests:** coordinator to regenerate/review `core/Cargo.lock` when integrating the exact crate-local dependency pins: chrono 0.4.42, chrono-tz 0.10.4, serde 1.0.228, thiserror 2.0.17; dev serde_json 1.0.145, serde-saphyr 2.0.0, proptest 1.9.0. Cargo generated the shared lockfile during checks; it was restored to HEAD to honor file ownership, so locked builds need the coordinator's update. `core/Cargo.toml` and deny.toml are unchanged.
+- **Not done / open:** persistence/crash recovery, trusted platform observations, socket cancellation and real-provider billing reconciliation belong to integration; this library has no I/O/networking/unsafe and cannot enforce a socket Stop itself. No real-device/ISP measurements. Flutter/server were not touched. No merge or PR.
+
 ## 2026-11-01 · Claude Code (coordinator) · `main`
 
 - **Asked:** review Codex's tasks 0.9b and 0.10 and plan Codex's next task.
