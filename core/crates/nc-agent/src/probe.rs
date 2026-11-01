@@ -201,6 +201,7 @@ impl PlatformProbe for SystemProbe {
 
 /// Parse `Get-CimInstance Win32_Battery | ConvertTo-Json` output. Empty output means no battery (a desktop on
 /// mains power). BatteryStatus 1, 4 and 5 are the discharging states.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn parse_power(text: &str) -> Option<Power> {
     let text = text.trim();
     if text.is_empty() {

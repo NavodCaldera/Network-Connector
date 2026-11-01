@@ -17,7 +17,7 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ## 2026-11-02 - Claude (Core agent) - `feat/agent-supervisor` - task 1.P6
 
-- **Commits:** this commit (and a CI follow-up if needed).
+- **Commits:** 1cab364, plus the CI fix commit on top (see Verified).
 - **Asked:** 1.P6: real helper supervisor in `nc-agent` (lib + daemon) and the `nc` CLI on the 1.P6a job contract,
   keeping the 0.8 facade and its 7 tests; add `update_network_budget` and today's counters for the app.
 - **Done:**
@@ -65,6 +65,9 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
     code MEMORY; huge output -> reason 7 code OUTPUT_LIMIT.
   - `cargo deny check`: first run "licenses FAILED" (webpki-root-certs, CDLA-Permissive-2.0, via
     rustls-platform-verifier); after the switch: "advisories ok, bans ok, licenses ok, sources ok".
+  - CI run 41358226652 on 1cab364: 7 of 8 jobs green (both cargo-deny, flutter, Docker stack, both server, Windows
+    core); Ubuntu core failed clippy: "function `parse_power` is never used" (probe.rs, only called on Windows).
+    Fixed with `cfg_attr(not(windows), allow(dead_code))`; result of the re-run is in the hand-back.
 - **Not done / open:**
   - Docker end-to-end (`tests/e2e_docker.rs`, ignored) not run: Docker is not run locally (owner rule), and the
     CI Docker job is Ubuntu, where nc-exec refuses every job (no Linux sandbox yet), so it needs a Windows host.
