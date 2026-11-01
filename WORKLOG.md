@@ -15,6 +15,16 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Claude (coordinator) - `main`
+
+- Commits: merge of `feat/agent-supervisor` (1cab364, accc3be).
+- Asked: review and merge 1.P6 (helper supervisor, nc-agent daemon, nc CLI).
+- Done: merged into main; TASKS 1.P6 set to done.
+- Decisions: accepted rustls-native-certs (keeps CDLA-Permissive-2.0 out of deny.toml); accepted refusing encrypted transfers in v1.
+- Verified: CI run 41358827217 green on accc3be (8/8 jobs); agent reported local fmt/clippy/test/deny pass and real-sandbox Stop in 33.7 ms. Agent build dir D:
+c-target-agent removed (5.9 GiB).
+- Not done / open: Docker e2e never run (needs Windows host); HTTPS not tried against real TLS; tariff ledger in memory only; no lease renewal endpoint (jobs > ~60 s fail); Windows idle probe missing (needs safe wrapper); app should switch to nc-agent `today()` / `update_network_budget`.
+
 ## 2026-11-02 - Claude (Core agent) - `feat/agent-supervisor` - task 1.P6
 
 - **Commits:** 1cab364, plus the CI fix commit on top (see Verified).
