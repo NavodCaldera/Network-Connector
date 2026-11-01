@@ -15,6 +15,20 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (coordinator) · `main`
+
+- **Asked:** review Codex task 1.P1 (nc-policy).
+- **Done:** merged `feat/codex-policy` (e143783), no conflicts. Replaced Codex's exact pins with workspace versions
+  (same clash as nc-tariff). Moved the Android SDK to `C:\dev\Android\Sdk` and the gradle home to `C:\dev\gradle`
+  (owner: tools on C: only); removed small leftovers on D:.
+- **Review result: PASS.** Scope limited to `core/crates/nc-policy/**`, TASKS.md, WORKLOG.md. Coordinator checks on
+  the merged tree (target `C:\dev
+c-target`): fmt ok; workspace clippy `-D warnings` ok; nc-policy 28 + doctest
+  passed, nc-tariff 26 passed; `cargo deny` ok. Read `admit`: blocked beats trusted, untrusted rejected, safe
+  checked arithmetic, temporary restrictions last; property test covers 20 hard rules.
+- **Not done / open:** OS-level enforcement belongs to nc-agent (Phase 1). Build Tools, Rust caches and the 15.8 GB
+  build cache are still on D:, waiting for the net-agent.
+
 ## 2026-11-01 · Codex · `feat/codex-policy`
 
 - **Commits:** this commit (task 1.P1 hand-back).

@@ -943,6 +943,15 @@ version = "0.1.0"
 [[package]]
 name = "nc-policy"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "nc-tariff",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "nc-protocol"
