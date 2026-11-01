@@ -15,6 +15,18 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Claude (coordinator) - `main`
+
+- **Commits:** this commit; fast-forward of `feat/codex-proto` (14aebb9).
+- **Asked:** review Codex task 1.P3 (move all wire types into `proto/`).
+- **Done:** reviewed and merged. TASKS.md 1.P3 set to done.
+- **Decisions:** none new.
+- **Verified:** Review result: PASS. Diff stays inside its allowed files (27 files); no `TODO(proto)` markers left.
+  core: fmt 0, clippy 0, 183 tests pass, cargo deny ok. server: fmt 0, clippy 0, 17 tests pass, cargo deny ok.
+  VS Build Tools on C: now has the C++ workload (modify exit 0).
+- **Not done / open:** infra Dockerfile must COPY `core/Cargo.toml`, `core/crates/nc-protocol/` and `proto/` (net-agent);
+  Docker lease cycle not re-run. Executor IPC still not on proto (core, later). D:\BuildTools uninstall not done yet.
+
 ## 2026-11-02 ? Codex ? `feat/codex-proto`
 
 - **Commits:** this commit (task 1.P3 protocol migration).
