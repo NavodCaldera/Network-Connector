@@ -29,6 +29,7 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.P2 | Chunked, hashed, resumable, encrypted blob cache (`nc-blob`) | **Codex** | `feat/codex-blob` | `core/crates/nc-blob` only | done |
 | 1.P3 | Move all wire types into `proto/` | **Codex** | `feat/codex-proto` | `proto/`, `core/crates/{nc-protocol,nc-net}`, `server/crates/*` | done |
 | 1.P4 | Protocol-aware, cacheable Docker builds and live lease-cycle verification | **Codex** | `feat/codex-infra` | `infra/` only | done |
+| 1.P6 | Helper supervisor `nc-agent` (lib + daemon) wiring coordinator, store, policy, tariff, executor | **Codex** | `feat/codex-agent` | `core/crates/nc-agent`, `core/crates/nc-cli`, `core/Cargo.toml` members/deps only | todo |
 
 ## Rules for Codex work
 

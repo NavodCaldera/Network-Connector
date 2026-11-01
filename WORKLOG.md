@@ -17,6 +17,15 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ## 2026-11-02 - Claude (coordinator) - `main`
 
+- **Commits:** this commit.
+- **Asked:** owner: give Codex larger tasks; Claude does simple work and reviews.
+- **Done:** added TASKS.md row 1.P6 (nc-agent supervisor) for Codex.
+- **Decisions:** owner decision: Codex gets large, detailed tasks; Claude reviews and corrects.
+- **Verified:** documentation only.
+- **Not done / open:** 1.P6 not started.
+
+## 2026-11-02 - Claude (coordinator) - `main`
+
 - **Commits:** this commit; fast-forward of `feat/codex-infra` (ef2b8a7).
 - **Asked:** review Codex task 1.P4 (Docker build after the proto move).
 - **Done:** merged. Replaced the stale Docker follow-up in `proto/README.md`. TASKS.md 1.P4 set to done.
