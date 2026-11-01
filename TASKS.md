@@ -29,7 +29,7 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.P2 | Chunked, hashed, resumable, encrypted blob cache (`nc-blob`) | **Codex** | `feat/codex-blob` | `core/crates/nc-blob` only | done |
 | 1.P3 | Move all wire types into `proto/` | **Codex** | `feat/codex-proto` | `proto/`, `core/crates/{nc-protocol,nc-net}`, `server/crates/*` | done |
 | 1.P4 | Protocol-aware, cacheable Docker builds and live lease-cycle verification | **Codex** | `feat/codex-infra` | `infra/` only | done |
-| 1.P5 | Ubuntu CI Docker stack build and live lease-cycle check | **Codex** | `feat/codex-ci-stack` | `.github/workflows/`, `infra/verify.sh` | in progress |
+| 1.P5 | Ubuntu CI Docker stack build and live lease-cycle check | **Codex** | `feat/codex-ci-stack` | `.github/workflows/`, `infra/verify.sh` | review |
 
 ## Rules for Codex work
 

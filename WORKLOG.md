@@ -17,27 +17,36 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ## 2026-11-02 - Codex - `feat/codex-ci-stack`
 
-- **Commits:** initial implementation and subsequent CI-verification follow-up for task 1.P5.
-- **Asked:** add an Ubuntu CI full-stack check on main pushes/PRs with GHA build cache, runtime-masked
+- **Commits:** 505942f (implementation), b1a6ec7 (workflow-context correction), this verification follow-up.
+- **Asked:** add an Ubuntu full-stack CI check on main pushes/PRs with GHA build cache, runtime-masked
   credentials, health/non-root checks, the existing lease cycle and unconditional teardown.
-- **Done:** added Docker stack job to the existing CI workflow (also runs on feature pushes, enabling
-  branch verification). Official Docker Buildx/Bake actions build the Compose targets with per-target
-  GHA cache scopes and load their shared image. Added LF-only infra/verify.sh, matching the PowerShell
-  verifier with optional cached rebuild/prebuilt-image mode, process-only CSPRNG credentials and an
-  EXIT/signal cleanup trap. Added an independent always() cleanup step for failed/cancelled CI steps.
-- **Decisions:** all action references are full official commit SHAs; job permissions are contents: read,
-  checkout credentials are not persisted, and no image/artifact is published. Compose parsing during
-  build/teardown uses non-secret placeholders; real credentials are generated only in the verifier,
-  masked before use, never written to .env/GITHUB_ENV or echoed. Existing loopback bindings are retained.
-  Existing workflow triggers already cover main pushes/PRs plus feature branches. No dependencies changed.
-- **Verified:** bash -n and git diff --check passed; Docker Bake --print confirmed both targets, root
-  context, Dockerfile and GHA cache options. Checked every workflow action uses a full 40-hex SHA;
-  verified Bash file LF bytes. Action release commits resolved directly from official GitHub APIs.
-  First push created run 41341498628 but no jobs: runner.temp was used in job-level env, where the
-  runner context is unavailable (official GitHub contexts reference). Changed the target to a fixed
-  Linux /tmp path. A local actionlint download failed because C: is full; no files were deleted and no
-  caches moved. GitHub-hosted execution is being retried after the workflow correction.
-- **Not done / open:** GitHub-hosted stack execution not yet run; do not treat static checks as a CI pass.
+- **Done:** added Docker stack job to existing CI (also runs on feature pushes for real verification).
+  SHA-pinned official Docker Buildx/Bake actions build the Compose targets with separate GHA cache
+  scopes and load their shared image. Added executable LF-only infra/verify.sh with process-only
+  CSPRNG credentials, pre-use add-mask commands, health/UID checks, lease cycle and EXIT/signal cleanup.
+  Added a separate always() cleanup step. Task 1.P5 set to review; no Rust or dependency edits.
+- **Decisions:** contents: read only; checkout credentials not persisted; no image/build record published.
+  Build/teardown parsing uses non-secret placeholders. Real credentials are generated only inside the
+  verifier, never written to .env/GITHUB_ENV or echoed. Existing loopback bindings unchanged. Existing
+  workflow events already cover main pushes/PRs and feature branches. All actions use full official SHAs.
+- **Verified:** actual Ubuntu stack job PASSED at
+  https://github.com/NavodCaldera/Network-Connector/actions/runs/41341787288/job/124953168299
+  (run https://github.com/NavodCaldera/Network-Connector/actions/runs/41341787288, commit b1a6ec7).
+  Build: release profile finished in 1m 54s; both targets exported GitHub Actions cache. Runtime:
+  /healthz ok; coordinator/relay UIDs both 999. Existing lease cycle: 1 passed, 0 failed, 0 ignored
+  (0.03s). Trap teardown removed three containers, network and both volumes; independent always-cleanup
+  step and all action post steps also passed. Both server matrix jobs and both cargo-deny jobs passed.
+  bash -n, git diff --check, LF-byte/action-pin checks and local Bake --print validation also passed.
+- **Failures recorded:** initial run 41341498628 failed before scheduling jobs because runner.temp was
+  used in job-level env, where runner context is unavailable (official GitHub contexts reference).
+  Corrected to a fixed Ubuntu /tmp target path; subsequent stack job passed. Local actionlint download
+  failed because C: is full; no files deleted or caches moved. Logs were fetched through the API into
+  memory and sanitized, not saved locally. No run logs or secret files committed.
+- **Not done / open:** overall CI is not claimed green: the separate Ubuntu core matrix fails
+  corrupt_key_file_is_refused_not_replaced in nc-identity. Verified the same failure existed in baseline
+  run 41339242475 before this task. That Rust test is outside the allowed files.
+- **Requests:** core owner should fix the existing identity-test failure; owner should free C: space
+  before further local tool installs. This task's Docker stack job is verified successfully.
 
 ## 2026-11-02 - Claude (coordinator) - `main`
 
