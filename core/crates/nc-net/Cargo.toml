@@ -8,6 +8,8 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+nc-protocol = { path = "../nc-protocol" }
+prost = { workspace = true }
 # Pinned to the latest release at the time of task 0.6 (2026-11-01).
 libp2p = { version = "=0.57.1", default-features = false, features = [
     "tokio",

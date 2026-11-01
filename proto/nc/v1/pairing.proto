@@ -1,0 +1,21 @@
+// QR payload and /nc/pair/1.0.0 frames; see README.md for framing/transcript.
+// All tags below are permanent. No fields removed; reserve tags/names on removal.
+syntax = "proto3";
+package nc.v1;
+
+message PairingOffer {
+  string peer_id = 1;        // Authenticated libp2p peer ID, base58 text.
+  repeated string addrs = 2; // At most 16 validated multiaddresses.
+  bytes secret = 3;          // Exactly 32 bytes, never logged or persisted.
+  uint32 version = 5;        // 1, also carried by the nc-pair:v1: prefix.
+  uint64 expires_unix = 4;   // Unix seconds, exclusive expiry.
+}
+message PairingReject {} // Generic refusal; deliberately does not reveal why.
+message PairingFrame {
+  oneof payload {
+    bytes nonce = 1;          // Exactly 32 random bytes.
+    bytes proof = 2;          // Exactly 32 HMAC-SHA256 bytes.
+    bool confirm = 3;         // Explicit true/false SAS confirmation.
+    PairingReject reject = 4; // Generic refusal.
+  }
+}

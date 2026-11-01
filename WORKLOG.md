@@ -15,6 +15,46 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 ? Codex ? `feat/codex-proto`
+
+- **Commits:** this commit (task 1.P3 protocol migration).
+- **Asked:** make proto/ the sole definition of coordinator, pairing and relay wire messages; preserve
+  coordinator JSON/signing and existing validation, and pin binary encodings with tests.
+- **Done:** coordinator.proto, pairing.proto, relay.proto; prost generation only in nc-protocol; generated
+  serde JSON bodies with UUID compatibility; handwritten API/frame/claims copies removed; generated
+  nested errors and health response. Binary pairing, relay auth and signed relay token; redacted Debug
+  for secret-bearing messages. Added 22 protocol tests, two pairing boundary tests, three relay token
+  tests and the fixed request-signing vector. Updated both dependency lockfiles; 1.P3 set to review.
+- **Decisions:** HTTP JSON shapes and signing bytes unchanged. P2P is canonical protobuf, rejecting unknown,
+  duplicate and noncanonical fields recursively. Token claims use explicit presence to retain required
+  fields, including zero timestamps. HTTP token text wraps a binary versioned token; clients and servers
+  must update together. No removed protobuf tags exist yet; schema comments/README require reservations
+  for future removals. All five active source migration markers resolved; two historical work-log
+  mentions retained. All build/temp/cache paths used C: and the shared C:\dev\nc-target.
+- **Verified:** in BOTH core/ and server/: cargo fmt --all --check passed; cargo clippy --all-targets --
+  -D warnings passed; cargo test passed; cargo deny check passed (advisories/bans/licenses/sources ok).
+  Core: 180 tests plus three doctests passed, one existing launch-measurement test ignored. Server:
+  17 tests passed, one Docker lease-cycle test ignored. Deny reported duplicate-version warnings only
+  (21 core, 36 server). Golden offer/token bytes, all new message round trips, JSON shapes/unknown fields,
+  pairing lockout/SAS/impostor/single-use, authenticated relay reservations and token timing all passed.
+  Initial checks found a wrong server relative dependency path and deprecated prost error construction;
+  both corrected. Clippy caught an unnecessary closure; fixed and all checks rerun. One correction script
+  used the wrong working directory and failed before edits, then was rerun correctly. A Markdown write
+  doubled CRLFs; after review rejected a broad repair, read-only checks proved only the row/entry content
+  differed, and the files were reconstructed from unchanged Git bytes plus those narrow edits.
+- **Not done / open:** Docker engine unavailable even outside the sandbox (dockerDesktopLinuxEngine pipe
+  absent), so no compose resources were started and the ignored HTTP/database cycle was not run. The
+  current Dockerfile/ignore file omit the newly required core/proto sources and need their owner's update.
+  nc-exec's private NCX1/NCR1 process IPC remains handwritten: the task explicitly forbids editing it.
+  Linux/macOS execution not performed; old JSON P2P encodings are intentionally unsupported after migration.
+- **Requests:** infrastructure owner must include core/Cargo.toml, core/crates/nc-protocol/ and proto/ in
+  Docker context/COPY steps, then rebuild and rerun the lease cycle. Executor owner should migrate private
+  worker IPC separately. New local caret dependencies: nc-protocol serde 1, uuid 1 (serde), base64 0.22,
+  test-only serde_json 1; server nc-relay prost 0.14. Existing core prost/hex dependencies use workspace
+  inheritance; nc-protocol is referenced by path. No new exact pins and no workspace root manifests changed.
+
+---
+
 ## 2026-11-01 · Claude Code (coordinator) · `main`
 
 - **Asked:** review Codex task 1.P2 (nc-blob); cut disk use without changing runtime speed.

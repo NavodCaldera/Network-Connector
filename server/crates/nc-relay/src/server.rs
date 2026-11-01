@@ -8,6 +8,10 @@ use libp2p::{
     identify, identity, noise, ping, relay, tcp, yamux, Multiaddr, PeerId, StreamProtocol, Swarm,
 };
 
+use nc_protocol::pb::v1::{relay_auth_frame::Payload, RelayAuthFrame};
+use nc_protocol::wire::decode_strict;
+use prost::Message;
+
 use crate::quota::Quotas;
 use crate::token::{TokenKey, MAX_TOKEN_LEN};
 use crate::unix_now;
@@ -98,37 +102,43 @@ pub fn build_swarm(
     Ok(swarm)
 }
 
-/// Handles one token presentation. Frame format: u32 BE length + token; reply frame `ok` / `denied`.
+/// Handles capped, u32-BE-length-prefixed protobuf RelayAuthFrame messages.
 async fn handle_auth(peer: PeerId, mut s: libp2p::Stream, key: TokenKey, quotas: Quotas) {
     let verdict = async {
         let mut len = [0u8; 4];
         s.read_exact(&mut len).await.ok()?;
         let len = u32::from_be_bytes(len) as usize;
-        if len > MAX_TOKEN_LEN {
+        if len > MAX_TOKEN_LEN + 8 {
             return None;
         }
         let mut buf = vec![0u8; len];
         s.read_exact(&mut buf).await.ok()?;
-        let token = std::str::from_utf8(&buf).ok()?;
+        let frame: RelayAuthFrame = decode_strict(&buf).ok()?;
+        let Some(Payload::Token(token)) = frame.payload else {
+            return None;
+        };
         let now = unix_now();
-        let claims = key.verify(token, now).ok()?;
+        let claims = key.verify_binary(&token, now).ok()?;
         // The token must be for the key that is actually on this connection.
-        if claims.peer != peer.to_string() {
+        if claims.peer.as_deref() != Some(peer.to_string().as_str()) {
             return None;
         }
-        let ttl = Duration::from_secs(claims.exp.saturating_sub(now));
-        quotas.grant(peer, claims.account, ttl, Instant::now());
+        let ttl = Duration::from_secs(claims.exp?.saturating_sub(now));
+        quotas.grant(peer, claims.account?, ttl, Instant::now());
         Some(())
     }
     .await;
-    let reply: &[u8] = if verdict.is_some() { b"ok" } else { b"denied" };
+    let reply = RelayAuthFrame {
+        payload: Some(Payload::Accepted(verdict.is_some())),
+    }
+    .encode_to_vec();
     if verdict.is_some() {
         tracing::info!(%peer, "relay token accepted");
     } else {
         tracing::warn!(%peer, "relay token refused");
     }
     let _ = s.write_all(&(reply.len() as u32).to_be_bytes()).await;
-    let _ = s.write_all(reply).await;
+    let _ = s.write_all(&reply).await;
     let _ = s.flush().await;
     let _ = s.close().await;
 }

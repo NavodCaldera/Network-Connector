@@ -5,7 +5,7 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde::Serialize;
+use nc_protocol::pb::v1::{ErrorEnvelope, ErrorResponse};
 
 /// API error.
 #[derive(Debug)]
@@ -13,17 +13,6 @@ pub struct ApiError {
     pub status: StatusCode,
     pub code: &'static str,
     pub message: String,
-}
-
-#[derive(Serialize)]
-struct Body<'a> {
-    error: Inner<'a>,
-}
-
-#[derive(Serialize)]
-struct Inner<'a> {
-    code: &'a str,
-    message: &'a str,
 }
 
 impl ApiError {
@@ -78,11 +67,11 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = Body {
-            error: Inner {
-                code: self.code,
-                message: &self.message,
-            },
+        let body = ErrorResponse {
+            error: Some(ErrorEnvelope {
+                code: self.code.into(),
+                message: self.message,
+            }),
         };
         (self.status, Json(body)).into_response()
     }

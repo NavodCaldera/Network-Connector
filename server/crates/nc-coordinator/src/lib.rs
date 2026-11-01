@@ -71,7 +71,7 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route(
             "/healthz",
-            get(|| async { Json(serde_json::json!({ "ok": true })) }),
+            get(|| async { Json(HealthResponse { ok: true }) }),
         )
         .route("/v1/devices/register", post(register))
         .route("/v1/devices/heartbeat", post(heartbeat))
@@ -179,7 +179,7 @@ async fn register(
     let device_id: Uuid = row.try_get("id")?;
     tracing::info!(%device_id, "device registered");
     Ok(Json(RegisterResponse {
-        device_id,
+        device_id: device_id.to_string(),
         created: device_id == id,
     }))
 }
@@ -271,9 +271,9 @@ async fn lease_request(
     .await?;
     tx.commit().await?;
     Ok(Json(LeaseResponse {
-        lease_id,
-        task_id,
-        attempt_id,
+        lease_id: lease_id.to_string(),
+        task_id: task_id.to_string(),
+        attempt_id: attempt_id.to_string(),
         expires_at: expires_at as u64,
         input,
     }))
@@ -289,13 +289,17 @@ async fn lease_complete(
     let (c, b) = read_signed(&s, &method, &uri, &headers, body).await?;
     let req: CompleteRequest = parse(&b)?;
     req.validate()?;
+    let lease_id = Uuid::parse_str(&req.lease_id)
+        .map_err(|_| ApiError::bad_request("body does not match the schema"))?;
+    let requested_attempt = Uuid::parse_str(&req.attempt_id)
+        .map_err(|_| ApiError::bad_request("body does not match the schema"))?;
     let d = device(&s, &c).await?;
     let t = now();
     let mut tx = s.pool.begin().await?;
     let lease = sqlx::query(
         "SELECT task_id, device_id, attempt_id, state, expires_at FROM leases WHERE id = $1 FOR UPDATE",
     )
-    .bind(req.lease_id)
+    .bind(lease_id)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| ApiError::not_found("no such lease"))?;
@@ -305,7 +309,7 @@ async fn lease_complete(
         return Err(ApiError::not_found("no such lease"));
     }
     let attempt_id: Uuid = lease.try_get("attempt_id")?;
-    if attempt_id != req.attempt_id {
+    if attempt_id != requested_attempt {
         return Err(ApiError::conflict(
             "attempt_mismatch",
             "attempt id does not match this lease",
@@ -319,9 +323,9 @@ async fn lease_complete(
     let task_state: String = task.try_get("state")?;
     if task_state == "committed" {
         let committed: Option<Uuid> = task.try_get("committed_attempt")?;
-        return if committed == Some(req.attempt_id) {
+        return if committed == Some(requested_attempt) {
             Ok(Json(CompleteResponse {
-                task_id,
+                task_id: task_id.to_string(),
                 state: "committed".into(),
                 duplicate: true,
             }))
@@ -344,18 +348,18 @@ async fn lease_complete(
         "UPDATE tasks SET state = 'committed', result = $1, committed_attempt = $2 WHERE id = $3",
     )
     .bind(&req.result)
-    .bind(req.attempt_id)
+    .bind(requested_attempt)
     .bind(task_id)
     .execute(&mut *tx)
     .await?;
     sqlx::query("UPDATE leases SET state = 'completed' WHERE id = $1")
-        .bind(req.lease_id)
+        .bind(lease_id)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
     tracing::info!(%task_id, "task committed");
     Ok(Json(CompleteResponse {
-        task_id,
+        task_id: task_id.to_string(),
         state: "committed".into(),
         duplicate: false,
     }))
@@ -384,6 +388,6 @@ async fn relay_token(
     );
     Ok(Json(RelayTokenResponse {
         token,
-        expires_at: claims.exp,
+        expires_at: claims.exp.ok_or_else(ApiError::internal)?,
     }))
 }

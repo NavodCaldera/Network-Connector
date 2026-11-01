@@ -1,0 +1,23 @@
+// /nc/relay-auth/1.0.0 frames and signed token payloads.
+// Tags are permanent. No fields removed; reserve numbers/names on removal.
+syntax = "proto3";
+package nc.v1;
+
+message RelayTokenClaims {
+  optional string peer = 1;    // Bound to the authenticated libp2p peer ID.
+  optional string account = 2; // Per-account quota key.
+  optional string device = 3;  // Device quota identity.
+  optional uint64 iat = 4;     // Issued at, Unix seconds.
+  optional uint64 exp = 5;     // Exclusive expiry, Unix seconds.
+}
+message RelayToken {
+  uint32 version = 1; // 1, previously carried by the textual v1 prefix.
+  bytes claims = 2;   // Exact canonical prost RelayTokenClaims bytes authenticated by HMAC.
+  bytes signature = 3; // HMAC-SHA256(key, "nc-relay-token-v1." || claims), exactly 32 bytes.
+}
+message RelayAuthFrame {
+  oneof payload {
+    RelayToken token = 1; // Client -> relay; token text is decoded before transmission.
+    bool accepted = 2;    // Relay -> client; false replaces the old "denied" reply.
+  }
+}

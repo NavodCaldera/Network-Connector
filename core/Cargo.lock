@@ -2659,6 +2659,8 @@ dependencies = [
  "hmac 0.12.1",
  "libp2p",
  "libp2p-stream",
+ "nc-protocol",
+ "prost",
  "rand 0.8.8",
  "serde",
  "serde_json",
@@ -2687,13 +2689,18 @@ dependencies = [
 name = "nc-protocol"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "ed25519-dalek",
  "getrandom 0.4.3",
+ "hex",
  "proptest",
  "prost",
  "prost-build",
  "protoc-bin-vendored",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
+ "uuid",
 ]
 
 [[package]]
@@ -4368,6 +4375,7 @@ checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 

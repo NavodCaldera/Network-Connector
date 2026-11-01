@@ -1,0 +1,54 @@
+﻿// Coordinator HTTP bodies. Field tags are permanent; never renumber or reuse them.
+// No fields have been removed. Reserve both numbers and names when removing any.
+syntax = "proto3";
+package nc.v1;
+
+message RegisterRequest {
+  string name = 1;      // Display only: 1..64 printable Unicode characters.
+  string platform = 2;  // windows|linux|macos|android|ios.
+}
+message RegisterResponse {
+  string device_id = 1; // UUID, canonical hyphenated string in JSON.
+  bool created = 2;     // False on idempotent registration.
+}
+message HeartbeatRequest {
+  string status = 1; // idle|busy.
+}
+message HeartbeatResponse {
+  uint64 server_time = 1; // Unix seconds.
+}
+message LeaseRequest {} // JSON remains an empty object.
+message LeaseResponse {
+  string lease_id = 1;   // UUID.
+  string task_id = 2;    // UUID.
+  string attempt_id = 3; // UUID; must match on completion.
+  uint64 expires_at = 4; // Unix seconds.
+  string input = 5;      // Phase 0 dummy input.
+}
+message CompleteRequest {
+  string lease_id = 1;   // UUID.
+  string attempt_id = 2; // UUID.
+  string result = 3;     // At most 4096 UTF-8 bytes.
+}
+message CompleteResponse {
+  string task_id = 1; // UUID.
+  string state = 2;   // committed.
+  bool duplicate = 3; // Same attempt previously committed.
+}
+message RelayTokenRequest {
+  string peer_id = 1; // 40..64 ASCII alphanumeric characters (existing API check).
+}
+message RelayTokenResponse {
+  string token = 1;      // Secret: v1.base64url(prost RelayToken), no padding.
+  uint64 expires_at = 2; // Unix seconds.
+}
+message ErrorEnvelope {
+  string code = 1;    // Machine-readable error code.
+  string message = 2; // Public human-readable text; no internal details.
+}
+message ErrorResponse {
+  ErrorEnvelope error = 1; // Preserves {"error":{"code":...,"message":...}} JSON.
+}
+message HealthResponse {
+  bool ok = 1; // Open /healthz response.
+}

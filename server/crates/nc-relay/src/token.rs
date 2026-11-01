@@ -1,16 +1,14 @@
 //! Short-lived relay tokens, issued by the coordinator and checked by the relay.
 //!
-//! Format: `v1.<base64url(claims JSON)>.<base64url(HMAC-SHA256(key, "nc-relay-token-v1." || claims_b64))>`.
-//! The coordinator and the relay share the 32-byte key (env `NC_RELAY_TOKEN_KEY`). Tokens are bound to one
-//! libp2p peer id, one account and one device, and live at most [`MAX_TTL_SECS`].
-//!
-//! TODO(proto): the token claims are a wire format and should move to `proto/` (Core owns it); listed in
-//! the net-agent hand-back "Requests".
+//! Format and HMAC byte layout live in proto/README.md. The HTTP API transports
+//! v1.base64url(prost RelayToken); P2P auth transports the binary token directly.
+//! Tokens are bound to one peer/account/device and live at most MAX_TTL_SECS.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
 use hmac::{Hmac, Mac};
-use serde::{Deserialize, Serialize};
+use nc_protocol::pb::v1::RelayToken;
+pub use nc_protocol::pb::v1::RelayTokenClaims as Claims;
+use nc_protocol::wire::{decode_strict, relay_token_from_text, relay_token_to_text};
+use prost::Message;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
@@ -19,22 +17,6 @@ pub const MAX_TTL_SECS: u64 = 15 * 60;
 /// Largest encoded token we will look at.
 pub const MAX_TOKEN_LEN: usize = 2048;
 const DOMAIN: &[u8] = b"nc-relay-token-v1.";
-
-/// What a token grants.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Claims {
-    /// libp2p peer id the token is for.
-    pub peer: String,
-    /// Account id (quota key).
-    pub account: String,
-    /// Device id (quota key).
-    pub device: String,
-    /// Issued at, Unix seconds.
-    pub iat: u64,
-    /// Expires at, Unix seconds.
-    pub exp: u64,
-}
 
 /// Why a token was refused. Deliberately coarse; never echoes the token.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -72,13 +54,13 @@ impl TokenKey {
         Some(Self(v.try_into().ok()?))
     }
 
-    fn mac(&self, claims_b64: &str) -> Vec<u8> {
+    fn mac(&self, claims: &[u8]) -> Vec<u8> {
         // HMAC accepts any key length; this cannot fail.
         let Ok(mut m) = Hmac::<Sha256>::new_from_slice(&self.0) else {
             return Vec::new();
         };
         m.update(DOMAIN);
-        m.update(claims_b64.as_bytes());
+        m.update(claims);
         m.finalize().into_bytes().to_vec()
     }
 
@@ -92,16 +74,20 @@ impl TokenKey {
         ttl_secs: u64,
     ) -> (String, Claims) {
         let claims = Claims {
-            peer: peer.to_owned(),
-            account: account.to_owned(),
-            device: device.to_owned(),
-            iat: now,
-            exp: now + ttl_secs.min(MAX_TTL_SECS),
+            peer: Some(peer.to_owned()),
+            account: Some(account.to_owned()),
+            device: Some(device.to_owned()),
+            iat: Some(now),
+            exp: Some(now + ttl_secs.min(MAX_TTL_SECS)),
         };
-        // Serialising strings and integers cannot fail.
-        let body = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap_or_default());
-        let sig = URL_SAFE_NO_PAD.encode(self.mac(&body));
-        (format!("v1.{body}.{sig}"), claims)
+        let bytes = claims.encode_to_vec();
+        let signature = self.mac(&bytes);
+        let token = RelayToken {
+            version: 1,
+            claims: bytes,
+            signature,
+        };
+        (relay_token_to_text(&token), claims)
     }
 
     /// Verifies signature and time window. The caller must also check `claims.peer` against the
@@ -110,23 +96,26 @@ impl TokenKey {
         if token.len() > MAX_TOKEN_LEN {
             return Err(TokenError::Malformed);
         }
-        let mut parts = token.split('.');
-        let (Some("v1"), Some(body), Some(sig), None) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
+        let token = relay_token_from_text(token).map_err(|_| TokenError::Malformed)?;
+        self.verify_binary(&token, now)
+    }
+
+    /// Verify a generated binary token, including size, version, HMAC and lifetime.
+    /// The caller must also bind its peer to the authenticated connection.
+    pub fn verify_binary(&self, token: &RelayToken, now: u64) -> Result<Claims, TokenError> {
+        if token.version != 1 || relay_token_to_text(token).len() > MAX_TOKEN_LEN {
+            return Err(TokenError::Malformed);
+        }
+        if !bool::from(self.mac(&token.claims).as_slice().ct_eq(&token.signature)) {
+            return Err(TokenError::BadSignature);
+        }
+        let c: Claims = decode_strict(&token.claims).map_err(|_| TokenError::Malformed)?;
+        let (Some(_), Some(_), Some(_), Some(iat), Some(exp)) =
+            (&c.peer, &c.account, &c.device, c.iat, c.exp)
         else {
             return Err(TokenError::Malformed);
         };
-        let sig = URL_SAFE_NO_PAD
-            .decode(sig)
-            .map_err(|_| TokenError::Malformed)?;
-        if !bool::from(self.mac(body).as_slice().ct_eq(&sig)) {
-            return Err(TokenError::BadSignature);
-        }
-        let json = URL_SAFE_NO_PAD
-            .decode(body)
-            .map_err(|_| TokenError::Malformed)?;
-        let c: Claims = serde_json::from_slice(&json).map_err(|_| TokenError::Malformed)?;
-        if c.exp <= now || c.iat > now + 60 || c.exp.saturating_sub(c.iat) > MAX_TTL_SECS {
+        if exp <= now || iat > now + 60 || exp.saturating_sub(iat) > MAX_TTL_SECS {
             return Err(TokenError::Expired);
         }
         Ok(c)
@@ -151,18 +140,86 @@ mod tests {
             Err(TokenError::BadSignature)
         );
         // Tampered claims.
-        let mut parts: Vec<&str> = t.split('.').collect();
-        let (forged, _) = k.issue("peerB", "acct", "dev", 1000, 600);
-        let fb: Vec<&str> = forged.split('.').collect();
-        parts[1] = fb[1];
+        let mut forged = relay_token_from_text(&t).unwrap();
+        let (other, _) = k.issue("peerB", "acct", "dev", 1000, 600);
+        forged.claims = relay_token_from_text(&other).unwrap().claims;
         assert_eq!(
-            k.verify(&parts.join("."), 1001),
+            k.verify(&relay_token_to_text(&forged), 1001),
             Err(TokenError::BadSignature)
         );
         assert_eq!(k.verify("garbage", 1001), Err(TokenError::Malformed));
         // TTL clamped.
         let (_, c) = k.issue("p", "a", "d", 0, 99_999);
-        assert_eq!(c.exp, MAX_TTL_SECS);
+        assert_eq!(c.exp, Some(MAX_TTL_SECS));
         assert!(!format!("{k:?}").contains('9'));
+    }
+}
+
+#[cfg(test)]
+mod golden {
+    #[test]
+    fn issued_token_has_fixed_bytes() {
+        let (text, _) = super::TokenKey::new([9; 32]).issue("peerA", "acct", "dev", 1000, 600);
+        assert_eq!(text, "v1.CAESGAoFcGVlckESBGFjY3QaA2RldiDoByjADBogunHkde5oy3zzFC_ZckY0OrkilT3VkvoOdczG3ei7Yi4");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod boundary_tests {
+    use super::*;
+    #[test]
+    fn preserves_caps_unknown_field_and_time_checks() {
+        let key = TokenKey::new([9; 32]);
+        let (text, claims) = key.issue("peerA", "acct", "dev", 1000, 600);
+        assert_eq!(
+            key.verify(&"x".repeat(MAX_TOKEN_LEN + 1), 1000),
+            Err(TokenError::Malformed)
+        );
+        assert_eq!(key.verify(&text, 1600), Err(TokenError::Expired));
+        assert_eq!(key.verify(&text, 900), Err(TokenError::Expired));
+        let mut token = relay_token_from_text(&text).unwrap();
+        token.version = 2;
+        assert_eq!(key.verify_binary(&token, 1000), Err(TokenError::Malformed));
+        token.version = 1;
+        token.claims.extend_from_slice(&[0x78, 1]);
+        token.signature = key.mac(&token.claims);
+        assert_eq!(key.verify_binary(&token, 1000), Err(TokenError::Malformed));
+        token.claims = Claims {
+            exp: Some(claims.iat.unwrap() + MAX_TTL_SECS + 1),
+            ..claims
+        }
+        .encode_to_vec();
+        token.signature = key.mac(&token.claims);
+        assert_eq!(key.verify_binary(&token, 1000), Err(TokenError::Expired));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod required_claim_tests {
+    use super::*;
+    #[test]
+    fn every_claim_is_required_even_when_zero_is_valid() {
+        let key = TokenKey::new([9; 32]);
+        let (text, claims) = key.issue("", "", "", 0, 600);
+        assert_eq!(key.verify(&text, 0).unwrap(), claims);
+        for i in 0..5 {
+            let mut incomplete = claims.clone();
+            match i {
+                0 => incomplete.peer = None,
+                1 => incomplete.account = None,
+                2 => incomplete.device = None,
+                3 => incomplete.iat = None,
+                _ => incomplete.exp = None,
+            }
+            let bytes = incomplete.encode_to_vec();
+            let token = RelayToken {
+                version: 1,
+                signature: key.mac(&bytes),
+                claims: bytes,
+            };
+            assert_eq!(key.verify_binary(&token, 0), Err(TokenError::Malformed));
+        }
     }
 }

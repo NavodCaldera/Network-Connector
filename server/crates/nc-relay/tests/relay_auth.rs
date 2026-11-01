@@ -7,8 +7,11 @@ use futures::{AsyncReadExt, AsyncWriteExt, StreamExt};
 use libp2p::multiaddr::Protocol;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{identity, noise, relay, tcp, yamux, Multiaddr, PeerId, Swarm};
+use nc_protocol::pb::v1::{relay_auth_frame::Payload, RelayAuthFrame};
+use nc_protocol::wire::{decode_strict, relay_token_from_text};
 use nc_relay::server::RELAY_AUTH_PROTOCOL;
 use nc_relay::{unix_now, Limits, Quotas, RelayConfig, TokenKey};
+use prost::Message;
 
 #[derive(NetworkBehaviour)]
 struct Client {
@@ -94,14 +97,21 @@ async fn try_reserve(
                 .open_stream(relay_peer, RELAY_AUTH_PROTOCOL)
                 .await
                 .unwrap();
-            s.write_all(&(t.len() as u32).to_be_bytes()).await.unwrap();
-            s.write_all(t.as_bytes()).await.unwrap();
+            let frame = RelayAuthFrame {
+                payload: Some(Payload::Token(relay_token_from_text(&t).unwrap())),
+            }
+            .encode_to_vec();
+            s.write_all(&(frame.len() as u32).to_be_bytes())
+                .await
+                .unwrap();
+            s.write_all(&frame).await.unwrap();
             s.flush().await.unwrap();
             let mut len = [0u8; 4];
             s.read_exact(&mut len).await.unwrap();
             let mut r = vec![0u8; u32::from_be_bytes(len) as usize];
             s.read_exact(&mut r).await.unwrap();
-            r == b"ok"
+            let reply: RelayAuthFrame = decode_strict(&r).unwrap();
+            matches!(reply.payload, Some(Payload::Accepted(true)))
         });
         // Drive the swarm while the auth stream runs.
         let ok = loop {

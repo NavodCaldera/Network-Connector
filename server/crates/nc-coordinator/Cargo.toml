@@ -15,6 +15,7 @@ name = "nc-coordinator"
 path = "src/main.rs"
 
 [dependencies]
+nc-protocol = { path = "../../../core/crates/nc-protocol" }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }

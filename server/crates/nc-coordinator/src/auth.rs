@@ -9,7 +9,7 @@
 //! Phase 0 has no OIDC accounts yet: `register` additionally needs the owner's enrolment secret
 //! (`x-nc-enroll`, env `NC_ENROLL_SECRET`), and every enrolled device belongs to account `owner`.
 //!
-//! TODO(proto): the signing string is part of the wire contract and belongs in `proto/` docs.
+//! Exact signing bytes are specified in `proto/README.md` and pinned by a fixed-vector test.
 
 use axum::http::{HeaderMap, Method};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -130,5 +130,15 @@ mod tests {
         let mut h2 = h.clone();
         h2.remove("x-nc-sig");
         assert!(verify(&Method::POST, "/v1/x", &h2, b"{}", 1000).is_err());
+    }
+}
+
+#[cfg(test)]
+mod fixed_vector {
+    #[test]
+    fn request_signing_bytes_do_not_drift() {
+        assert_eq!(super::signing_string("POST", "/v1/leases/request", 1700000000,
+            "abcdefghijklmnop", b"{}").as_bytes(),
+            b"NC-REQ-V1\nPOST\n/v1/leases/request\n1700000000\nabcdefghijklmnop\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
     }
 }

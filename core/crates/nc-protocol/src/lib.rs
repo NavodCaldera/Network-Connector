@@ -27,3 +27,7 @@ pub const PROTOCOL_VERSION: pb::v1::ProtocolVersion =
 
 /// The only execution profile in v1.
 pub const PROFILE_CPU_CORE_V1: &str = "cpu-core-v1";
+
+mod json_uuid;
+/// Strict protobuf decoding and binary-token text transport helpers.
+pub mod wire;
