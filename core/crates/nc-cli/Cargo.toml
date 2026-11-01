@@ -11,5 +11,15 @@ publish = false
 name = "nc"
 path = "src/main.rs"
 
+[dependencies]
+nc-agent = { path = "../nc-agent" }
+nc-policy = { path = "../nc-policy" }
+nc-identity = { path = "../nc-identity" }
+nc-protocol = { path = "../nc-protocol" }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4.42", default-features = false, features = ["std", "clock"] }
+
 [lints]
 workspace = true

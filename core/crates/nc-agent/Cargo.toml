@@ -16,7 +16,38 @@ path = "src/main.rs"
 
 [dependencies]
 nc-policy = { path = "../nc-policy", version = "0.1.0" }
+nc-tariff = { path = "../nc-tariff", version = "0.1.0" }
+nc-store = { path = "../nc-store" }
+nc-blob = { path = "../nc-blob" }
+nc-exec = { path = "../nc-exec" }
+nc-identity = { path = "../nc-identity" }
+nc-protocol = { path = "../nc-protocol" }
 thiserror = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+getrandom = { workspace = true }
+prost = { workspace = true }
+chrono = { version = "0.4.42", default-features = false, features = ["std", "clock", "serde"] }
+chrono-tz = { version = "0.10.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = "1"
+base64 = "0.22"
+# Blocking HTTPS client for the coordinator: rustls (ring) with the OS certificate store loaded by
+# rustls-native-certs. webpki-roots / webpki-root-certs are not used: their CDLA-Permissive-2.0 licence is not
+# in deny.toml (rustls-platform-verifier pulls webpki-root-certs for wasm32).
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "_ring"] }
+rustls-native-certs = "0.8"
+# Binary only.
+anyhow = { workspace = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+tempfile = { workspace = true }
+wat = { workspace = true }
+proptest = { workspace = true }
 
 [lints]
 workspace = true

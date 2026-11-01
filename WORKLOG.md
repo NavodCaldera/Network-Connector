@@ -15,6 +15,65 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Claude (Core agent) - `feat/agent-supervisor` - task 1.P6
+
+- **Commits:** this commit (and a CI follow-up if needed).
+- **Asked:** 1.P6: real helper supervisor in `nc-agent` (lib + daemon) and the `nc` CLI on the 1.P6a job contract,
+  keeping the 0.8 facade and its 7 tests; add `update_network_budget` and today's counters for the app.
+- **Done:**
+  - `nc-agent` lib: `coord.rs` (Coordinator trait + `HttpCoordinator`: NC-REQ-V1 signed requests with the device key,
+    enrol header on register only, Range GET with Content-Range check, relative `/v1/` paths only, no redirects,
+    rustls + OS roots), `session.rs` (register -> journal recovery -> policy + tariff gate -> heartbeat -> lease ->
+    `verify_job` + transfer-ref checks -> owner admit -> budget pre-check -> downloads -> nc-exec run with a 10-50 ms
+    Stop/policy monitor -> PUT output -> Complete v2; every refusal is LeaseFail with reason + code; backoff with
+    jitter), `transfer.rs` (`.part` + Range resume, per-64 KiB-step checks of Stop / window end / network change,
+    never reads past the reservation, inputs cached in nc-blob with a per-process key, start-up sweep), `budget.rs`
+    (nc-tariff gate: decide + atomic `reserve_transfer` + settle with actual bytes; `NetworkBudget::Unmetered |
+    Metered(profile)`), `journal.rs` (one nc-store task per coordinator attempt + a small id index file;
+    attempt-checked commit), `runner.rs` (nc-exec `SandboxRunner`, sweep + warm-up), `probe.rs` (PlatformProbe +
+    Clock traits, FakeProbe, SystemProbe: Win32_Battery via PowerShell on a 30 s background thread, Linux sysfs),
+    `today.rs` (jobs done, time helped, job seconds; local-midnight reset), `requester.rs` (build + sign JobManifest,
+    upload, submit, poll, verified download), `config.rs` (JSON config), `control.rs` (127.0.0.1-only control socket
+    with a random token). Facade: `Agent::with_backend`, `update_policy`, `update_network_budget`, `submit_job`,
+    `today`, `activity`, `policy`; `Agent::new()` keeps the coordinator-less 0.8 behaviour. Stop cancels the job at
+    once and returns within 800 ms (a thread stuck in network I/O is detached; it never starts a job after Stop).
+  - `nc-agent run --config agent.json` daemon; `nc status|start|stop|shutdown|policy show|policy set|submit`.
+  - `core/crates/nc-agent/README.md` (config format, platform facts, test commands). TASKS.md 1.P6 -> review.
+- **Decisions (Core agent):**
+  - The publisher key is the `TaskOffer.peer_key` for nc-policy trust (the lease does not name the requester).
+  - v1 helpers accept only unencrypted transfers (transport hash = signed plaintext hash); otherwise
+    `VERIFY_FAILED/ENCRYPTED_UNSUPPORTED`. Transfer paths must be exactly `/v1/blobs/{sha256}`.
+  - Budget pre-check covers module + inputs + the full `output_bytes` allowance before the first byte.
+  - Control calls are charged 4 KiB each; with no allowed Control traffic the agent contacts nothing (strict mode).
+  - No platform adapter confirms the network or thermal state, so both come from the owner's config; idle time is
+    unknown (needs `unsafe` FFI not allowed here), which makes policies with `pause_on_user_activity` refuse work.
+  - TLS roots from rustls-native-certs, not webpki-roots/rustls-platform-verifier: both pull a
+    CDLA-Permissive-2.0 crate that deny.toml rejects (first try failed `cargo deny`, recorded below).
+  - Enrolment secret only from `NC_ENROLL_SECRET`, never in the config file.
+- **Verified (real results, this PC, CARGO_TARGET_DIR=D:\nc-target-agent, -j 2):**
+  - `cargo fmt --all --check` exit 0; `cargo clippy --all-targets -- -D warnings` exit 0 (whole core workspace).
+  - `cargo test` whole core workspace exit 0. nc-agent: lib 16 passed (the 7 facade tests unchanged and passing,
+    incl. stop latency), bin 1, http_client 1, session 16, e2e 1 ignored, sandbox_jobs 4 ignored; nc 1. Session
+    tests: policy refusal -> no lease call; 4 manifest/transfer tamper cases -> VERIFY_FAILED, no GET, nothing run;
+    wrong module bytes -> VERIFY_FAILED/BLOB_HASH; cut download resumed with `@100000`; budget too small ->
+    BUDGET/PRECHECK, no GET; outside window -> zero coordinator calls; window end mid-transfer stops, charges exactly
+    the moved bytes, resumes next window; Wi-Fi -> cellular stops; overrun cut at the reservation; Stop during run
+    < 1 s + STOPPED_BY_OWNER/STOP; consent off during run -> STOPPED_BY_OWNER/POLICY; crash recovery (CRASHED/
+    AGENT_RESTART + resent Complete); lost Complete resent once, counted once. Journal proptest (crash points).
+  - Real sandbox (`--test sandbox_jobs -- --ignored`, NC_EXEC_WORKER = built worker): 4 passed. Echo job completed;
+    infinite loop: "stop returned 33.7178ms, STOPPED_BY_OWNER sent after 33.7435ms"; memory growth -> reason 7
+    code MEMORY; huge output -> reason 7 code OUTPUT_LIMIT.
+  - `cargo deny check`: first run "licenses FAILED" (webpki-root-certs, CDLA-Permissive-2.0, via
+    rustls-platform-verifier); after the switch: "advisories ok, bans ok, licenses ok, sources ok".
+- **Not done / open:**
+  - Docker end-to-end (`tests/e2e_docker.rs`, ignored) not run: Docker is not run locally (owner rule), and the
+    CI Docker job is Ubuntu, where nc-exec refuses every job (no Linux sandbox yet), so it needs a Windows host.
+  - HTTPS against a real TLS server not exercised (only plain HTTP loopback tests).
+  - Tariff ledger is in memory: byte usage resets when the agent restarts (nc-tariff has no persisted ledger).
+  - `approve_pairing` is not in the facade (nc-net pairing is not wired to the agent yet).
+  - No coordinator lease renewal exists, so jobs longer than the coordinator lease (about 60 s) cannot complete.
+  - Windows probe: no idle time, no thermal reading, no network identity confirmation (see Decisions).
+
 ## 2026-11-02 - Claude (coordinator) - `main`
 
 - **Commits:** this merge of `feat/codex-jobs-api` (Codex 07c57b6..56755f8, net-agent fix dba5bc2).

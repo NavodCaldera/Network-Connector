@@ -1,18 +1,47 @@
-//! `nc-agent`: in-process supervisor API (AGENT.md §3 shared contract).
+//! `nc-agent`: the device supervisor (AGENT.md §3 shared contract).
 //!
-//! Phase 0 spike (task 0.8): only the helper-session part of the contract exists yet:
-//! [`Agent::start_helper_session`], [`Agent::stop_helper_session`] and [`Agent::watch_status`].
-//! The session loop is a placeholder that runs no jobs; it only proves the start/stop/status path that the UI
-//! needs, including the "Stop within 1 s" rule (AGENT.md §1 rule 5).
+//! [`Agent`] is the typed API that `nc-bridge` wraps 1:1 and the `nc-agent` daemon drives:
+//! [`Agent::start_helper_session`], [`Agent::stop_helper_session`], [`Agent::watch_status`],
+//! [`Agent::update_policy`], [`Agent::update_network_budget`], [`Agent::submit_job`], [`Agent::today`] and
+//! [`Agent::activity`].
+//!
+//! An agent made with [`Agent::new`] has no coordinator: its session only proves the start/stop/status path (the
+//! app uses this until a coordinator is configured). An agent made with [`Agent::with_backend`] runs the real
+//! helper loop in [`session`]: register, policy and tariff gates, lease, signed-manifest verification,
+//! tariff-gated Range-resumable downloads, sandboxed execution in nc-exec, upload and Complete v2, with every
+//! attempt journalled in nc-store for crash recovery.
+//!
+//! Stop (AGENT.md §1 rule 5): the running job's cancel token is fired at once (nc-exec kills the sandbox within
+//! one 5 ms watchdog tick), and `stop_helper_session` returns within 1 s. If the session thread is still inside
+//! a network call it is left to finish on its own; it never starts a job after Stop.
+
+pub mod budget;
+pub mod config;
+pub mod control;
+pub mod coord;
+pub mod journal;
+pub mod probe;
+pub mod requester;
+pub mod runner;
+pub mod session;
+pub mod today;
+pub mod transfer;
+
+pub use budget::NetworkBudget;
+pub use session::{Activity, Backend, Tuning};
+pub use today::Today;
 
 use nc_policy::OwnerPolicy;
+use session::{lock, Ctl, Live, Session};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 /// How often the placeholder session loop wakes when nothing happens. Stop never waits for this tick.
 const IDLE_TICK: Duration = Duration::from_millis(250);
+/// Longest `stop_helper_session` waits for the session thread before leaving it to finish by itself.
+const STOP_WAIT: Duration = Duration::from_millis(800);
 
 /// Where the helper session is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,16 +79,21 @@ pub enum AgentError {
     /// The session thread could not be started.
     #[error("Could not start the helper session.")]
     Spawn,
-}
-
-#[derive(Default)]
-struct Control {
-    stop: bool,
+    /// The network budget is invalid.
+    #[error("The network budget settings are invalid.")]
+    InvalidBudget,
+    /// This agent has no coordinator configured.
+    #[error("No coordinator is configured.")]
+    NoCoordinator,
+    /// Submitting a job failed.
+    #[error("Could not submit the job: {0}")]
+    Submit(String),
 }
 
 struct Running {
-    control: Arc<(Mutex<Control>, Condvar)>,
+    ctl: Arc<Ctl>,
     thread: JoinHandle<()>,
+    done: Receiver<()>,
 }
 
 struct Shared {
@@ -85,6 +119,8 @@ impl Shared {
 pub struct Agent {
     shared: Arc<Mutex<Shared>>,
     running: Mutex<Option<Running>>,
+    live: Arc<Live>,
+    backend: Option<Arc<Backend>>,
 }
 
 impl Default for Agent {
@@ -93,14 +129,26 @@ impl Default for Agent {
     }
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    // A poisoned lock only means a watcher panicked; the state itself stays consistent.
-    m.lock().unwrap_or_else(PoisonError::into_inner)
+impl std::fmt::Debug for Agent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Agent")
+            .field("status", &self.status())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Agent {
-    /// New agent with no session (`Stopped`).
+    /// New agent with no session (`Stopped`) and no coordinator.
     pub fn new() -> Self {
+        Self::build(None)
+    }
+
+    /// New agent that runs the real helper loop against `backend`.
+    pub fn with_backend(backend: Backend) -> Self {
+        Self::build(Some(Arc::new(backend)))
+    }
+
+    fn build(backend: Option<Arc<Backend>>) -> Self {
         Self {
             shared: Arc::new(Mutex::new(Shared {
                 status: Status {
@@ -110,12 +158,35 @@ impl Agent {
                 watchers: Vec::new(),
             })),
             running: Mutex::new(None),
+            live: Arc::new(Live::new()),
+            backend,
         }
+    }
+
+    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        self.backend
+            .as_ref()
+            .map_or_else(chrono::Utc::now, |b| b.clock.now())
     }
 
     /// Current status.
     pub fn status(&self) -> Status {
         lock(&self.shared).status.clone()
+    }
+
+    /// What the helper is doing right now.
+    pub fn activity(&self) -> Activity {
+        lock(&self.live.activity).clone()
+    }
+
+    /// Today's counters (jobs done, time helped).
+    pub fn today(&self) -> Today {
+        lock(&self.live.counters).snapshot(self.now())
+    }
+
+    /// The policy in force.
+    pub fn policy(&self) -> OwnerPolicy {
+        self.live.policy()
     }
 
     /// Start offering this device as a helper, under `policy`. The policy is validated first.
@@ -126,17 +197,28 @@ impl Agent {
             return Err(AgentError::AlreadyRunning);
         }
         lock(&self.shared).set(SessionState::Starting);
-        let control = Arc::new((Mutex::new(Control::default()), Condvar::new()));
+        let tz = policy.timezone;
+        *lock(&self.live.policy) = policy;
+        let ctl = Arc::new(Ctl::default());
+        let (done_tx, done) = mpsc::channel::<()>();
         let thread = {
-            let control = Arc::clone(&control);
+            let ctl = Arc::clone(&ctl);
             let shared = Arc::clone(&self.shared);
+            let live = Arc::clone(&self.live);
+            let backend = self.backend.clone();
             std::thread::Builder::new()
                 .name("nc-helper-session".into())
-                .spawn(move || session_loop(&policy, &control, &shared))
+                .spawn(move || {
+                    // Dropped when this thread ends (normally or by panic): tells Stop we are done.
+                    let _done = done_tx;
+                    session_main(&ctl, &shared, &live, backend.as_deref());
+                    live.set_activity(Activity::Off);
+                })
         };
         match thread {
             Ok(thread) => {
-                *running = Some(Running { control, thread });
+                lock(&self.live.counters).session_started(tz, self.now());
+                *running = Some(Running { ctl, thread, done });
                 Ok(())
             }
             Err(_) => {
@@ -146,17 +228,27 @@ impl Agent {
         }
     }
 
-    /// Stop the helper session. Returns once the session is torn down and the status is `Stopped`.
+    /// Stop the helper session: cancels any running job at once and returns within 1 s with status `Stopped`.
     /// Safe to call when nothing is running.
     pub fn stop_helper_session(&self) {
         let taken = lock(&self.running).take();
-        if let Some(Running { control, thread }) = taken {
-            let (m, cv) = &*control;
-            lock(m).stop = true;
-            cv.notify_all();
+        if let Some(Running { ctl, thread, done }) = taken {
+            lock(&ctl.m).stop = true;
+            ctl.cv.notify_all();
+            self.live.cancel_job();
             lock(&self.shared).set(SessionState::Stopping);
-            // The loop checks the flag under the same lock it waits on, so this join is immediate.
-            let _ = thread.join();
+            match done.recv_timeout(STOP_WAIT) {
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // Stuck in a network call; the job (if any) is already cancelled. Let it finish alone.
+                    tracing::warn!(
+                        "session thread still in a network call after Stop; detaching it"
+                    );
+                }
+                _ => {
+                    let _ = thread.join();
+                }
+            }
+            lock(&self.live.counters).session_stopped(self.now());
         }
         lock(&self.shared).set(SessionState::Stopped);
     }
@@ -170,6 +262,45 @@ impl Agent {
         }
         rx
     }
+
+    /// Apply a new owner policy to the running session (and future ones). A running job that the new policy
+    /// no longer allows is cancelled within one monitor tick and reported as STOPPED_BY_OWNER.
+    pub fn update_policy(&self, policy: OwnerPolicy) -> Result<(), AgentError> {
+        policy.validate()?;
+        *lock(&self.live.policy) = policy;
+        if let Some(r) = lock(&self.running).as_ref() {
+            r.ctl.wake();
+        }
+        Ok(())
+    }
+
+    /// Replace the network budget (tariff profile or unmetered).
+    pub fn update_network_budget(&self, budget: NetworkBudget) -> Result<(), AgentError> {
+        if let NetworkBudget::Metered(p) = &budget {
+            p.validate().map_err(|_| AgentError::InvalidBudget)?;
+        }
+        if let Some(b) = &self.backend {
+            b.budget
+                .update(&budget, b.clock.now())
+                .map_err(|_| AgentError::InvalidBudget)?;
+        }
+        Ok(())
+    }
+
+    /// Requester side: upload the blobs (hash hex, bytes) and submit a signed job. Returns the job id.
+    pub fn submit_job(
+        &self,
+        manifest: nc_protocol::pb::v1::SignedJobManifest,
+        blobs: Vec<(String, Vec<u8>)>,
+    ) -> Result<String, AgentError> {
+        let b = self.backend.as_ref().ok_or(AgentError::NoCoordinator)?;
+        let job = requester::BuiltJob {
+            signed: manifest,
+            job_id: String::new(),
+            blobs,
+        };
+        requester::submit(b.coord.as_ref(), &job).map_err(|e| AgentError::Submit(e.to_string()))
+    }
 }
 
 impl Drop for Agent {
@@ -178,26 +309,46 @@ impl Drop for Agent {
     }
 }
 
-fn session_loop(policy: &OwnerPolicy, control: &(Mutex<Control>, Condvar), shared: &Mutex<Shared>) {
-    let state = if policy.accept_jobs {
-        SessionState::WaitingForJobs
-    } else {
-        SessionState::NotAccepting
+/// Publish `state` unless Stop was requested (checked under the control lock, so a Stop is never followed by
+/// a "running" status).
+fn publish(ctl: &Ctl, shared: &Mutex<Shared>, state: SessionState) {
+    let g = lock(&ctl.m);
+    if !g.stop {
+        lock(shared).set(state);
+    }
+    drop(g);
+}
+
+fn session_main(ctl: &Ctl, shared: &Mutex<Shared>, live: &Live, backend: Option<&Backend>) {
+    let consent_state = |accept: bool| {
+        if accept {
+            SessionState::WaitingForJobs
+        } else {
+            SessionState::NotAccepting
+        }
     };
-    let (m, cv) = control;
-    let mut c = lock(m);
-    // Publish under the control lock so a concurrent Stop can never be followed by a "running" status.
-    if c.stop {
+    publish(ctl, shared, consent_state(live.policy().accept_jobs));
+    let Some(b) = backend else {
+        // No coordinator: idle until Stop.
+        let mut c = lock(&ctl.m);
+        while !c.stop {
+            c = ctl
+                .cv
+                .wait_timeout(c, IDLE_TICK)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
         return;
+    };
+    transfer::sweep_staging(&b.staging);
+    let on_consent = |accept: bool| publish(ctl, shared, consent_state(accept));
+    Session {
+        b,
+        live,
+        ctl,
+        on_consent: &on_consent,
     }
-    lock(shared).set(state);
-    while !c.stop {
-        // Placeholder: real sessions will poll leases and run nc-exec jobs here.
-        c = cv
-            .wait_timeout(c, IDLE_TICK)
-            .unwrap_or_else(PoisonError::into_inner)
-            .0;
-    }
+    .run();
 }
 
 #[cfg(test)]
