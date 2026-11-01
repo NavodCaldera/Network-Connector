@@ -1,8 +1,7 @@
 # Network Connector platform (v1): plan
 
-> **Branch `platform/v1`.** This plan replaces the Python 0.x plan on this branch. The Python app is kept unchanged
-> on `legacy/python-v0.3` (and on `main` until the owner decides otherwise) and is used as the **reference
-> implementation**: behaviour it already has (consent, identity, Stop, benchmarks) is ported, not reinvented.
+> This plan replaces the Python 0.x plan. The Python app was removed from `main` and is kept unchanged on branch
+> `legacy/python-v0.3` as the **reference implementation**: behaviour it already has (consent, identity, Stop, benchmarks) is ported, not reinvented.
 >
 > Source: owner-approved research (2026-11-01, Perplexity report + coordinator review). Owner decisions are marked
 > **(owner)**.
@@ -126,7 +125,6 @@ app/                     Flutter application
 infra/                   infrastructure as code, deployment scripts
 spikes/phase0/           throwaway feasibility code + REPORT.md
 docs/                    user, operator and security docs
-network_connector/       legacy Python reference app (read-only on this branch)
 ```
 
 ---

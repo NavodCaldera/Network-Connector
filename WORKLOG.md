@@ -15,6 +15,22 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (coordinator, local Windows) · `main`
+
+- **Asked:** bring the platform work to `main`; delete all unnecessary files, code and folders.
+- **Done:** fast-forwarded `main` to `platform/v1` (5a8b833). Removed the legacy Python app from `main`
+  (`network_connector/`, `tests/`, `scripts/`, `spikes/`, `docs/`, `pyproject.toml`, `Start.cmd`, `.env.example`,
+  `CHANGELOG.md`); all of it remains on `legacy/python-v0.3`. Rewrote README.md and HANDOFF.md. AGENT.md, PLAN.md
+  and the three agents now point to the legacy branch and use `main` as the trunk. `.gitignore` gained Rust/Flutter
+  entries. Deleted local untracked leftovers: `.venv`, `build`, `dist`, `*.egg-info`, `.windows-validation`,
+  `.controller-debug`, `.ryzen-test`, three `.test-app-*` folders.
+- **Decisions:** owner: clean `main`. Coordinator: keep LICENSE, CLAUDE.md, WORKLOG.md, .gitattributes.
+- **Verified:** `git status` clean after commit; top-level now holds only docs, LICENSE and `.claude/`.
+- **Not done / open:** 14 local, git-ignored folders (`.pytest_cache`, `.test-app`, `.test-app2`, `.test-policy*`,
+  `.test-stop`, `.test-tmp-*`) refused deletion with "Access is denied" even after `icacls` (ACL-protected by the old
+  app); they need an elevated `takeown`. The other PC still pulling `main` will no longer get the Python app; it must
+  switch to `legacy/python-v0.3`.
+
 ## 2026-11-01 · Claude Code (coordinator, local Windows) · `platform/v1`
 
 - **Asked:** on a new branch, write AGENT.md and PLAN.md for the new platform and create three agents to build it.

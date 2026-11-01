@@ -1,7 +1,7 @@
 # Agents for the Network Connector platform (v1)
 
-> **Branch `platform/v1`.** These rules replace the Python 0.x agent rules on this branch. The old rules and agents
-> are kept on `legacy/python-v0.3`.
+> These rules replace the Python 0.x agent rules. The old rules, agents and code are kept on branch
+> `legacy/python-v0.3`.
 
 Three implementation agents carry out [PLAN.md](PLAN.md). A **coordinator** (the main Claude Code session) assigns
 tasks, reviews hand-backs and merges. Definitions are in [.claude/agents/](.claude/agents/).
@@ -24,8 +24,8 @@ tasks, reviews hand-backs and merges. Definitions are in [.claude/agents/](.clau
 - Wire formats live **only** in `proto/`. Never hand-write a second copy of a message type.
 - Style: small modules, `thiserror` for library errors, `anyhow` only in binaries, no `unwrap()`/`expect()` outside
   tests and proven-infallible cases, `tracing` for logs. Match the surrounding code.
-- The legacy Python app in `network_connector/` is **reference only** on this branch. Read it to port behaviour; do
-  not edit it.
+- The legacy Python app is **not on `main`**. It is kept on branch `legacy/python-v0.3` as the reference: read it with
+  `git show legacy/python-v0.3:network_connector/<file>` to port behaviour.
 
 ### Security invariants (hard rules; see PLAN.md §5)
 
@@ -62,8 +62,8 @@ A hand-back is not complete until WORKLOG.md is updated.
 
 ### Working method
 
-- Work on your own branch off `platform/v1` (`feat/core-*`, `feat/net-*`, `feat/app-*`) in small commits. Push your
-  branch; **never push or merge into `platform/v1` or `main`**. The coordinator merges.
+- Work on your own branch off `main` (`feat/core-*`, `feat/net-*`, `feat/app-*`) in small commits. Push your
+  branch; **never push or merge into `main`**. The coordinator merges.
 - Stay inside your ownership area (§3). Need something elsewhere? Put it under **Requests** in your hand-back.
 - Tests for every behaviour change. Hardware-, network- or store-policy facts must come from **real output**. When
   you need the owner's machines, phones or ISPs, write a script and say exactly what to run. **Never invent results.**
@@ -134,4 +134,4 @@ Use the core-agent to do Phase 0 tasks 0.2–0.4.
 Use the net-agent to do Phase 0 tasks 0.5–0.7.
 Use the app-agent to do Phase 0 tasks 0.8–0.10.
 ```
-The coordinator reviews each hand-back, runs the checks, merges into `platform/v1`, and starts the next step.
+The coordinator reviews each hand-back, runs the checks, merges into `main`, and starts the next step.

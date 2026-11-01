@@ -1,4 +1,15 @@
-# Python
+# Rust
+target/
+**/*.rs.bk
+
+# Flutter / Dart
+.dart_tool/
+app/build/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+
+# Python (legacy leftovers)
 .venv/
 venv/
 __pycache__/
