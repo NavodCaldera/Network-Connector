@@ -15,6 +15,25 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Codex - `feat/codex-ci-fix`
+
+- **Commits:** this task commit and its verification follow-up.
+- **Asked:** 1.P7: repair Linux identity and Windows sandbox CI without weakening isolation.
+- **Done:** corrupt-file fixture truncates a key on both OSes; retained the DPAPI bit-tamper test
+  separately on Windows. Core CI builds the runnable sandbox probe before tests and prints
+  security-test evidence. Missing probe diagnostic gives the build command.
+- **Decisions:** no production sandbox or keystore changes. Linux scheme 0 stores a raw 32-byte
+  seed: flipping a bit produces another valid seed. Truncation tests real format/length refusal.
+  Windows failures precede sandbox setup: cargo test builds an example harness, not the runnable
+  examples/sandbox_probe.exe consumed by runtime_dir. No capability skips or weaker fallback added.
+- **Verified:** requested run 41341586005: Ubuntu 19:27:05.7383029Z identity.rs:52 expected Corrupt
+  (8 passed, 1 failed). Windows 19:30:05.6284627Z sandbox_windows.rs:37 copy failed with Os code 2,
+  NotFound; same line for all 11 failures (1 passed, 11 failed, 1 ignored). Local fmt passed;
+  probe build and remaining checks/Actions verification in progress.
+- **Not done / open:** final local clippy/test/deny, cleanup and both core Actions outcomes pending.
+  Initial local command failed because cargo was absent from PATH; corrected to installed cargo bin.
+  Concurrent proto edits are excluded from this task.
+
 ## 2026-11-02 - Claude (coordinator) - `main`
 
 - **Commits:** this merge of `feat/codex-ci-stack` (4fdfaa2).

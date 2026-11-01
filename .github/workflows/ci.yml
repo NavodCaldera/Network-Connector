@@ -42,7 +42,15 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: test
         working-directory: ${{ matrix.workspace }}
-        run: cargo test --all-targets --locked
+        shell: bash
+        run: |
+          if [[ "${{ matrix.workspace }}" == core ]]; then
+            # cargo test builds examples as test harnesses, not runnable probe executables.
+            cargo build -p nc-exec --example sandbox_probe --locked
+            cargo test --all-targets --locked -- --nocapture
+          else
+            cargo test --all-targets --locked
+          fi
 
   flutter:
     name: flutter (analyze, test)

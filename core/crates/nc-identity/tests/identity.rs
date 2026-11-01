@@ -46,6 +46,25 @@ fn corrupt_key_file_is_refused_not_replaced() {
     let path = dir.path().join("root.key");
     let _k = SoftwareKeyStore::open_or_create(&path).unwrap();
     let mut bytes = std::fs::read(&path).unwrap();
+    // Both schemes require a complete seed/blob. A same-length seed bit flip is
+    // still a valid Ed25519 seed in the non-Windows, unsealed format.
+    bytes.truncate(6);
+    std::fs::write(&path, &bytes).unwrap();
+    assert!(matches!(
+        SoftwareKeyStore::open_or_create(&path),
+        Err(IdentityError::Corrupt)
+    ));
+    // File left as it was (no silent key rotation).
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+}
+
+#[cfg(windows)]
+#[test]
+fn tampered_dpapi_blob_is_refused_not_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("root.key");
+    let _k = SoftwareKeyStore::open_or_create(&path).unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
     let last = bytes.len() - 1;
     bytes[last] ^= 0xff;
     std::fs::write(&path, &bytes).unwrap();
@@ -53,7 +72,6 @@ fn corrupt_key_file_is_refused_not_replaced() {
         SoftwareKeyStore::open_or_create(&path),
         Err(IdentityError::Corrupt)
     ));
-    // File left as it was (no silent key rotation).
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }
 

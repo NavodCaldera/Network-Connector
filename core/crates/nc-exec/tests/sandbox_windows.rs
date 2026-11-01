@@ -34,7 +34,9 @@ fn runtime_dir() -> &'static PathBuf {
             .unwrap()
             .join("examples")
             .join("sandbox_probe.exe");
-        std::fs::copy(&probe, dir.join("sandbox_probe.exe")).unwrap();
+        std::fs::copy(&probe, dir.join("sandbox_probe.exe")).expect(
+            "build the runnable probe first: cargo build -p nc-exec --example sandbox_probe --locked",
+        );
         sandbox::grant_appcontainer_read(&dir).unwrap();
         dir
     })
