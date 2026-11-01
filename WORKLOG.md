@@ -52,7 +52,13 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
       `OUT_DIR` in the shared `C:\dev\nc-target` (serde derives, E0433). Not caused by this change.
     - The retry in a private target dir hit a full C: (0 bytes free) and was deleted.
     - The final `cargo test` (excluding those three crates) failed linking nc-netprobe (LNK1140) because C: was
-      full. So whole-workspace `cargo test` is **not verified locally**; CI must confirm it.
+      full. So whole-workspace `cargo test` is **not verified locally**.
+  - CI run 41341586005 on a1146f3:
+    - Passed: flutter (analyze, test), cargo-deny core and server, rust server on both OSes.
+    - rust core: fmt and clippy passed on Windows and Linux. The test step **failed** on failures main already
+      has (main run 41341116045 fails the same way): nc-identity `corrupt_key_file_is_refused_not_replaced` on
+      Linux, and 11 nc-exec sandbox tests on windows-latest.
+    - nc-agent and nc-bridge tests, including `stop_latency_under_one_second`, passed on both OSes.
   - Flutter:
     - `flutter analyze`: no issues.
     - `flutter test`: 4 passed with the real DLL (real round trip stop 4.1 ms); 3 passed and 1 skipped without it.
