@@ -15,166 +15,39 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
-## 2026-11-01 · Claude Code (coordinator) · `main`
+## 2026-11-01 · Claude Code (net-agent) · `feat/net-p2p` + `feat/net-server`
 
-- **Asked:** review Codex task 1.P1 (nc-policy).
-- **Done:** merged `feat/codex-policy` (e143783), no conflicts. Replaced Codex's exact pins with workspace versions
-  (same clash as nc-tariff). Moved the Android SDK to `C:\dev\Android\Sdk` and the gradle home to `C:\dev\gradle`
-  (owner: tools on C: only); removed small leftovers on D:.
-- **Review result: PASS.** Scope limited to `core/crates/nc-policy/**`, TASKS.md, WORKLOG.md. Coordinator checks on
-  the merged tree (target `C:\dev
-c-target`): fmt ok; workspace clippy `-D warnings` ok; nc-policy 28 + doctest
-  passed, nc-tariff 26 passed; `cargo deny` ok. Read `admit`: blocked beats trusted, untrusted rejected, safe
-  checked arithmetic, temporary restrictions last; property test covers 20 hard rules.
-- **Not done / open:** OS-level enforcement belongs to nc-agent (Phase 1). Build Tools, Rust caches and the 15.8 GB
-  build cache are still on D:, waiting for the net-agent.
-
-## 2026-11-01 · Codex · `feat/codex-policy`
-
-- **Commits:** this commit (task 1.P1 hand-back).
-- **Asked:** implement the pure owner-policy engine in the separate nc-codex-b checkout, validate, commit and push; no merge, PR or committed run logs.
-- **Done:** added versioned/default-closed serde OwnerPolicy, fixed-length hex PeerKey, validated working/resource/sensor/peer/runtime rules, offer and complete running-task snapshots, owner-readable Reason enums, admit/check_running/next_change APIs, shared nc-tariff working-hour/calendar calls and real transfer-decision gating. Added integration README, 28 unit/property tests (including two 256-case proptests) and one doctest. Set only task 1.P1 to review.
-- **Decisions:** Codex: blocked beats trusted; hard revocations/critical thermal/expired tasks Stop before temporary Pause rules. Unknown thermal always blocks; battery is required when minimum > 0, including on AC (owner can choose 0 for batteryless devices). Thermal thresholds are inclusive. Running-task vector includes authenticated keys/profile/start times and counts paused tasks. Working hours reuse nc-tariff's conservative DST behavior through a private no-transport projection; real transfers independently require fresh tariff decisions/reservations. CPU percent is best effort; supervisor owns actual enforcement and one-second Stop.
-- **Verified:** every shell set CARGO_TARGET_DIR=D:\nc-target\codex, TEMP=D:\tmp and TMP=D:\tmp; Cargo cache also on D:. From core/: cargo fmt --all --check exit 0; cargo clippy -p nc-policy --all-targets -- -D warnings exit 0; cargo test -p nc-policy: 28 passed, 0 failed plus one passing doctest; cargo deny check: advisories ok, bans ok, licenses ok, sources ok. AGENT.md workspace-wide strict Clippy and cargo test also passed. Production source scan found no unwrap/expect calls or unsafe code; all public items have enforced doc comments. Actual output will be pasted in the hand-back, not committed as a run log.
-- **Failures corrected:** initial formatting rejected a PowerShell-encoded non-ASCII test fixture; replaced it with an ASCII Rust Unicode escape and UTF-8 source. Clippy required fixed-size as_chunks parsing instead of chunks_exact. All final checks passed. No os error 112 occurred. Git's global-ignore permission warning was nonfatal.
-- **Requests:** exact local dependencies: nc-tariff path ../nc-tariff version 0.1.0; chrono 0.4.42, chrono-tz 0.10.4, serde 1.0.228, thiserror 2.0.17; dev serde_json 1.0.145 and proptest 1.9.0. Coordinator must regenerate/review core/Cargo.lock (only the nc-policy dependency list changed during validation); generated changes were restored to HEAD for ownership compliance. core/Cargo.toml is unchanged.
-- **Not done / open:** no supervisor/platform/transport implementation, cryptographic authentication, persistence, atomic resource reservation, CPU throttling or executor teardown; those remain integration responsibilities. Stateless snapshots cannot detect every backward clock jump or observation staleness, so the supervisor must detect events and enforce a monotonic watchdog. No files outside nc-policy plus this log and the assigned task row are included; no run logs, merge or PR.
-
-## 2026-11-01 · Claude Code (coordinator) · `main`
-
-- **Asked:** review app-agent task 0.9a (Android spike); the owner freed C: and asked that all tools live on C: only.
-- **Done:** merged `feat/app-android` (e3fa591, 17 files under `spikes/phase0/android/`, no conflicts). Added LF line
-  endings for `*.sh` and `gradlew` in `.gitattributes`. TASKS.md 0.9a stays in progress.
-- **Review result: PARTIAL.** The agent reported host tests passing (2/2 per runtime feature: Pulley, wasmi, Cranelift).
-  No `.so` or APK was built (disk), nothing ran on a device, and fmt/clippy were not re-run on the final state. The
-  coordinator did not re-run these spike tests.
-- **Not done / open:** build the `.so` files and APKs after the tools move to C:; the owner runs `RUN.md` on an ARM64
-  phone. Planned move of everything on D: (Android SDK, Build Tools, Rust caches, gradle) to C:, waiting for the
-  net-agent to finish.
-
-## 2026-11-01 · Claude Code (App agent) · `feat/app-android`
-
-- **Asked:** task 0.9a, Android spike: Wasm job in a foreground service with a Stop button, three runtimes compared.
-- **Done:** `spikes/phase0/android/`: `wasm-spike` (Rust cdylib, features `rt-pulley`, `rt-wasmi`, `rt-cranelift`;
-  Pulley bytecode precompiled on the host in `build.rs`), `app-spike` (Kotlin app, `specialUse` foreground service,
-  notification Stop, JNI bridge, one flavor per runtime), `build-so.sh`, and `RUN.md` (owner test steps on a phone).
-- **Decisions:** Pulley (interpreter, no JIT on device) is the v1 candidate; Cranelift is built for size comparison only.
-- **Verified:** on the Windows host, `cargo test --release` passes for all three features (2/2 each:
-  `sums_match_native`, `stop_halts_within_one_second`), including loading host-precompiled Pulley bytecode.
-- **Not done / open:** the Android `.so` files and APKs were **not** built in this run (no APK exists; disk has about
-  4 GB free on D: and E:). No phone or emulator was available, so there are no on-device numbers (Stop latency,
-  Doze, OEM killing, APK size). fmt/clippy were not re-run in this session. The owner needs to run `RUN.md`.
-
-## 2026-11-01 · Claude Code (coordinator) · `main`
-
-- **Asked:** review and merge core-agent tasks 0.2 (executor + Windows sandbox) and 0.3 (identity, manifests, store).
-- **Done:** merged `feat/core-store` (147e9f7, which contains `feat/core-exec` 856040c). Conflicts: `core/Cargo.lock`
-  took the branch version and was regenerated; TASKS.md kept main's board with 0.2/0.3 set to done. Fixed a
-  dependency clash: Codex's exact pins in `nc-tariff` (`proptest =1.9.0`, `thiserror =2.0.17`) conflicted with the
-  workspace, so `nc-tariff` now uses the workspace versions and caret ranges.
-- **Review result: PASS.** On the merged tree in `core/`: fmt ok; `clippy --all-targets -D warnings` exit 0;
-  `cargo test` exit 0 with all suites ok (incl. nc-exec runtime limits 12, Windows sandbox 12 + 1 ignored,
-  refusals 9, nc-tariff 26); `cargo deny check` "advisories ok, bans ok, licenses ok, sources ok". The agent's
-  sandbox escape and Stop-latency numbers are recorded in spikes/phase0/REPORT.md; the coordinator did not re-measure them.
-- **Not done / open:** no Linux/macOS sandbox (jobs refused there); cold first worker launch 2.1–4.8 s (call
-  `warm_up()` at start); `C:\Windows\win.ini`-style world-readable files are visible in the AppContainer; one
-  unexplained 62 s watchdog kill under load. TPM Ed25519 support not checked.
-
-## 2026-11-01 · Claude Code (core-agent) · `feat/core-store` (based on `feat/core-exec`)
-
-- **Asked:** Phase 0 task 0.3: `nc-identity` (Ed25519 root key, software keystore + adapter trait, session certs),
-  `proto/` TaskManifest with prost + vendored protoc, `nc-protocol` manifest sign/verify, `nc-store` SQLite lease
-  state machine with property tests.
-- **Done:** `proto/nc/v1/manifest.proto`, `proto/nc/v1/identity.proto`. `nc-protocol`: `build.rs` (prost-build +
-  protoc-bin-vendored), `sign.rs` (domain-separated Ed25519, `verify_manifest`), tests incl. proptests.
-  `nc-identity`: `DeviceKeyStore`, `RootSigner`, `SoftwareKeyStore` (DPAPI on Windows, 0600 elsewhere, the only
-  `unsafe` is in `platform.rs` with SAFETY comments), session certs ≤ 24 h. `nc-store`: migrations, `Store` with
-  enqueue/lease_next/start/renew/upload/verify/commit/fail/expire_leases, unit + property tests. `nc-exec`:
-  `Ed25519Publishers` + `Job::from_manifest` (closes the 0.2 signature TODO). Workspace deps added. REPORT.md §0.3.
-  TASKS.md 0.3 → review.
-- **Decisions:** core-agent: signatures always cover the exact received bytes with a per-type domain prefix; nothing
-  is re-encoded before verification. Commit of an already-committed task by the same attempt returns
-  `AlreadyCommitted` (idempotent); any other attempt gets `StaleAttempt`. A corrupt key file is an error, never
-  replaced with a new key. Time is a parameter (`now_ms`) in the store so the tests are deterministic.
-- **Verified:** fmt, clippy `-D warnings`, `cargo test`, `cargo deny check`: see the hand-back and REPORT.md §0.3
-  (manifest 11, identity 9, lease 10 incl. 2 proptests × 300 cases, refusals 9). `tpmtool getdeviceinformation`:
-  TPM 2.0 (Intel) present and ready.
-- **Not done / open:** no hardware keystore adapter yet (TPM, Android, Secure Enclave); not checked whether the TPM
-  can hold Ed25519. Linux key file protection is only 0600. The unix code paths were not run on this PC (CI runs
-  them).
-
-## 2026-11-01 · Claude Code (core-agent) · `feat/core-exec`
-
-- **Asked:** Phase 0 task 0.2: `nc-exec` Wasmtime executor (`cpu-core-v1`) with fuel, epoch, external watchdog,
-  memory/stack/output caps, separate worker process inside AppContainer + Job Object on Windows, refuse if any layer
-  fails, teardown + start-up sweep, Stop < 1 s, hash check, malicious-job tests.
-- **Done:** `core/crates/nc-exec`: `runtime.rs` (Wasmtime 50.0.1 pinned; import allowlist `nc.*` only, no WASI;
-  fuel, epoch tick thread, `ResourceLimiter`, `max_wasm_stack`, output/checkpoint caps), `ipc.rs` (length-capped
-  stdin/stdout framing to the worker), `bin/nc-exec-worker.rs`, `executor.rs` (hash + `ModuleVerifier` checks before
-  spawn, 5 ms watchdog/cancel loop, capped pipe reader, suspended start), `sandbox/windows.rs` (AppContainer with 0
-  capabilities, Job Object with memory cap / 1 process / kill-on-close / UI limits / completion port,
-  child-process policy, `JOB_LIST`, teardown in `Drop`, `sweep_leftovers()` via the registry, `warm_up()`),
-  `sandbox/unsupported.rs` (non-Windows: refuse). Tests: `tests/runtime_limits.rs`, `tests/refusals.rs`,
-  `tests/sandbox_windows.rs`, test-only `examples/sandbox_probe.rs`. `core/Cargo.toml` workspace deps added.
-  REPORT.md §0.2 written. TASKS.md 0.2 → review.
-- **Decisions:** core-agent: worker IPC is a private framing, not in `proto/` (same binary, never on the network).
-  No permissive `ModuleVerifier` exists in the crate; Ed25519 verifier comes with 0.3. Worker starts suspended so a
-  Stop during a slow `CreateProcessW` never runs guest code. Ported the legacy spike's launch recipe
-  (`legacy/python-v0.3:spikes/0.3-sandbox`).
-- **Verified:** on this PC: fmt ok; clippy `--all-targets -D warnings` clean; `cargo test` all green (nc-exec: 5 unit,
-  5 refusals, 12 runtime, 12 sandbox + 1 ignored measurement); `cargo deny check` advisories/bans/licenses/sources ok
-  (6 duplicate-version warnings). Cancel → return 7–150 ms; escape probe denied files, loopback, internet, DNS and
-  child processes. Numbers in REPORT.md §0.2.
-- **Not done / open:** no Linux/macOS sandbox (jobs refused there). Cold first launch of a new worker binary took
-  2.1–4.8 s inside `CreateProcessW` (cause not proven); `run()` cannot return before that call does. One warm run under
-  heavy machine load hung until the watchdog killed it at 62 s; cause not confirmed. C: had 0 bytes free and commit
-  memory ran out several times (rustc "paging file too small"); builds used `CARGO_HOME`/`TEMP` on D: and `-j 1/2`.
-
-## 2026-11-01 · Claude Code (coordinator) · `main`
-
-- **Asked:** review Codex task 0.4 (nc-tariff).
-- **Done:** merged `feat/codex-tariff` (90a8a11) into `main`. Removed the committed `VALIDATION.txt` (a run log,
-  not source).
-- **Review result: PASS.** Scope: only `core/crates/nc-tariff/**`, TASKS.md and WORKLOG.md changed. Coordinator re-ran
-  the checks in a clean worktree: fmt ok; clippy `-D warnings` ok; `cargo test -p nc-tariff` gave 26 passed, and the
-  doctest passed after setting TEMP to D: (it first failed with link error 1140 because C: had 0 MB free); the night
-  simulator passed (90 nights, no window or budget breach). Read `decision.rs`: the network binding is checked first,
-  a backwards clock is refused, the boundary guard is a hard exclusion, strict mode holds, and allowances are capped
-  by budget, window and wire capacity, with saturating arithmetic.
-- **Not done / open:** `core/Cargo.lock` was not regenerated, because cargo failed with os error 112 (C: full, the
-  cargo registry is on C:). The coordinator's `cargo deny` output was lost; Codex reported it ok. **C: is at 0 MB free;
-  this blocks builds.**
-
-## 2026-11-01 · Codex · `feat/codex-tariff`
-
-- **Commits:** this commit (Phase 0 task 0.4 hand-back).
-- **Asked:** implement the pure nc-tariff library, ledger, window planner and synthetic night simulation in a separate checkout; validate, commit and push without merging or opening a PR.
-- **Done:** only `core/crates/nc-tariff/**`, this log and TASKS.md row 0.4 changed. Added serde profile types; IANA/weekly cross-midnight calendar and conservative DST handling; class/binding/throughput/guard decisions; mutex-atomic reservations with actual-byte overage reports; monthly resets and backward-clock rejection; deterministic serial planning/jitter; pure simulator and `night` example; 26 tests (including two 128-case proptests), one doctest, integration README and real command transcript `core/crates/nc-tariff/VALIDATION.txt`. Task 0.4 is review.
-- **Decisions:** Codex: windows reject overlap/equal endpoints; ambiguous starts use later time, ends earlier time, nonexistent endpoints skip occurrences. Reserve rounds upwards. Settle outstanding reservations before renewal; IDs never repeat. A profile's remaining allocation renews monthly (no provider query). Planner is provisional/serial, not cost-optimal; callers must reauthorize chunks on network/clock/throughput changes and enforce consent/power/thermal/Stop. No real ISP names/packages or performance claims.
-- **Verified:** all shells set `CARGO_TARGET_DIR=D:\nc-target\codex`; Rust `1.99.1 (58cf8f9c3 2026-10-13)`, Cargo cache on D:. From `core/`: `cargo fmt --all --check` exit 0; `cargo clippy -p nc-tariff --all-targets -- -D warnings` exit 0; `cargo test -p nc-tariff` reports `26 passed; 0 failed` plus `1 passed; 0 failed` doctest; `cargo run -p nc-tariff --example night` reports `EXAMPLE ONLY: nights=90, completed=335, deferred=2545, committed_bytes=1399813443; window/budget assertions passed`; `cargo deny check` reports `advisories ok, bans ok, licenses ok, sources ok`. AGENT.md workspace-wide `cargo clippy --all-targets -- -D warnings` and `cargo test` also exit 0 (36 unit tests plus one doctest). `git diff --check` passed.
-- **Failures corrected:** initial Clippy found unused TimeZone import and an eight-argument planner; grouped jitter configuration and fixed test call sites after E0061. First cargo-deny rejected serde_yaml_ng's unsafe-libyaml with RUSTSEC-2024-0449; replaced it with serde-saphyr 2.0.0, then all final checks passed. Git emitted a nonfatal global-ignore permission warning. No policy exceptions added.
-- **Requests:** coordinator to regenerate/review `core/Cargo.lock` when integrating the exact crate-local dependency pins: chrono 0.4.42, chrono-tz 0.10.4, serde 1.0.228, thiserror 2.0.17; dev serde_json 1.0.145, serde-saphyr 2.0.0, proptest 1.9.0. Cargo generated the shared lockfile during checks; it was restored to HEAD to honor file ownership, so locked builds need the coordinator's update. `core/Cargo.toml` and deny.toml are unchanged.
-- **Not done / open:** persistence/crash recovery, trusted platform observations, socket cancellation and real-provider billing reconciliation belong to integration; this library has no I/O/networking/unsafe and cannot enforce a socket Stop itself. No real-device/ISP measurements. Flutter/server were not touched. No merge or PR.
-
-## 2026-11-01 · Claude Code (coordinator) · `main`
-
-- **Asked:** review Codex's tasks 0.9b and 0.10 and plan Codex's next task.
-- **Done:** reviewed `feat/codex-mobile-research` (c5345e3) and merged it into `main`. The TASKS.md conflict was
-  resolved by keeping main's board and marking 0.9b and 0.10 done. Added `.claude/worktrees/` to `.gitignore`.
-- **Review result: PASS.** Only the 4 allowed files changed. Every claim cites an official source with a check date,
-  and unknowns are stated rather than guessed. Verdicts: iOS requester **GO**, bounded helper **GO-WITH-LIMITS**
-  (bundled kernels only), overnight helper **NO-GO**; Android helper sessions **GO-WITH-LIMITS** (`specialUse`
-  FGS, interpreted Wasm only, no mining). These match PLAN.md §1. No links were opened to re-verify them.
-- **Not done / open:** the research does not replace real-device checks (0.9a is still running).
-
-## 2026-11-01 · Codex · `feat/codex-mobile-research`
-
-- **Commits:** this commit (Phase 0 mobile research hand-back).
-- **Asked:** research tasks 0.9b and 0.10 only in a separate checkout; commit and push without a PR or merge.
-- **Done:** added `spikes/phase0/ios-feasibility.md` and `spikes/phase0/mobile-policy.md` with linked, dated official evidence, explicit unknowns, policy/runtime distinctions and conditional role decisions. Set only TASKS.md rows 0.9b/0.10 to review.
-- **Decisions:** Codex recommendation: iPhone requester/monitor GO, bounded bundled-kernel helper GO-WITH-LIMITS, unattended overnight helper NO-GO; Android sessions GO-WITH-LIMITS pending runtime containment and Play service review. No security invariant relaxed.
-- **Verified:** cloned into `E:\Projects\New\nc-codex`, created the requested branch, read AGENT.md/PLAN.md/TASKS.md, checked current official Apple/Android/Play/Wasmtime/WAMR sources via web tools on 2026-11-01. Don't Kill My App used only as the requested secondary OEM source. `git diff --check` passed; TASKS.md diff contains only the two status edits. Git emitted a nonfatal permission warning reading the user's global ignore file.
-- **Not done / open:** no code/workspace/app touched, so cargo fmt/clippy/test and Flutter checks are not applicable. No phone/Mac builds, benchmarks, sandbox validation or store approvals; wasm3 current feasibility unknown under the permitted sources. Task 0.9a remains with app-agent. Coordinator must review before merge.
+- **Asked:** Phase 0 tasks 0.5 (libp2p two-ISP test kit), 0.6 (mDNS + QR pairing in `nc-net`), 0.7 (minimal
+  coordinator + relay, local Docker).
+- **Done:**
+  - `feat/net-p2p`: `core/crates/nc-net` on rust-libp2p 0.57.1 (pinned): QUIC + TCP/Noise/Yamux, relay client,
+    AutoNAT, DCUtR, identify, ping, mDNS. QR pairing with nonces, HMAC proofs bound to both peer keys and a 6-digit
+    SAS confirmed on both sides; single-use 10-min offers, lock after 5 bad proofs. Trust store keyed by peer id
+    (optional file). Connection gate closes unpaired peers; mDNS only dials trusted peers. Stream API for Core keyed
+    by peer id (`open_stream`/`accept`). Ladder rung per connection and direct/relayed byte counters. Probe binary
+    `nc-netprobe` (`id`, `relay`, `listen`, `dial` + throughput) and `spikes/phase0/net/RUN.md` for the owner.
+  - `feat/net-server`: `nc-coordinator` (Axum + sqlx/PostgreSQL, migrations; signed requests with replay check,
+    enrolment secret, 16 KiB cap, schema validation, one error format; register, heartbeat, lease
+    request/complete with idempotent attempt-checked commit, relay token). `nc-relay` (relay v2, coordinator
+    tokens bound to peer id, per-peer and per-account quotas, refuses to start without a token key).
+    `infra/docker-compose.yml`, `infra/Dockerfile`, `.env.example`, README.
+  - REPORT.md sections 0.5 (local results, owner run pending), 0.6, 0.7; TASKS.md rows 0.5-0.7 set to review.
+- **Decisions (net-agent):** coordinator wire structs live in `nc-coordinator/src/api.rs` with TODO(proto)
+  (requested move to `proto/`). Phase 0 enrolment uses an owner secret instead of OIDC. Relay byte quota charges
+  each circuit its full cap (libp2p does not report circuit bytes). A relay circuit is closed 3 s after a direct
+  path exists, never during pairing. The probe binds 0.0.0.0 by default (needed for LAN/internet tests; `--bind`
+  narrows it). Cargo home, target and TEMP were put on D: because C: was full.
+- **Verified (real output):** core: `cargo fmt --check` ok, `cargo clippy --all-targets -D warnings` clean,
+  `cargo test` all passed (nc-net: unit 6, loopback 9, relayed 1). server: fmt ok, clippy clean, `cargo test`
+  13 passed + 1 ignored; compose stack up, `lease_cycle -- --ignored` passed, psql shows 1 committed task.
+  Probe self-test on loopback: relay reservation, relayed connection, pairing, DCUtR ok, test over direct path.
+  `cargo deny check`: bans/licenses/sources ok in both workspaces; **advisories FAILED** in both on
+  RUSTSEC-2024-0436 (`paste` unmaintained, via libp2p `if-watch` -> `netlink-packet-core`, Linux only).
+- **Not done / open:** two-ISP measurements (owner run, `spikes/phase0/net/RUN.md`; test 3 needs a reachable relay,
+  and a cloud VM needs owner approval). mDNS between two physical PCs not run. TLS/443 fallback rung not
+  implemented. No TLS cert tested on the coordinator. Relay not exercised from `nc-net` through the compose
+  ports. `deny.toml` needs an ignore entry for RUSTSEC-2024-0436 (App agent owns it). During the work the PC ran
+  out of memory and C: space several times (rustc and the linker crashed); builds used `-j 1`/`-j 2`.
 
 ## 2026-11-01 · Claude Code (coordinator) · `main`
 

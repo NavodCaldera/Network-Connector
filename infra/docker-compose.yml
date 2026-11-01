@@ -1,0 +1,62 @@
+# Local Phase 0 stack (task 0.7): PostgreSQL + nc-coordinator + nc-relay.
+# Local Docker only. Every published port binds 127.0.0.1 (AGENT.md §1 rule 7).
+#
+#   cp infra/.env.example infra/.env   # then fill in random secrets (see infra/README.md)
+#   docker compose -f infra/docker-compose.yml --env-file infra/.env up -d --build
+name: nc-phase0
+
+x-server-image: &server-image
+  build:
+    context: ..
+    dockerfile: infra/Dockerfile
+  image: nc-server:phase0
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: nc
+      POSTGRES_DB: nc
+      POSTGRES_PASSWORD: ${NC_PG_PASSWORD:?set NC_PG_PASSWORD in infra/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nc -d nc"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    # No published port: only the coordinator (on the compose network) reaches the database.
+
+  coordinator:
+    <<: *server-image
+    command: ["nc-coordinator"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NC_DATABASE_URL: postgres://nc:${NC_PG_PASSWORD}@postgres:5432/nc
+      # 0.0.0.0 inside the container only; the host side is published on loopback below.
+      NC_BIND: 0.0.0.0:8080
+      NC_ENROLL_SECRET: ${NC_ENROLL_SECRET:?set NC_ENROLL_SECRET in infra/.env}
+      NC_RELAY_TOKEN_KEY: ${NC_RELAY_TOKEN_KEY:?set NC_RELAY_TOKEN_KEY in infra/.env}
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  relay:
+    <<: *server-image
+    command: ["nc-relay"]
+    environment:
+      NC_RELAY_TOKEN_KEY: ${NC_RELAY_TOKEN_KEY}
+      NC_RELAY_LISTEN: /ip4/0.0.0.0/udp/4001/quic-v1,/ip4/0.0.0.0/tcp/4001
+      # Address clients on this host dial (published on loopback below). Use the public IP when deployed.
+      NC_RELAY_EXTERNAL: /ip4/127.0.0.1/udp/4001/quic-v1,/ip4/127.0.0.1/tcp/4001
+      NC_RELAY_KEY_FILE: /var/lib/nc/relay.key
+    volumes:
+      - relaykey:/var/lib/nc
+    ports:
+      - "127.0.0.1:4001:4001/udp"
+      - "127.0.0.1:4001:4001/tcp"
+
+volumes:
+  pgdata:
+  relaykey:
