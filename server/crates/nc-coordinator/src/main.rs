@@ -46,7 +46,14 @@ async fn main() -> Result<()> {
         .await
         .context("running migrations")?;
 
+    let blob_dir = std::env::var_os("NC_BLOB_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| "blobs".into());
+    tokio::fs::create_dir_all(&blob_dir)
+        .await
+        .context("creating blob directory")?;
     let router = app(AppState {
+        blob_dir,
         pool,
         enroll_secret,
         relay_key,

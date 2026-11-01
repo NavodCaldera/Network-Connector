@@ -2,6 +2,7 @@
 // No fields have been removed. Reserve both numbers and names when removing any.
 syntax = "proto3";
 package nc.v1;
+import "nc/v1/manifest.proto";
 
 message RegisterRequest {
   string name = 1;      // Display only: 1..64 printable Unicode characters.
@@ -23,13 +24,52 @@ message LeaseResponse {
   string task_id = 2;    // UUID.
   string attempt_id = 3; // UUID; must match on completion.
   uint64 expires_at = 4; // Unix seconds.
-  string input = 5;      // Phase 0 dummy input.
+  string input = 5 [deprecated = true]; // Phase 0 dummy input only.
+  SignedJobManifest manifest = 6;
+  repeated TransferRef transfers = 7; // Module first, followed by input chunks in order.
+  uint32 version = 8; // 2 for real jobs.
 }
 message CompleteRequest {
   string lease_id = 1;   // UUID.
   string attempt_id = 2; // UUID.
   string result = 3;     // At most 4096 UTF-8 bytes.
+  string output_sha256 = 4; // Lowercase hex; blob must already exist, uploaded by this device.
+  uint64 output_size = 5;
+  uint32 version = 6; // 2 for real jobs; result must be empty.
 }
+
+message TransferRef {
+  string sha256 = 1;
+  uint64 size = 2;
+  string path = 3; // Relative HTTPS path; each request still requires signed device auth.
+}
+message SubmitJobRequest { SignedJobManifest manifest = 1; }
+message SubmitJobResponse { string job_id = 1; repeated string task_ids = 2; }
+enum LeaseFailReason {
+  LEASE_FAIL_REASON_UNSPECIFIED = 0;
+  POLICY_REFUSED = 1;
+  TARIFF_WINDOW = 2;
+  BUDGET = 3;
+  VERIFY_FAILED = 4;
+  SANDBOX_UNAVAILABLE = 5;
+  TIMEOUT = 6;
+  CRASHED = 7;
+  STOPPED_BY_OWNER = 8;
+  OTHER = 9;
+}
+message LeaseFailRequest {
+  string lease_id = 1;
+  string attempt_id = 2;
+  LeaseFailReason reason = 3;
+  optional string code = 4; // <=32 ASCII [A-Z0-9_]; no free text.
+}
+message LeaseFailResponse { string task_id = 1; string state = 2; bool duplicate = 3; }
+message TaskStatus {
+  string task_id = 1;
+  string state = 2;
+  TransferRef output = 3;
+}
+message JobStatusResponse { string job_id = 1; repeated TaskStatus tasks = 2; }
 message CompleteResponse {
   string task_id = 1; // UUID.
   string state = 2;   // committed.

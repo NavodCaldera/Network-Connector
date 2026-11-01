@@ -164,7 +164,8 @@ pub fn verify_manifest(
         return Err(ProtocolError::UntrustedSigner);
     }
     verify_domain(&issuer, DOMAIN_MANIFEST, &s.manifest, &s.signature)?;
-    let m = TaskManifest::decode(s.manifest.as_slice()).map_err(|_| ProtocolError::Decode)?;
+    let m = crate::wire::decode_strict::<TaskManifest>(&s.manifest)
+        .map_err(|_| ProtocolError::Decode)?;
 
     match &m.version {
         Some(v) if v.major == PROTOCOL_VERSION.major => {}

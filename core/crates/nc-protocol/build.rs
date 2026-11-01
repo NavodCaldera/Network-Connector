@@ -24,6 +24,20 @@ fn main() -> io::Result<()> {
     let mut cfg = prost_build::Config::new();
     cfg.protoc_executable(protoc);
     for name in [
+        "JobManifest",
+        "SignedJobManifest",
+        "TaskManifest",
+        "ProtocolVersion",
+        "Limits",
+        "InputRef",
+        "Verifier",
+        "TransferRef",
+        "SubmitJobRequest",
+        "SubmitJobResponse",
+        "LeaseFailRequest",
+        "LeaseFailResponse",
+        "TaskStatus",
+        "JobStatusResponse",
         "RegisterRequest",
         "RegisterResponse",
         "HeartbeatRequest",
@@ -66,7 +80,39 @@ fn main() -> io::Result<()> {
             "#[serde(with = \"crate::json_uuid\")]",
         );
     }
+    for name in [
+        "JobManifest",
+        "SignedJobManifest",
+        "TaskManifest",
+        "ProtocolVersion",
+        "Limits",
+        "InputRef",
+        "Verifier",
+        "SubmitJobRequest",
+        "LeaseFailRequest",
+    ] {
+        cfg.type_attribute(format!("nc.v1.{name}"), "#[serde(deny_unknown_fields)]");
+    }
+    for field in [
+        "LeaseResponse.manifest",
+        "LeaseResponse.transfers",
+        "LeaseResponse.version",
+        "CompleteRequest.output_sha256",
+        "CompleteRequest.output_size",
+        "CompleteRequest.version",
+        "CompleteRequest.result",
+    ] {
+        cfg.field_attribute(
+            format!("nc.v1.{field}"),
+            "#[serde(default, skip_serializing_if = \"crate::wire::is_default\")]",
+        );
+    }
+    for field in ["JobManifest.min_helpers", "Verifier.replicas"] { cfg.field_attribute(format!("nc.v1.{field}"), "#[serde(default)]"); }
     cfg.skip_debug([
+        "nc.v1.JobManifest",
+        "nc.v1.SignedJobManifest",
+        "nc.v1.TaskManifest",
+        "nc.v1.SignedManifest",
         "nc.v1.PairingOffer",
         "nc.v1.RelayToken",
         "nc.v1.RelayAuthFrame",

@@ -15,6 +15,34 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Codex - `feat/codex-jobs-api`
+
+- **Commits:** this implementation commit; verification follow-ups recorded below.
+- **Asked:** task 1.P6a: real signed job contract, coordinator scheduling, opaque resumable blob staging,
+  attempt-checked failure/completion, requester status, PostgreSQL/Docker verification.
+- **Done:** reused TaskManifest inside canonical publisher-signed JobManifest; added v2 HTTP/protobuf types,
+  strict nested decoding, independent Ed25519 fixture, resource/size caps, forward-only real-job migration,
+  streaming hash-checked atomic uploads, scoped Range downloads, requester upload possession checks,
+  heartbeating-device scheduler with task row locks/SKIP LOCKED, six-attempt retry bound, distinct-device
+  exact validation/dispute, idempotent complete/fail, status refs, Docker blob volume/configuration.
+  Migrated the old dummy HTTP cycle to the real job cycle, including concurrent scheduling and expiry.
+- **Decisions:** one job contains one independent task (same UUID); extend rather than duplicate the executor
+  manifest. Keep module signing unchanged. Separate transport/ciphertext hashes from nc-blob plaintext hashes;
+  keys remain entirely device-owned. Publisher key ID is its lowercase public-key hex. Server verifies
+  signatures but device publisher trust remains device policy. Two replicas run sequentially on different
+  devices. Default zero replicas/min_helpers means one. Six attempts; deadline at most seven days.
+  Retired demand-created dummy tasks; retained deprecated field/tag. Invalid manifests return 400;
+  HTTP body/stream cap violations return 413. Auth/nonce precedes disk writes. Query errors are scrubbed.
+- **Verified:** core/server cargo fmt --all --check passed. Protocol tests: 12 new job tests, 11 manifest
+  tests, 22 wire tests passed. Server workspace unit/router tests passed so far (full command completion
+  and hosted verification pending). Core/server cargo deny command exited 0; warnings on existing duplicate
+  versions/license metadata; final summary: advisories ok, bans ok, licenses ok, sources ok.
+- **Not done / open:** full workspace Clippy/tests and Docker/PostgreSQL results are pending in this initial
+  commit. Local Docker info and infra/verify.ps1 stall before container startup; no PostgreSQL success
+  claimed. Existing unrelated task-board/core-CI commits landed in the shared checkout during work;
+  their files were not edited by this task. Dedicated target C:\dev\nc-target-codex will be cleaned at end.
+
+
 ## 2026-11-02 - Codex - `feat/codex-ci-fix`
 
 - **Commits:** this task commit and its verification follow-up.

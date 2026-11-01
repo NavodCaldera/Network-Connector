@@ -13,6 +13,7 @@ fn router() -> axum::Router {
         .connect_lazy("postgres://nobody:nothing@127.0.0.1:1/none")
         .unwrap();
     app(AppState {
+        blob_dir: std::env::temp_dir().join("nc-validation-blobs"),
         pool,
         enroll_secret: "0123456789abcdef".into(),
         relay_key: None,

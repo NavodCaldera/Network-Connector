@@ -58,4 +58,18 @@ macro_rules! redacted_debug {
         }
     )+};
 }
-redacted_debug!(PairingOffer, RelayAuthFrame, RelayToken, RelayTokenResponse);
+redacted_debug!(
+    PairingOffer,
+    RelayAuthFrame,
+    RelayToken,
+    RelayTokenResponse,
+    crate::pb::v1::JobManifest,
+    crate::pb::v1::SignedJobManifest,
+    crate::pb::v1::TaskManifest,
+    crate::pb::v1::SignedManifest
+);
+
+/// JSON evolution helper for optional v2 fields.
+pub fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    value == &T::default()
+}

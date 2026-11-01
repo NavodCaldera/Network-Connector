@@ -1,6 +1,6 @@
 param([switch]$CheckCache)
 $ErrorActionPreference = 'Stop'
-$env:CARGO_TARGET_DIR = 'C:\dev\nc-target'
+if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = 'C:\dev\nc-target-codex' }
 $env:TEMP = 'C:\dev\tmp'
 $env:TMP = 'C:\dev\tmp'
 

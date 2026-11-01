@@ -31,7 +31,7 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.P4 | Protocol-aware, cacheable Docker builds and live lease-cycle verification | **Codex** | `feat/codex-infra` | `infra/` only | done |
 | 1.P6 | Helper supervisor `nc-agent` (lib + daemon) wiring coordinator, store, policy, tariff, executor | **Codex** | `feat/codex-agent` | `core/crates/nc-agent`, `core/crates/nc-cli`, `core/Cargo.toml` members/deps only | blocked (needs 1.P6a) |
 | 1.P5 | Ubuntu CI Docker stack build and live lease-cycle check | **Codex** | `feat/codex-ci-stack` | `.github/workflows/`, `infra/verify.sh` | done |
-| 1.P6a | Real job contract: signed manifests in leases, job submit, blob up/download, lease failure | **Codex** | `feat/codex-jobs-api` | `proto/`, `core/crates/nc-protocol`, `server/`, `infra/` (migrations) | todo |
+| 1.P6a | Real job contract: signed manifests in leases, job submit, blob up/download, lease failure | **Codex** | `feat/codex-jobs-api` | `proto/`, `core/crates/nc-protocol`, `server/`, `infra/` (migrations) | review |
 
 | 1.P7 | Make core CI green without weakening security | **Codex** | `feat/codex-ci-fix` | `core/crates/nc-{identity,exec}`, core CI test step, own task/log entries | review |
 
