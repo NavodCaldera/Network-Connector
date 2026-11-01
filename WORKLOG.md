@@ -15,6 +15,27 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Codex - `feat/codex-ci-stack`
+
+- **Commits:** initial implementation and subsequent CI-verification follow-up for task 1.P5.
+- **Asked:** add an Ubuntu CI full-stack check on main pushes/PRs with GHA build cache, runtime-masked
+  credentials, health/non-root checks, the existing lease cycle and unconditional teardown.
+- **Done:** added Docker stack job to the existing CI workflow (also runs on feature pushes, enabling
+  branch verification). Official Docker Buildx/Bake actions build the Compose targets with per-target
+  GHA cache scopes and load their shared image. Added LF-only infra/verify.sh, matching the PowerShell
+  verifier with optional cached rebuild/prebuilt-image mode, process-only CSPRNG credentials and an
+  EXIT/signal cleanup trap. Added an independent always() cleanup step for failed/cancelled CI steps.
+- **Decisions:** all action references are full official commit SHAs; job permissions are contents: read,
+  checkout credentials are not persisted, and no image/artifact is published. Compose parsing during
+  build/teardown uses non-secret placeholders; real credentials are generated only in the verifier,
+  masked before use, never written to .env/GITHUB_ENV or echoed. Existing loopback bindings are retained.
+  Existing workflow triggers already cover main pushes/PRs plus feature branches. No dependencies changed.
+- **Verified:** bash -n and git diff --check passed; Docker Bake --print confirmed both targets, root
+  context, Dockerfile and GHA cache options. Checked every workflow action uses a full 40-hex SHA;
+  verified Bash file LF bytes. Action release commits resolved directly from official GitHub APIs.
+  Actual Actions verification is pending the first authorized branch push; results will be recorded here.
+- **Not done / open:** GitHub-hosted stack execution not yet run; do not treat static checks as a CI pass.
+
 ## 2026-11-02 - Claude (coordinator) - `main`
 
 - **Commits:** this commit; fast-forward of `feat/codex-infra` (ef2b8a7).

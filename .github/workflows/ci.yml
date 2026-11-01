@@ -58,3 +58,64 @@ jobs:
           manifest-path: ${{ matrix.workspace }}/Cargo.toml
           arguments: --all-features
           command: check
+
+
+  docker-stack:
+    name: Docker stack (lease cycle)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      COMPOSE_PROJECT_NAME: nc-stack-${{ github.run_id }}-${{ github.run_attempt }}
+      CARGO_TARGET_DIR: ${{ runner.temp }}/nc-target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain
+        shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: server
+          key: docker-stack-host
+      - name: Set up BuildKit
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build Compose stack with GHA cache
+        uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e # v7.5.0
+        env:
+          # Compose requires these while parsing. Build-only placeholders are not runtime credentials.
+          NC_PG_PASSWORD: unused-during-build
+          NC_ENROLL_SECRET: unused-during-build
+          NC_RELAY_TOKEN_KEY: unused-during-build
+          DOCKER_BUILD_RECORD_UPLOAD: false
+          DOCKER_BUILD_SUMMARY: false
+        with:
+          source: .
+          files: infra/docker-compose.yml
+          targets: |
+            coordinator
+            relay
+          load: true
+          set: |
+            *.context=.
+            *.dockerfile=infra/Dockerfile
+            coordinator.cache-from=type=gha,scope=nc-stack-coordinator
+            coordinator.cache-to=type=gha,mode=max,scope=nc-stack-coordinator
+            relay.cache-from=type=gha,scope=nc-stack-relay
+            relay.cache-to=type=gha,mode=max,scope=nc-stack-relay
+      - name: Verify health, non-root services and lease cycle
+        shell: bash
+        run: bash infra/verify.sh --skip-build
+      - name: Always clean up Compose stack
+        if: ${{ always() }}
+        shell: bash
+        env:
+          # Teardown only needs Compose parsing, not the discarded service credentials.
+          NC_PG_PASSWORD: unused-during-cleanup
+          NC_ENROLL_SECRET: unused-during-cleanup
+          NC_RELAY_TOKEN_KEY: unused-during-cleanup
+        run: |
+          docker compose --project-name "$COMPOSE_PROJECT_NAME" \
+            --file infra/docker-compose.yml down --volumes --remove-orphans
