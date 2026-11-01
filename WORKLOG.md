@@ -15,6 +15,38 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Codex - `feat/codex-infra`
+
+- **Commits:** this commit (task 1.P4).
+- **Asked:** repair server image inputs after the protocol migration, preserve cacheability and the
+  minimal non-root runtime, and verify the real Compose/HTTP lease cycle without secret files or logs.
+- **Done:** infra/Dockerfile copies workspace/crate manifests first, fetches the locked server graph,
+  then copies nc-protocol, proto/ and server/ in their repository-relative layout. BuildKit caches
+  registry/Git downloads and target artifacts; only two finished binaries enter the runtime stage.
+  Dockerfile.dockerignore allows the required core/proto inputs and excludes targets/metadata/secrets.
+  Compose's existing repo-root context and every functional setting/port binding are retained.
+  Added infra/verify.ps1 and updated README with process-only credentials, an isolated Compose project,
+  health/non-root checks, optional cache rebuild and finally-block cleanup. Added only the 1.P4 task row.
+- **Decisions:** server/Cargo.lock already locks the full graph including nc-protocol, so the unused
+  core/Cargo.lock is not copied. Cache-mounted binaries are exported to /out before the runtime COPY.
+  Verification credentials are CSPRNG-generated environment values, never files, and are restored after
+  the run. The unique project's disposable volumes are removed on teardown; build caches remain on C:.
+  No dependency manifests/pins changed. No cloud resources or wider bindings introduced.
+- **Verified:** Docker Desktop initially had no engine pipe; CLI start reported already running but
+  status was unavailable. Launching the installed app brought engine 29.3.1 online. Ran
+  powershell -NoProfile -File infra/verify.ps1 -CheckCache successfully (exit 0): actual Compose build
+  succeeded (Linux release compile 2m 39s; context 249.52 kB), second build reused cached layers,
+  up -d --wait reported all services healthy, /healthz returned ok, coordinator/relay UIDs both 999.
+  Existing cargo test --manifest-path server/Cargo.toml -p nc-coordinator --test lease_cycle -- --ignored
+  passed: 1 passed, 0 failed, 0 ignored (0.16s). down --volumes --remove-orphans removed all three
+  containers, both volumes and the network. A separate label query confirmed zero remaining resources.
+  PowerShell parser and git diff --check passed; a functional Compose comparison confirmed every setting
+  and port binding unchanged. No secret files or run logs created. Rust workspaces were not edited;
+  full fmt/clippy/workspace suites were not rerun for this infrastructure-only change.
+- **Not done / open:** none within the assigned build/lease-cycle scope.
+- **Requests:** coordinator can remove the now-resolved Docker packaging follow-up from proto/README.md
+  (outside the allowed files for this task).
+
 ## 2026-11-02 - Claude (coordinator) - `main`
 
 - **Commits:** this commit; fast-forward of `feat/codex-proto` (14aebb9).

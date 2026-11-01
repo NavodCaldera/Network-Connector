@@ -1,5 +1,21 @@
-# Build context is the repo root; send only what the server image needs (and never infra/.env).
-*
+# Repository-root context: only server code, its protocol dependency and schemas.
+**
 !rust-toolchain.toml
+!core/
+!core/Cargo.toml
+!core/crates/
+!core/crates/nc-protocol/
+!core/crates/nc-protocol/**
+!proto/
+!proto/**
 !server/
-server/target/
+!server/**
+# Never send host build products, repository metadata or local secrets.
+**/target
+**/.git
+**/.env
+**/.env.*
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx

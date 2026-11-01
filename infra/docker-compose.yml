@@ -7,6 +7,7 @@ name: nc-phase0
 
 x-server-image: &server-image
   build:
+    # Repo root includes server/, core/crates/nc-protocol/ and proto/.
     context: ..
     dockerfile: infra/Dockerfile
   image: nc-server:phase0
