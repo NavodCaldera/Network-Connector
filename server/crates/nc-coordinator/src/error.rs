@@ -88,8 +88,20 @@ impl IntoResponse for ApiError {
 }
 
 impl From<sqlx::Error> for ApiError {
-    fn from(_e: sqlx::Error) -> Self {
-        tracing::error!("database operation failed");
+    fn from(e: sqlx::Error) -> Self {
+        // Log only SQLSTATE and constraint name: driver messages can echo row
+        // values (job data, keys), which must never reach logs (invariant 10).
+        match &e {
+            sqlx::Error::Database(db) => tracing::error!(
+                code = db.code().as_deref().unwrap_or("?"),
+                constraint = db.constraint().unwrap_or("-"),
+                "database operation failed"
+            ),
+            sqlx::Error::RowNotFound => tracing::error!("database row not found"),
+            sqlx::Error::PoolTimedOut => tracing::error!("database pool timed out"),
+            sqlx::Error::Io(_) => tracing::error!("database io error"),
+            _ => tracing::error!("database operation failed"),
+        }
         ApiError::internal()
     }
 }

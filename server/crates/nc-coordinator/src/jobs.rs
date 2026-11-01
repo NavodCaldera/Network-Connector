@@ -112,6 +112,24 @@ pub async fn lease(s: &AppState, d: &Device) -> Result<Option<LeaseResponse>, Ap
             .bind(d.id).bind(now).fetch_optional(&mut *tx).await?;
         let Some(r) = r else { return Ok(None) };
         let id: Uuid = r.try_get("id")?;
+        // READ COMMITTED: the row lock re-evaluates only the task row, while the
+        // NOT EXISTS subqueries used the statement's older snapshot. Re-check with a
+        // fresh snapshot now that we hold the task lock, so a lease committed just
+        // before our lock was granted is a lost race (try next task), not a double lease.
+        let taken: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM leases WHERE task_id=$1 AND state='active' AND expires_at>$2)
+             OR EXISTS(SELECT 1 FROM task_results WHERE task_id=$1 AND device_id=$3)
+             OR (SELECT state NOT IN ('queued','leased') FROM tasks WHERE id=$1)",
+        )
+        .bind(id)
+        .bind(now)
+        .bind(d.id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if taken {
+            tx.rollback().await?;
+            continue;
+        }
         sqlx::query("UPDATE leases SET state='expired' WHERE task_id=$1 AND state='active' AND expires_at<=$2").bind(id).bind(now).execute(&mut *tx).await?;
         if r.try_get::<i32, _>("attempts")? >= 6 || r.try_get::<i64, _>("deadline")? <= now * 1000 {
             sqlx::query("UPDATE tasks SET state='failed' WHERE id=$1")

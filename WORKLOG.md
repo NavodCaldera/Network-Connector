@@ -15,6 +15,30 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Claude (Net agent) - `feat/codex-jobs-api` - fix cross-device lease race 500
+
+- **Commits:** this commit (on top of 56755f8).
+- **Asked:** fix CI 41346901474 (`real_job_cycle_over_http` got one 500 during the 20-call two-device lease
+  race), re-review the branch for invariants 7/8/10 and blob GET scoping.
+- **Done:** `jobs::lease` now re-checks, under the task row lock and with a fresh READ COMMITTED snapshot,
+  that the task has no live lease, no result from this device, and is still queued/leased; a lost race
+  rolls back and tries the next task (ends as 404 "no work"). New migration `0003_one_active_lease.sql`
+  adds a unique partial index (one active lease per task, all devices). `From<sqlx::Error>` now logs
+  SQLSTATE and constraint name only (no driver message, which can echo row values).
+- **Decisions:** root cause: `FOR UPDATE ... SKIP LOCKED` in READ COMMITTED re-evaluates only the locked
+  task row once the competing transaction commits; the `NOT EXISTS(leases ...)` subquery still used the
+  old snapshot, so a second caller could lease the same task. Same device: violated `one_live_device_task`
+  (the 500); different devices: would have silently double-leased. Unique-violation is not mapped to 404;
+  with the re-check it should not occur, and if it does it stays a logged 500 (not swallowed).
+  Review of the rest: completion is attempt-checked under task+lease locks and idempotent (same result
+  returns duplicate, different result 409); blob GET requires requester, or live lease on the job, or
+  committed result for the requester; signed-request auth on all routes; single error format; no new logs
+  of manifests/blobs/signatures/tokens found. No further defects fixed.
+- **Verified:** local `server/`: `cargo fmt --check` ok, `cargo clippy --all-targets -D warnings` ok,
+  `cargo test` all pass (DB-backed lease_cycle test is ignored locally), `cargo deny check` ok. Docker stack
+  result is in the CI run for this commit (see hand-back).
+- **Not done / open:** Docker stack not run locally (owner load limit); relies on CI.
+
 ## 2026-11-02 - Codex - `feat/codex-jobs-api` - verification and hardening
 
 - **Commits:** 07c57b6, 3eabff2 and this follow-up.
