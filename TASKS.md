@@ -17,7 +17,7 @@ Status: `todo` Â· `in progress` Â· `review` (waiting for coordinator check) 
 | 0.6 | mDNS + QR pairing | net-agent (Claude) | `feat/net-p2p` | `core/crates/nc-net` | in progress |
 | 0.7 | Coordinator + relay (Docker) | net-agent (Claude) | `feat/net-server` | `server/`, `infra/` | in progress |
 | 0.8 | Flutter shell + bridge | app-agent (Claude) | `feat/app-shell` | `app/`, `core/crates/nc-bridge` | blocked (C: disk space, VS CMake component) |
-| 0.9a | Android runtime footprint + foreground-service spike | app-agent (Claude) | `feat/app-android` | `spikes/phase0/android/` | in progress |
+| 0.9a | Android runtime footprint + foreground-service spike | app-agent (Claude) | `feat/app-android` | `spikes/phase0/android/` | in progress (code merged; APK build after tools move to C:, phone test by owner) |
 | 0.9b | Google Play policy assessment (document) | **Codex** | `feat/codex-mobile-research` | `spikes/phase0/mobile-policy.md` only | done |
 | 0.10 | iOS feasibility (document) | **Codex** | `feat/codex-mobile-research` | `spikes/phase0/ios-feasibility.md` only | done |
 

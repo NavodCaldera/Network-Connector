@@ -15,6 +15,18 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (coordinator) · `main`
+
+- **Asked:** review app-agent task 0.9a (Android spike); the owner freed C: and asked that all tools live on C: only.
+- **Done:** merged `feat/app-android` (e3fa591, 17 files under `spikes/phase0/android/`, no conflicts). Added LF line
+  endings for `*.sh` and `gradlew` in `.gitattributes`. TASKS.md 0.9a stays in progress.
+- **Review result: PARTIAL.** The agent reported host tests passing (2/2 per runtime feature: Pulley, wasmi, Cranelift).
+  No `.so` or APK was built (disk), nothing ran on a device, and fmt/clippy were not re-run on the final state. The
+  coordinator did not re-run these spike tests.
+- **Not done / open:** build the `.so` files and APKs after the tools move to C:; the owner runs `RUN.md` on an ARM64
+  phone. Planned move of everything on D: (Android SDK, Build Tools, Rust caches, gradle) to C:, waiting for the
+  net-agent to finish.
+
 ## 2026-11-01 · Claude Code (App agent) · `feat/app-android`
 
 - **Asked:** task 0.9a, Android spike: Wasm job in a foreground service with a Stop button, three runtimes compared.
