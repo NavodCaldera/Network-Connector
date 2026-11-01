@@ -15,6 +15,19 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Claude (coordinator) - `main`
+
+- **Commits:** this merge of `feat/codex-ci-fix` (a61abc0).
+- **Asked:** review Codex 1.P7 (make core CI green). Codex's session stopped before its hand-back.
+- **Done:** merged; TASKS.md 1.P7 set to done.
+- **Decisions:** Review result: PASS. The root causes were fixed without weakening security. The identity test flipped one seed
+  bit, which is still a valid Ed25519 seed in the unsealed non-Windows format; it now truncates the file (corrupt
+  on all OSes) and keeps the "file left unchanged" check, with a separate Windows DPAPI tamper test. The sandbox
+  tests failed because CI never built the runnable `sandbox_probe` example; CI now builds it first. No sandbox
+  code or isolation changed.
+- **Verified:** CI run 41343388393 on `feat/codex-ci-fix`: success (all jobs).
+- **Not done / open:** none for 1.P7.
+
 ## 2026-11-02 - Codex - `feat/codex-ci-fix`
 
 - **Commits:** this task commit and its verification follow-up.
