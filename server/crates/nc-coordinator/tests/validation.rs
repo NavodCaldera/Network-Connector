@@ -134,3 +134,12 @@ fn schemas_reject_unknown_fields_and_bad_values() {
     let t: RelayTokenRequest = serde_json::from_str(r#"{"peer_id":"../../etc"}"#).unwrap();
     assert!(t.validate().is_err());
 }
+
+#[tokio::test]
+async fn malformed_paths_use_json_errors() {
+    for path in ["/v1/blobs/%FF", "/v1/jobs/%FF"] {
+        let (status, v) = call(Request::get(path).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_error(&v, "bad_request");
+    }
+}

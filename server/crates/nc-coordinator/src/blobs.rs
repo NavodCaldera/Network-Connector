@@ -25,12 +25,13 @@ impl Drop for Staging {
 
 pub async fn upload(
     State(s): State<AppState>,
-    Path(hash): Path<String>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     mut body: Body,
 ) -> Result<Response, ApiError> {
+    let Path(hash) = path.map_err(|_| ApiError::bad_request("invalid blob path"))?;
     if !valid_hash(&hash) {
         return Err(ApiError::bad_request("invalid sha256"));
     }
@@ -137,12 +138,13 @@ fn range(text: Option<&str>, size: u64) -> Result<Option<(u64, u64)>, ApiError> 
 
 pub async fn download(
     State(s): State<AppState>,
-    Path(hash): Path<String>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, ApiError> {
+    let Path(hash) = path.map_err(|_| ApiError::bad_request("invalid blob path"))?;
     if !valid_hash(&hash) {
         return Err(ApiError::bad_request("invalid sha256"));
     }

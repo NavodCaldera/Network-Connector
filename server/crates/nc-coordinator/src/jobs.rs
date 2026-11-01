@@ -362,12 +362,13 @@ pub async fn fail(
 
 pub async fn status(
     State(s): State<AppState>,
-    Path(id): Path<String>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Body,
 ) -> Result<Json<JobStatusResponse>, ApiError> {
+    let Path(id) = path.map_err(|_| ApiError::bad_request("invalid job path"))?;
     let (c, b) = read_signed(&s, &method, &uri, &headers, body).await?;
     if !b.is_empty() {
         return Err(ApiError::bad_request("GET body must be empty"));

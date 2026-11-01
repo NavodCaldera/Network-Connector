@@ -37,6 +37,15 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
   tests, 22 wire tests passed. Server workspace unit/router tests passed so far (full command completion
   and hosted verification pending). Core/server cargo deny command exited 0; warnings on existing duplicate
   versions/license metadata; final summary: advisories ok, bans ok, licenses ok, sources ok.
+- **Verification follow-up:** server cargo test completed successfully: 3 coordinator unit tests,
+  8 router/schema tests (including malformed-path JSON errors), 7 relay unit tests and 1 relay-auth
+  integration test; Docker-only test ignored as designed. Server Clippy passed before the final path
+  error regression fix. Both cargo-deny commands returned `advisories ok, bans ok, licenses ok, sources ok`
+  and exit 0. Initial core full build exhausted Windows memory; retrying with one worker. Initial hosted
+  CI caught an unformatted late build.rs edit; corrected, both workspace fmt checks pass again.
+  Removed PowerShell's UTF-8 BOM from the new SQL migration before PostgreSQL verification.
+  Initial push was rejected by approval review; after verifying the connected GitHub repository,
+  exact clone URL and admin/push permissions, explicit-destination push was approved and succeeded.
 - **Not done / open:** full workspace Clippy/tests and Docker/PostgreSQL results are pending in this initial
   commit. Local Docker info and infra/verify.ps1 stall before container startup; no PostgreSQL success
   claimed. Existing unrelated task-board/core-CI commits landed in the shared checkout during work;

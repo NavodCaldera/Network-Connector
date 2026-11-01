@@ -1,4 +1,4 @@
-﻿-- Forward-only extension: existing Phase 0 dummy tasks remain valid.
+-- Forward-only extension: existing Phase 0 dummy tasks remain valid.
 ALTER TABLE devices ADD COLUMN heartbeat_at BIGINT;
 CREATE TABLE jobs (
  id UUID PRIMARY KEY,

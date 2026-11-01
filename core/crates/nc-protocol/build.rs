@@ -107,7 +107,9 @@ fn main() -> io::Result<()> {
             "#[serde(default, skip_serializing_if = \"crate::wire::is_default\")]",
         );
     }
-    for field in ["JobManifest.min_helpers", "Verifier.replicas"] { cfg.field_attribute(format!("nc.v1.{field}"), "#[serde(default)]"); }
+    for field in ["JobManifest.min_helpers", "Verifier.replicas"] {
+        cfg.field_attribute(format!("nc.v1.{field}"), "#[serde(default)]");
+    }
     cfg.skip_debug([
         "nc.v1.JobManifest",
         "nc.v1.SignedJobManifest",
