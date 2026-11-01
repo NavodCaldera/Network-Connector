@@ -7,5 +7,14 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[dependencies]
+rusqlite.workspace = true
+getrandom.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+
 [lints]
 workspace = true

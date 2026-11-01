@@ -1,0 +1,31 @@
+// Device identity: short-lived session certificates signed by the device root key. Owner: Core agent.
+//
+// Signing rule: SignedSessionCert carries the exact encoded SessionCert bytes and an Ed25519 signature by the
+// device root key over "nc.v1.SessionCert\0" || cert_bytes.
+syntax = "proto3";
+
+package nc.v1;
+
+import "nc/v1/common.proto";
+
+enum KeyAssurance {
+  KEY_ASSURANCE_UNSPECIFIED = 0;
+  // Key held in software (protected file). Lower assurance (PLAN.md §2).
+  KEY_ASSURANCE_SOFTWARE = 1;
+  // Key held in hardware (TPM, Android Keystore/StrongBox, Secure Enclave), non-exportable.
+  KEY_ASSURANCE_HARDWARE = 2;
+}
+
+message SessionCert {
+  ProtocolVersion version = 1;
+  bytes device_root_key = 2;    // Ed25519 public key of the device root (32 bytes)
+  bytes session_key = 3;        // Ed25519 public key of the session (32 bytes)
+  int64 not_before_unix_ms = 4;
+  int64 not_after_unix_ms = 5;
+  KeyAssurance root_assurance = 6;
+}
+
+message SignedSessionCert {
+  bytes cert = 1;        // encoded SessionCert
+  bytes signature = 2;   // 64 bytes, by device_root_key
+}

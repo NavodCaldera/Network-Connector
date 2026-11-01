@@ -7,5 +7,44 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
-[lints]
-workspace = true
+[[bin]]
+name = "nc-exec-worker"
+path = "src/bin/nc-exec-worker.rs"
+
+[dependencies]
+nc-protocol = { path = "../nc-protocol" }
+thiserror.workspace = true
+sha2.workspace = true
+hex.workspace = true
+wasmtime.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Isolation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_System_Registry",
+    "Win32_System_Com",
+    "Win32_System_Memory",
+] }
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+wat.workspace = true
+tempfile.workspace = true
+
+[lints.rust]
+# AGENT.md §1 rule 11: nc-exec may use unsafe for the OS sandbox only; every block needs `// SAFETY:`.
+unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+undocumented_unsafe_blocks = "deny"

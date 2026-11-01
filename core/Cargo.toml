@@ -11,9 +11,24 @@ rust-version = "1.99"
 # Shared dependency versions. Crates opt in with `foo.workspace = true`.
 # Placeholders for Phase 0; uncomment and pin when first used.
 [workspace.dependencies]
-# thiserror = "2"
-# anyhow = "1"
-# tracing = "0.1"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+sha2 = "0.11"
+hex = "0.4"
+tempfile = "3"
+wat = "1.263"
+proptest = "1.12"
+# Pinned exactly (PLAN.md §2: Wasmtime pinned). Bump deliberately, never by accident.
+wasmtime = { version = "=50.0.1", default-features = false, features = ["cranelift", "runtime", "std"] }
+windows = "0.62"
+prost = "0.14"
+prost-build = "0.14"
+protoc-bin-vendored = "3.3"
+ed25519-dalek = "3"
+rusqlite = { version = "0.41", features = ["bundled"] }
+getrandom = "0.4"
+zeroize = "1"
 # tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [workspace.lints.rust]

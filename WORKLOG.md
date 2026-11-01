@@ -17,6 +17,71 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ## 2026-11-01 · Claude Code (coordinator) · `main`
 
+- **Asked:** review and merge core-agent tasks 0.2 (executor + Windows sandbox) and 0.3 (identity, manifests, store).
+- **Done:** merged `feat/core-store` (147e9f7, which contains `feat/core-exec` 856040c). Conflicts: `core/Cargo.lock`
+  took the branch version and was regenerated; TASKS.md kept main's board with 0.2/0.3 set to done. Fixed a
+  dependency clash: Codex's exact pins in `nc-tariff` (`proptest =1.9.0`, `thiserror =2.0.17`) conflicted with the
+  workspace, so `nc-tariff` now uses the workspace versions and caret ranges.
+- **Review result: PASS.** On the merged tree in `core/`: fmt ok; `clippy --all-targets -D warnings` exit 0;
+  `cargo test` exit 0 with all suites ok (incl. nc-exec runtime limits 12, Windows sandbox 12 + 1 ignored,
+  refusals 9, nc-tariff 26); `cargo deny check` "advisories ok, bans ok, licenses ok, sources ok". The agent's
+  sandbox escape and Stop-latency numbers are recorded in spikes/phase0/REPORT.md; the coordinator did not re-measure them.
+- **Not done / open:** no Linux/macOS sandbox (jobs refused there); cold first worker launch 2.1–4.8 s (call
+  `warm_up()` at start); `C:\Windows\win.ini`-style world-readable files are visible in the AppContainer; one
+  unexplained 62 s watchdog kill under load. TPM Ed25519 support not checked.
+
+## 2026-11-01 · Claude Code (core-agent) · `feat/core-store` (based on `feat/core-exec`)
+
+- **Asked:** Phase 0 task 0.3: `nc-identity` (Ed25519 root key, software keystore + adapter trait, session certs),
+  `proto/` TaskManifest with prost + vendored protoc, `nc-protocol` manifest sign/verify, `nc-store` SQLite lease
+  state machine with property tests.
+- **Done:** `proto/nc/v1/manifest.proto`, `proto/nc/v1/identity.proto`. `nc-protocol`: `build.rs` (prost-build +
+  protoc-bin-vendored), `sign.rs` (domain-separated Ed25519, `verify_manifest`), tests incl. proptests.
+  `nc-identity`: `DeviceKeyStore`, `RootSigner`, `SoftwareKeyStore` (DPAPI on Windows, 0600 elsewhere, the only
+  `unsafe` is in `platform.rs` with SAFETY comments), session certs ≤ 24 h. `nc-store`: migrations, `Store` with
+  enqueue/lease_next/start/renew/upload/verify/commit/fail/expire_leases, unit + property tests. `nc-exec`:
+  `Ed25519Publishers` + `Job::from_manifest` (closes the 0.2 signature TODO). Workspace deps added. REPORT.md §0.3.
+  TASKS.md 0.3 → review.
+- **Decisions:** core-agent: signatures always cover the exact received bytes with a per-type domain prefix; nothing
+  is re-encoded before verification. Commit of an already-committed task by the same attempt returns
+  `AlreadyCommitted` (idempotent); any other attempt gets `StaleAttempt`. A corrupt key file is an error, never
+  replaced with a new key. Time is a parameter (`now_ms`) in the store so the tests are deterministic.
+- **Verified:** fmt, clippy `-D warnings`, `cargo test`, `cargo deny check`: see the hand-back and REPORT.md §0.3
+  (manifest 11, identity 9, lease 10 incl. 2 proptests × 300 cases, refusals 9). `tpmtool getdeviceinformation`:
+  TPM 2.0 (Intel) present and ready.
+- **Not done / open:** no hardware keystore adapter yet (TPM, Android, Secure Enclave); not checked whether the TPM
+  can hold Ed25519. Linux key file protection is only 0600. The unix code paths were not run on this PC (CI runs
+  them).
+
+## 2026-11-01 · Claude Code (core-agent) · `feat/core-exec`
+
+- **Asked:** Phase 0 task 0.2: `nc-exec` Wasmtime executor (`cpu-core-v1`) with fuel, epoch, external watchdog,
+  memory/stack/output caps, separate worker process inside AppContainer + Job Object on Windows, refuse if any layer
+  fails, teardown + start-up sweep, Stop < 1 s, hash check, malicious-job tests.
+- **Done:** `core/crates/nc-exec`: `runtime.rs` (Wasmtime 50.0.1 pinned; import allowlist `nc.*` only, no WASI;
+  fuel, epoch tick thread, `ResourceLimiter`, `max_wasm_stack`, output/checkpoint caps), `ipc.rs` (length-capped
+  stdin/stdout framing to the worker), `bin/nc-exec-worker.rs`, `executor.rs` (hash + `ModuleVerifier` checks before
+  spawn, 5 ms watchdog/cancel loop, capped pipe reader, suspended start), `sandbox/windows.rs` (AppContainer with 0
+  capabilities, Job Object with memory cap / 1 process / kill-on-close / UI limits / completion port,
+  child-process policy, `JOB_LIST`, teardown in `Drop`, `sweep_leftovers()` via the registry, `warm_up()`),
+  `sandbox/unsupported.rs` (non-Windows: refuse). Tests: `tests/runtime_limits.rs`, `tests/refusals.rs`,
+  `tests/sandbox_windows.rs`, test-only `examples/sandbox_probe.rs`. `core/Cargo.toml` workspace deps added.
+  REPORT.md §0.2 written. TASKS.md 0.2 → review.
+- **Decisions:** core-agent: worker IPC is a private framing, not in `proto/` (same binary, never on the network).
+  No permissive `ModuleVerifier` exists in the crate; Ed25519 verifier comes with 0.3. Worker starts suspended so a
+  Stop during a slow `CreateProcessW` never runs guest code. Ported the legacy spike's launch recipe
+  (`legacy/python-v0.3:spikes/0.3-sandbox`).
+- **Verified:** on this PC: fmt ok; clippy `--all-targets -D warnings` clean; `cargo test` all green (nc-exec: 5 unit,
+  5 refusals, 12 runtime, 12 sandbox + 1 ignored measurement); `cargo deny check` advisories/bans/licenses/sources ok
+  (6 duplicate-version warnings). Cancel → return 7–150 ms; escape probe denied files, loopback, internet, DNS and
+  child processes. Numbers in REPORT.md §0.2.
+- **Not done / open:** no Linux/macOS sandbox (jobs refused there). Cold first launch of a new worker binary took
+  2.1–4.8 s inside `CreateProcessW` (cause not proven); `run()` cannot return before that call does. One warm run under
+  heavy machine load hung until the watchdog killed it at 62 s; cause not confirmed. C: had 0 bytes free and commit
+  memory ran out several times (rustc "paging file too small"); builds used `CARGO_HOME`/`TEMP` on D: and `-j 1/2`.
+
+## 2026-11-01 · Claude Code (coordinator) · `main`
+
 - **Asked:** review Codex task 0.4 (nc-tariff).
 - **Done:** merged `feat/codex-tariff` (90a8a11) into `main`. Removed the committed `VALIDATION.txt` (a run log,
   not source).
