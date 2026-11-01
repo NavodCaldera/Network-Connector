@@ -15,6 +15,21 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (coordinator) · `main`
+
+- **Asked:** review Codex task 0.4 (nc-tariff).
+- **Done:** merged `feat/codex-tariff` (90a8a11) into `main`. Removed the committed `VALIDATION.txt` (a run log,
+  not source).
+- **Review result: PASS.** Scope: only `core/crates/nc-tariff/**`, TASKS.md and WORKLOG.md changed. Coordinator re-ran
+  the checks in a clean worktree: fmt ok; clippy `-D warnings` ok; `cargo test -p nc-tariff` gave 26 passed, and the
+  doctest passed after setting TEMP to D: (it first failed with link error 1140 because C: had 0 MB free); the night
+  simulator passed (90 nights, no window or budget breach). Read `decision.rs`: the network binding is checked first,
+  a backwards clock is refused, the boundary guard is a hard exclusion, strict mode holds, and allowances are capped
+  by budget, window and wire capacity, with saturating arithmetic.
+- **Not done / open:** `core/Cargo.lock` was not regenerated, because cargo failed with os error 112 (C: full, the
+  cargo registry is on C:). The coordinator's `cargo deny` output was lost; Codex reported it ok. **C: is at 0 MB free;
+  this blocks builds.**
+
 ## 2026-11-01 · Codex · `feat/codex-tariff`
 
 - **Commits:** this commit (Phase 0 task 0.4 hand-back).
