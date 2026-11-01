@@ -15,6 +15,17 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-01 · Claude Code (local, Windows) · `main`, `legacy/python-v0.3`
+
+- **Asked:** keep the current Python version safe in a branch; do not start on new technologies yet; give a
+  Perplexity research prompt for the target platform (PCs + phones + any capable device, LAN and internet).
+- **Done:** created and pushed `legacy/python-v0.3` from `main` at febfb85. No code changes. Research prompt given
+  in chat.
+- **Decisions (owner):** platform must work across the internet as well as LAN; must be industry-grade; no move to
+  new technologies until the owner says so. Proposed (not adopted): Rust core, Flutter UI, Wasm jobs.
+- **Verified:** `git push -u origin legacy/python-v0.3` succeeded; branch visible on remote.
+- **Not done / open:** technology choice pending owner's research.
+
 ## 2026-11-01 · Claude Code (local, Windows) · `main`
 
 - **Asked:** research how the joiner can keep internet (not via the host); build the "joiner keeps its own Wi-Fi"
