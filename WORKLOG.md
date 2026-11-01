@@ -17,6 +17,17 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ## 2026-11-02 - Claude (coordinator) - `main`
 
+- **Commits:** this commit.
+- **Asked:** owner: Claude does work while Codex runs 1.P6a and 1.P7.
+- **Done:** brought TASKS.md up to date: 0.2, 0.3, 0.4, 0.9b and 0.10 set to done (they were already merged); 0.9a
+  status made specific. Android SDK paths in `spikes/phase0/android/RUN.md` changed from D: to `C:\dev\Android\Sdk`.
+  Started the Android .so + APK build on C:.
+- **Decisions:** none.
+- **Verified:** documentation only. Build results go in the next entry.
+- **Not done / open:** the 0.9a phone run (owner).
+
+## 2026-11-02 - Claude (coordinator) - `main`
+
 - **Commits:** this merge of `feat/codex-ci-stack` (4fdfaa2).
 - **Asked:** review Codex 1.P5 (CI Docker stack) and Codex's stop report on 1.P6.
 - **Done:** merged 1.P5 and set it to done. 1.P6 set to blocked; added 1.P6a (real job contract in proto and server) as its prerequisite.
