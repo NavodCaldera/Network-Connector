@@ -15,6 +15,20 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Claude (coordinator) - `main`
+
+- **Commits:** this commit; fast-forward of `feat/codex-infra` (ef2b8a7).
+- **Asked:** review Codex task 1.P4 (Docker build after the proto move).
+- **Done:** merged. Replaced the stale Docker follow-up in `proto/README.md`. TASKS.md 1.P4 set to done.
+- **Decisions:** none new.
+- **Verified:** Review result: PASS. Only infra/, TASKS.md and WORKLOG.md changed. `infra/verify.ps1` creates
+  credentials with the OS random generator, keeps them in the process environment only, prints none, and always tears down.
+  Dockerignore admits only the toolchain file, core manifest, nc-protocol, proto/ and server/, and excludes keys and .env files.
+  Codex's real run: image built, /healthz ok, both services uid 999, `dummy_lease_cycle_over_http` passed, cleanup left 0 resources.
+  Coordinator did not re-run Docker itself (C: has 7.9 GB free). Earlier open item closed: `D:\BuildTools` was uninstalled (exit 0),
+  and `flutter doctor` now passes the Visual Studio check with Build Tools 17.14.44 on C:.
+- **Not done / open:** executor IPC still not on proto (core, later).
+
 ## 2026-11-02 - Codex - `feat/codex-infra`
 
 - **Commits:** this commit (task 1.P4).

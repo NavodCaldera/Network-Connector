@@ -101,8 +101,4 @@ The task explicitly forbids editing nc-exec, so migrating that process boundary
 requires its owner and is not claimed complete here. Application payload streams
 remain caller-defined opaque bytes, not new handwritten control messages.
 
-The current `infra/Dockerfile` only copies `server/`, and its Docker-specific ignore
-file excludes core/proto. The infrastructure owner must include `core/Cargo.toml`,
-`core/crates/nc-protocol/` and `proto/` in both the build context and COPY steps
-before building the updated server image. Task 1.P3 forbids infra edits. Docker's
-engine was unavailable locally, so the ignored database lease-cycle test was not run.
+The server Docker image builds with `core/crates/nc-protocol/` and `proto/` (task 1.P4); see `infra/README.md`.
