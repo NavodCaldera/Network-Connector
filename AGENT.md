@@ -100,6 +100,10 @@ A hand-back is not complete until WORKLOG.md is updated.
 
 Task 0.1 goes first because the others need the workspace. After that the three columns run in parallel.
 
+**Codex** (an outside agent the owner runs) has taken 0.4, 0.9b (Play policy document) and 0.10. The live assignment
+of every task is in [TASKS.md](TASKS.md); it overrides this table. Codex follows the same rules and hand-back format,
+and the coordinator reviews its branches before merging.
+
 ---
 
 ## 3. Ownership and shared contracts
