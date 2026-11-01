@@ -21,6 +21,13 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 0.9b | Google Play policy assessment (document) | **Codex** | `feat/codex-mobile-research` | `spikes/phase0/mobile-policy.md` only | done |
 | 0.10 | iOS feasibility (document) | **Codex** | `feat/codex-mobile-research` | `spikes/phase0/ios-feasibility.md` only | done |
 
+## Phase 1 prep (pure libraries, no collisions with Phase 0)
+
+| Task | What | Owner | Branch | Files it may touch | Status |
+|---|---|---|---|---|---|
+| 1.P1 | Owner policy engine (`nc-policy`) | **Codex** | `feat/codex-policy` | `core/crates/nc-policy` only | todo |
+| 1.P2 | Chunked, hashed, resumable, encrypted blob cache (`nc-blob`) | **Codex** | `feat/codex-blob` | `core/crates/nc-blob` only | todo (after 1.P1) |
+
 ## Rules for Codex work
 
 - Same rules as the Claude agents: [AGENT.md](AGENT.md) §1 (security invariants, work log, hand-back format).
