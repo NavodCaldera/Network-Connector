@@ -1,5 +1,5 @@
 //! Each new message has a binary round trip; HTTP bodies also pin existing JSON shapes.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, deprecated)]
 use nc_protocol::pb::v1::*;
 use nc_protocol::wire::{decode_strict, relay_token_from_text, relay_token_to_text};
 use prost::Message;
@@ -64,7 +64,8 @@ http_case!(
         task_id: UUID.into(),
         attempt_id: UUID.into(),
         expires_at: 1600,
-        input: "dummy".into()
+        input: "dummy".into(),
+        ..Default::default()
     },
     serde_json::json!({"lease_id":UUID,"task_id":UUID,"attempt_id":UUID,"expires_at":1600,"input":"dummy"})
 );
@@ -74,7 +75,8 @@ http_case!(
     CompleteRequest {
         lease_id: UUID.into(),
         attempt_id: UUID.into(),
-        result: "done".into()
+        result: "done".into(),
+        ..Default::default()
     },
     serde_json::json!({"lease_id":UUID,"attempt_id":UUID,"result":"done"})
 );

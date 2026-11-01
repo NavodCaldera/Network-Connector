@@ -14,7 +14,7 @@
 use axum::http::{HeaderMap, Method};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 use crate::error::ApiError;
@@ -52,6 +52,23 @@ pub fn verify(
     body: &[u8],
     now: i64,
 ) -> Result<Caller, ApiError> {
+    verify_digest(
+        method,
+        path,
+        headers,
+        &hex::encode(Sha256::digest(body)),
+        now,
+    )
+}
+
+/// Authenticate a streaming body using its expected content digest; caller MUST check the stream.
+pub fn verify_digest(
+    method: &Method,
+    path: &str,
+    headers: &HeaderMap,
+    digest: &str,
+    now: i64,
+) -> Result<Caller, ApiError> {
     let key_b = URL_SAFE_NO_PAD
         .decode(header(headers, "x-nc-key")?)
         .map_err(|_| ApiError::unauthorized("bad x-nc-key"))?;
@@ -63,7 +80,7 @@ pub fn verify(
     let ts: i64 = header(headers, "x-nc-ts")?
         .parse()
         .map_err(|_| ApiError::unauthorized("bad x-nc-ts"))?;
-    if (now - ts).abs() > MAX_SKEW_SECS {
+    if now.abs_diff(ts) > MAX_SKEW_SECS as u64 {
         return Err(ApiError::unauthorized(
             "request timestamp outside allowed window",
         ));
@@ -80,8 +97,8 @@ pub fn verify(
         .decode(header(headers, "x-nc-sig")?)
         .map_err(|_| ApiError::unauthorized("bad x-nc-sig"))?;
     let sig = Signature::from_slice(&sig_b).map_err(|_| ApiError::unauthorized("bad x-nc-sig"))?;
-    let msg = signing_string(method.as_str(), path, ts, nonce, body);
-    vk.verify(msg.as_bytes(), &sig)
+    let msg = format!("NC-REQ-V1\n{method}\n{path}\n{ts}\n{nonce}\n{digest}");
+    vk.verify_strict(msg.as_bytes(), &sig)
         .map_err(|_| ApiError::unauthorized("signature does not verify"))?;
     Ok(Caller {
         public_key,

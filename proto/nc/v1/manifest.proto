@@ -57,3 +57,18 @@ message SignedManifest {
   bytes signer_key = 2;   // Ed25519 public key of the issuer (coordinator or requester device), 32 bytes
   bytes signature = 3;    // 64 bytes
 }
+
+// Real-job envelope reuses the executor's TaskManifest without changing its module signing rule.
+// job_id is task.task_id (one independent task per submission in v1).
+message JobManifest {
+  TaskManifest task = 1;
+  uint64 total_input_size = 2;
+  string publisher_key_id = 3; // Lowercase hex of task.publisher_key, not an arbitrary lookup name.
+  uint32 min_helpers = 4; // 0 means 1; supported values 1 and 2.
+  repeated InputRef input_transfers = 5; // Exact uploaded bytes, one per task.inputs entry (may be encrypted).
+  InputRef module_transfer = 6; // Exact uploaded bytes; device decrypts then checks module_sha256.
+}
+message SignedJobManifest {
+  bytes manifest = 1; // Canonical JobManifest bytes; see README.
+  bytes signature = 2; // Publisher Ed25519 over "nc.v1.JobManifest\0" || manifest.
+}

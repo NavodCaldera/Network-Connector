@@ -5,7 +5,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use nc_coordinator::{app, AppState, MAX_BODY};
+use nc_coordinator::{app, AppState, MAX_BODY, MAX_JOB_BODY};
 use tower::ServiceExt;
 
 fn router() -> axum::Router {
@@ -13,6 +13,7 @@ fn router() -> axum::Router {
         .connect_lazy("postgres://nobody:nothing@127.0.0.1:1/none")
         .unwrap();
     app(AppState {
+        blob_dir: std::env::temp_dir().join("nc-validation-blobs"),
         pool,
         enroll_secret: "0123456789abcdef".into(),
         relay_key: None,
@@ -132,4 +133,25 @@ fn schemas_reject_unknown_fields_and_bad_values() {
     assert!(r.validate().is_ok());
     let t: RelayTokenRequest = serde_json::from_str(r#"{"peer_id":"../../etc"}"#).unwrap();
     assert!(t.validate().is_err());
+}
+
+#[tokio::test]
+async fn malformed_paths_use_json_errors() {
+    for path in ["/v1/blobs/%FF", "/v1/jobs/%FF"] {
+        let (status, v) = call(Request::get(path).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_error(&v, "bad_request");
+    }
+}
+
+#[tokio::test]
+async fn oversized_job_body_is_rejected_before_authentication() {
+    let (status, v) = call(post(
+        "/v1/jobs",
+        "application/json",
+        vec![b' '; MAX_JOB_BODY + 1],
+    ))
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_error(&v, "payload_too_large");
 }

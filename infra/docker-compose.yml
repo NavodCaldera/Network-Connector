@@ -38,8 +38,11 @@ services:
       NC_DATABASE_URL: postgres://nc:${NC_PG_PASSWORD}@postgres:5432/nc
       # 0.0.0.0 inside the container only; the host side is published on loopback below.
       NC_BIND: 0.0.0.0:8080
+      NC_BLOB_DIR: /var/lib/nc/blobs
       NC_ENROLL_SECRET: ${NC_ENROLL_SECRET:?set NC_ENROLL_SECRET in infra/.env}
       NC_RELAY_TOKEN_KEY: ${NC_RELAY_TOKEN_KEY:?set NC_RELAY_TOKEN_KEY in infra/.env}
+    volumes:
+      - jobblobs:/var/lib/nc/blobs
     ports:
       - "127.0.0.1:8080:8080"
 
@@ -61,3 +64,4 @@ services:
 volumes:
   pgdata:
   relaykey:
+  jobblobs:

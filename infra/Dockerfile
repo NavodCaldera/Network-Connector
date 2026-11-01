@@ -40,5 +40,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 # Cache mounts are not image layers; export only the finished binaries from /out.
 COPY --from=build /out/nc-coordinator /usr/local/bin/nc-coordinator
 COPY --from=build /out/nc-relay /usr/local/bin/nc-relay
+RUN mkdir -p /var/lib/nc/blobs && chown nc:nc /var/lib/nc/blobs
 USER nc
 WORKDIR /var/lib/nc

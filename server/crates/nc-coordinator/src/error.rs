@@ -29,6 +29,16 @@ impl ApiError {
     pub fn unauthorized(m: impl Into<String>) -> Self {
         Self::new(StatusCode::UNAUTHORIZED, "unauthorized", m)
     }
+    pub fn forbidden() -> Self {
+        Self::new(StatusCode::FORBIDDEN, "forbidden", "blob access denied")
+    }
+    pub fn range() -> Self {
+        Self::new(
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            "invalid_range",
+            "invalid byte range",
+        )
+    }
     pub fn not_found(m: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, "not_found", m)
     }
@@ -79,7 +89,25 @@ impl IntoResponse for ApiError {
 
 impl From<sqlx::Error> for ApiError {
     fn from(e: sqlx::Error) -> Self {
-        tracing::error!(error = %e, "database error");
+        // Log only SQLSTATE and constraint name: driver messages can echo row
+        // values (job data, keys), which must never reach logs (invariant 10).
+        match &e {
+            sqlx::Error::Database(db) => tracing::error!(
+                code = db.code().as_deref().unwrap_or("?"),
+                constraint = db.constraint().unwrap_or("-"),
+                "database operation failed"
+            ),
+            sqlx::Error::RowNotFound => tracing::error!("database row not found"),
+            sqlx::Error::PoolTimedOut => tracing::error!("database pool timed out"),
+            sqlx::Error::Io(_) => tracing::error!("database io error"),
+            _ => tracing::error!("database operation failed"),
+        }
         ApiError::internal()
+    }
+}
+
+impl From<std::io::Error> for ApiError {
+    fn from(_: std::io::Error) -> Self {
+        Self::internal()
     }
 }

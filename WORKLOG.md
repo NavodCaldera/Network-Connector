@@ -17,6 +17,148 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ## 2026-11-02 - Claude (coordinator) - `main`
 
+- **Commits:** this merge of `feat/codex-jobs-api` (Codex 07c57b6..56755f8, net-agent fix dba5bc2).
+- **Asked:** finish and review 1.P6a after Codex's session stopped.
+- **Done:** net-agent fixed the cross-device lease race. A READ COMMITTED `FOR UPDATE SKIP LOCKED` re-check saw old
+  data, so two callers could lease the same task (a 500 from the unique-index error, or a silent second lease on another
+  device). It now re-checks inside the transaction, and migration 0003 adds a unique index allowing one active lease per
+  task. DB errors are logged by SQL code and constraint only. Merged; 1.P6a set to done and 1.P6 unblocked (todo).
+  Added `*.sql text eol=lf` to .gitattributes so sqlx migration checksums match on Windows and Linux.
+- **Decisions:** Review result: PASS. Auth, caps and the single error format on every route (7); attempt-checked idempotent
+  completion (8); no logging of manifests, blobs or tokens (10); blob GET scoped to the requester or a live lease holder.
+- **Verified:** CI run 41353289382 on dba5bc2: all 8 jobs green, Docker `real_job_cycle_over_http ... ok`.
+- **Not done / open:** 1.P6 (helper supervisor on the new contract).
+
+## 2026-11-02 - Claude (Net agent) - `feat/codex-jobs-api` - fix cross-device lease race 500
+
+- **Commits:** this commit (on top of 56755f8).
+- **Asked:** fix CI 41346901474 (`real_job_cycle_over_http` got one 500 during the 20-call two-device lease
+  race), re-review the branch for invariants 7/8/10 and blob GET scoping.
+- **Done:** `jobs::lease` now re-checks, under the task row lock and with a fresh READ COMMITTED snapshot,
+  that the task has no live lease, no result from this device, and is still queued/leased; a lost race
+  rolls back and tries the next task (ends as 404 "no work"). New migration `0003_one_active_lease.sql`
+  adds a unique partial index (one active lease per task, all devices). `From<sqlx::Error>` now logs
+  SQLSTATE and constraint name only (no driver message, which can echo row values).
+- **Decisions:** root cause: `FOR UPDATE ... SKIP LOCKED` in READ COMMITTED re-evaluates only the locked
+  task row once the competing transaction commits; the `NOT EXISTS(leases ...)` subquery still used the
+  old snapshot, so a second caller could lease the same task. Same device: violated `one_live_device_task`
+  (the 500); different devices: would have silently double-leased. Unique-violation is not mapped to 404;
+  with the re-check it should not occur, and if it does it stays a logged 500 (not swallowed).
+  Review of the rest: completion is attempt-checked under task+lease locks and idempotent (same result
+  returns duplicate, different result 409); blob GET requires requester, or live lease on the job, or
+  committed result for the requester; signed-request auth on all routes; single error format; no new logs
+  of manifests/blobs/signatures/tokens found. No further defects fixed.
+- **Verified:** local `server/`: `cargo fmt --check` ok, `cargo clippy --all-targets -D warnings` ok,
+  `cargo test` all pass (DB-backed lease_cycle test is ignored locally), `cargo deny check` ok. Docker stack
+  result is in the CI run for this commit (see hand-back).
+- **Not done / open:** Docker stack not run locally (owner load limit); relies on CI.
+
+## 2026-11-02 - Codex - `feat/codex-jobs-api` - verification and hardening
+
+- **Commits:** 07c57b6, 3eabff2 and this follow-up.
+- **Asked:** finish 1.P6a with actual full-stack evidence and fail-closed transport handling.
+- **Done:** added malformed-path JSON error handling/tests; verified and removed the new migration's UTF-8 BOM.
+  Preserved 16 KiB control caps while allowing 384 KiB only for job submission. Extracted disk staging for
+  a real filesystem test of streamed hash mismatch, mid-stream oversize rejection, cleanup and success.
+  Strengthened the 20-call scheduler race to use two different devices; added an attempted blob-reference
+  possession escalation (foreign requester still cannot GET/schedule a blob it has not uploaded).
+- **Decisions:** requesters must prove upload possession before their referenced input blobs can be downloaded
+  or scheduled. This closes cross-requester hash-reference access while allowing submit-before-upload.
+  Existing v1 control request caps remain unchanged. No device/executor/blob-cache source changed.
+- **Verified:** all eight jobs on code commit 3eabff2 passed in GitHub Actions run 41345834502:
+  https://github.com/NavodCaldera/Network-Connector/actions/runs/41345834502
+  Both Windows/Ubuntu core and server jobs passed fmt, clippy -D warnings and tests; both cargo-deny jobs passed.
+  Docker job 124965625339 passed actual PostgreSQL migrations and real HTTP cycle:
+
+  ```text
+  Coordinator /healthz: ok
+  coordinator uid: 999
+  relay uid: 999
+  test real_job_cycle_over_http ... ok
+  test result: ok. 1 passed; 0 failed; 0 ignored; finished in 62.54s
+  Stack cleanup: down --volumes --remove-orphans
+  ```
+
+  All three containers, all three volumes (including jobblobs), and the network were removed. Local protocol
+  tests passed 12+11+22; local server tests passed 3+8+7+1, with Docker-only test ignored as designed.
+  Both local cargo-deny checks exited 0: `advisories ok, bans ok, licenses ok, sources ok`.
+- **Failures recorded:** initial CI 41345694803 failed fmt for a late build.rs edit; corrected in 3eabff2.
+  Local Docker API/verify.ps1 hung before stack startup and was interrupted. Initial unrestricted local core
+  compilation exhausted Windows memory; limited-worker retry was stopped in favor of successful hosted
+  core verification, with C: under disk pressure from concurrent builds. No unrelated processes were stopped.
+- **Not done / open:** this final hardening follow-up is being verified in a new CI run; local staging test is
+  linking. Dedicated C:\dev\nc-target-codex cleanup will be recorded after verification. Task is review.
+
+
+## 2026-11-02 - Codex - `feat/codex-jobs-api`
+
+- **Commits:** this implementation commit; verification follow-ups recorded below.
+- **Asked:** task 1.P6a: real signed job contract, coordinator scheduling, opaque resumable blob staging,
+  attempt-checked failure/completion, requester status, PostgreSQL/Docker verification.
+- **Done:** reused TaskManifest inside canonical publisher-signed JobManifest; added v2 HTTP/protobuf types,
+  strict nested decoding, independent Ed25519 fixture, resource/size caps, forward-only real-job migration,
+  streaming hash-checked atomic uploads, scoped Range downloads, requester upload possession checks,
+  heartbeating-device scheduler with task row locks/SKIP LOCKED, six-attempt retry bound, distinct-device
+  exact validation/dispute, idempotent complete/fail, status refs, Docker blob volume/configuration.
+  Migrated the old dummy HTTP cycle to the real job cycle, including concurrent scheduling and expiry.
+- **Decisions:** one job contains one independent task (same UUID); extend rather than duplicate the executor
+  manifest. Keep module signing unchanged. Separate transport/ciphertext hashes from nc-blob plaintext hashes;
+  keys remain entirely device-owned. Publisher key ID is its lowercase public-key hex. Server verifies
+  signatures but device publisher trust remains device policy. Two replicas run sequentially on different
+  devices. Default zero replicas/min_helpers means one. Six attempts; deadline at most seven days.
+  Retired demand-created dummy tasks; retained deprecated field/tag. Invalid manifests return 400;
+  HTTP body/stream cap violations return 413. Auth/nonce precedes disk writes. Query errors are scrubbed.
+- **Verified:** core/server cargo fmt --all --check passed. Protocol tests: 12 new job tests, 11 manifest
+  tests, 22 wire tests passed. Server workspace unit/router tests passed so far (full command completion
+  and hosted verification pending). Core/server cargo deny command exited 0; warnings on existing duplicate
+  versions/license metadata; final summary: advisories ok, bans ok, licenses ok, sources ok.
+- **Verification follow-up:** server cargo test completed successfully: 3 coordinator unit tests,
+  8 router/schema tests (including malformed-path JSON errors), 7 relay unit tests and 1 relay-auth
+  integration test; Docker-only test ignored as designed. Server Clippy passed before the final path
+  error regression fix. Both cargo-deny commands returned `advisories ok, bans ok, licenses ok, sources ok`
+  and exit 0. Initial core full build exhausted Windows memory; retrying with one worker. Initial hosted
+  CI caught an unformatted late build.rs edit; corrected, both workspace fmt checks pass again.
+  Removed PowerShell's UTF-8 BOM from the new SQL migration before PostgreSQL verification.
+  Initial push was rejected by approval review; after verifying the connected GitHub repository,
+  exact clone URL and admin/push permissions, explicit-destination push was approved and succeeded.
+- **Not done / open:** full workspace Clippy/tests and Docker/PostgreSQL results are pending in this initial
+  commit. Local Docker info and infra/verify.ps1 stall before container startup; no PostgreSQL success
+  claimed. Existing unrelated task-board/core-CI commits landed in the shared checkout during work;
+  their files were not edited by this task. Dedicated target C:\dev\nc-target-codex will be cleaned at end.
+
+
+## 2026-11-02 - Codex - `feat/codex-ci-fix`
+
+- **Commits:** this task commit and its verification follow-up.
+- **Asked:** 1.P7: repair Linux identity and Windows sandbox CI without weakening isolation.
+- **Done:** corrupt-file fixture truncates a key on both OSes; retained the DPAPI bit-tamper test
+  separately on Windows. Core CI builds the runnable sandbox probe before tests and prints
+  security-test evidence. Missing probe diagnostic gives the build command.
+- **Decisions:** no production sandbox or keystore changes. Linux scheme 0 stores a raw 32-byte
+  seed: flipping a bit produces another valid seed. Truncation tests real format/length refusal.
+  Windows failures precede sandbox setup: cargo test builds an example harness, not the runnable
+  examples/sandbox_probe.exe consumed by runtime_dir. No capability skips or weaker fallback added.
+- **Verified:** requested run 41341586005: Ubuntu 19:27:05.7383029Z identity.rs:52 expected Corrupt
+  (8 passed, 1 failed). Windows 19:30:05.6284627Z sandbox_windows.rs:37 copy failed with Os code 2,
+  NotFound; same line for all 11 failures (1 passed, 11 failed, 1 ignored). Local fmt passed;
+  probe build and remaining checks/Actions verification in progress.
+- **Not done / open:** final local clippy/test/deny, cleanup and both core Actions outcomes pending.
+  Initial local command failed because cargo was absent from PATH; corrected to installed cargo bin.
+  Concurrent proto edits are excluded from this task.
+
+## 2026-11-02 - Claude (coordinator) - `main`
+
+- **Commits:** this commit.
+- **Asked:** owner: Claude does work while Codex runs 1.P6a and 1.P7.
+- **Done:** brought TASKS.md up to date: 0.2, 0.3, 0.4, 0.9b and 0.10 set to done (they were already merged); 0.9a
+  status made specific. Android SDK paths in `spikes/phase0/android/RUN.md` changed from D: to `C:\dev\Android\Sdk`.
+  Started the Android .so + APK build on C:.
+- **Decisions:** none.
+- **Verified:** documentation only. Build results go in the next entry.
+- **Not done / open:** the 0.9a phone run (owner).
+
+## 2026-11-02 - Claude (coordinator) - `main`
+
 - **Commits:** this merge of `feat/codex-ci-fix` (a61abc0).
 - **Asked:** review Codex 1.P7 (make core CI green). Codex's session stopped before its hand-back.
 - **Done:** merged; TASKS.md 1.P7 set to done.

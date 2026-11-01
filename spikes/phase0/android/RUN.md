@@ -31,10 +31,10 @@ The APKs are signed with a local **debug key**. They are test builds: do not sha
 2. Connect the USB cable and accept the "Allow USB debugging?" prompt on the phone.
 3. On the PC:
    ```
-   D:\Android\Sdk\platform-tools\adb.exe devices
-   D:\Android\Sdk\platform-tools\adb.exe install -r app-pulley-release.apk
-   D:\Android\Sdk\platform-tools\adb.exe install -r app-wasmi-release.apk
-   D:\Android\Sdk\platform-tools\adb.exe install -r app-cranelift-release.apk
+   C:\dev\Android\Sdk\platform-tools\adb.exe devices
+   C:\dev\Android\Sdk\platform-tools\adb.exe install -r app-pulley-release.apk
+   C:\dev\Android\Sdk\platform-tools\adb.exe install -r app-wasmi-release.apk
+   C:\dev\Android\Sdk\platform-tools\adb.exe install -r app-cranelift-release.apk
    ```
 
 **Option B: file transfer**
@@ -55,7 +55,7 @@ Copy the APKs to the phone (USB file transfer, Google Drive, and so on), open th
 
 If you used adb you can also capture everything with:
 ```
-D:\Android\Sdk\platform-tools\adb.exe logcat -s NcSpike:I AndroidRuntime:E
+C:\dev\Android\Sdk\platform-tools\adb.exe logcat -s NcSpike:I AndroidRuntime:E
 ```
 
 ## 4. What to send back

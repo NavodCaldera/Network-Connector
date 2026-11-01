@@ -31,3 +31,6 @@ pub const PROFILE_CPU_CORE_V1: &str = "cpu-core-v1";
 mod json_uuid;
 /// Strict protobuf decoding and binary-token text transport helpers.
 pub mod wire;
+
+/// Real job signature and coordinator caps.
+pub mod jobs;
