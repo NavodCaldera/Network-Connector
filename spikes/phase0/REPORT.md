@@ -170,6 +170,57 @@ by `relay_auth`); no TLS certificate was tested; WebSocket endpoints; internet r
 
 ## 0.8 Flutter shell + nc-bridge (app-agent)
 
+**Result: pass.** The owner can start and stop a helper session from the Windows app. The app calls the Rust
+agent in-process through flutter_rust_bridge.
+
+Stack: Flutter 3.47.9, flutter_rust_bridge 2.13.0 (latest stable, pinned exactly in `pubspec.yaml`, in
+`nc-bridge/Cargo.toml` and in the codegen CLI), Rust 1.99.1, VS Build Tools 2022 17.14 (`flutter doctor` showed
+Visual Studio OK before the build).
+
+- `nc-agent` now has a library: `Agent::start_helper_session(OwnerPolicy)`, `stop_helper_session()` and
+  `watch_status() -> Receiver<Status>`. The session loop is a placeholder that runs no jobs. Stop sets a flag
+  under the condvar the loop waits on and joins the thread, so it does not wait for the 250 ms idle tick.
+- `nc-bridge` wraps these three calls 1:1 and adds `default_policy()`, the nc-policy safe defaults as a
+  `PolicySummary`. Only owner settings and state-change events cross into Dart, never job data.
+- The app has one Material 3 screen that follows the system light/dark setting:
+  - "Give performance" starts a session. "Ask for performance" is a disabled placeholder.
+  - A live status card and a "Your rules" summary with an "Accept jobs" switch, off by default. Turning the switch
+    while a session runs restarts the session, so withdrawing consent takes effect at once.
+  - Stop is pinned at the bottom and is always enabled.
+  - All UI text is in `lib/src/strings.dart`, ready for Sinhala and Tamil.
+- `flutter build windows` builds `nc-bridge` with cargo through a CMake target and ships `nc_bridge.dll`.
+
+Measured stop latency (tap or call until the status is `Stopped`; the limit is 1 s):
+
+| Where | Result |
+|---|---|
+| Rust test `stop_latency_under_one_second`, worst of 20 | 203.8 µs |
+| Real Dart → nc-bridge → nc-agent round trip (`app/test/rust_bridge_test.dart` with the built DLL) | 4.1 ms (2.4–4.6 ms over runs) |
+| Widget test with a fake agent | 0–1 ms |
+| Release app, real mouse clicks on the running window | the screen showed "Stopped in 0 ms." |
+
+Release build (`flutter build windows --release`): `network_connector.exe` 91,136 bytes, `nc_bridge.dll`
+504,320 bytes, `flutter_windows.dll` 21,289,472 bytes. The whole `Release` folder is 27,343,460 bytes (about 26 MB).
+
+Manual run: launched the release exe and clicked with real mouse events (`SetCursorPos`/`mouse_event`):
+- "Give performance": the status changed to "Running, but not accepting jobs." and the Give button disabled itself.
+- Stop: the status changed to "Stopped. This device is not helping. Stopped in 0 ms." and Give was enabled again.
+- The process was then killed.
+
+Windows UI Automation could not drive the app. Only the `FLUTTERVIEW` pane was exposed, even with
+`SemanticsBinding.ensureSemantics()`, so that approach was dropped.
+
+Findings:
+- `#[frb]` macros emit `cfg(frb_expand)`. `nc-bridge/build.rs` declares it, so `unexpected_cfgs` stays an error.
+- The generated `frb_generated.rs` contains `unsafe` FFI glue (5 occurrences), allowed only for that module.
+  This touches AGENT.md §1 rule 11; the coordinator needs to decide.
+- A Dart `StreamSubscription.cancel()` on `watchStatus()` does not finish until Rust drops the sink, which happens
+  at the next status change. The forwarding runs on its own thread, so no bridge worker is held. The app watches
+  once for its lifetime and never awaits cancel. A later version needs a way to unsubscribe from the Rust side.
+
+Not done: Android build of the Rust library (task 0.9); code signing and an installer; the app is not yet
+connected to nc-exec, nc-net or the tariff planner.
+
 ## 0.9 Android footprint + foreground service (app-agent)
 
 ## 0.10 iOS feasibility (app-agent)

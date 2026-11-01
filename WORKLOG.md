@@ -15,6 +15,62 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 · Claude Code (app-agent) · `feat/app-shell`
+
+- **Asked:** Phase 0 task 0.8: a Flutter shell on Windows that calls the Rust agent through flutter_rust_bridge.
+  Pass condition: start and stop a helper session from the UI.
+- **Done:**
+  - `app/`: created with `flutter create` (windows and android, org `lk.networkconnector`). One Material 3
+    light/dark screen in `lib/src/home_page.dart` with the roles, policy summary, Accept jobs switch, live status
+    and an always-visible Stop button. `lib/src/agent_api.dart` is the interface plus the real bridge
+    implementation. All text is in `lib/src/strings.dart`.
+  - Windows build: `windows/CMakeLists.txt` builds and bundles `nc_bridge.dll`; the window title is
+    "Network Connector".
+  - Tests: `test/widget_test.dart` (3 tests); `test/rust_bridge_test.dart` (real DLL round trip, skipped without
+    `NC_BRIDGE_DLL`).
+  - `core/crates/nc-agent`: new `src/lib.rs` `Agent` facade (start, stop, watch_status) over nc-policy, with a
+    placeholder session loop and 7 tests, including stop latency.
+  - `core/crates/nc-bridge`: `api.rs` wraps the facade 1:1, plus the generated `frb_generated.rs` and a `build.rs`
+    for the `frb_expand` cfg.
+  - `.github/workflows/ci.yml`: new `flutter` job (pub get with the lockfile enforced, analyze, test) on Flutter
+    3.47.9, with subosito/flutter-action pinned by SHA (v2.23.0).
+  - TASKS 0.8 is now review; REPORT 0.8 is written.
+- **Decisions (app-agent):**
+  - flutter_rust_bridge 2.13.0 pinned exactly (2.14 is beta only).
+  - The Rust build is driven from CMake, not cargokit, because the crate lives in `core/`.
+  - Status is forwarded on a dedicated thread so the bridge never holds a worker.
+  - Changing "Accept jobs" while running restarts the session, so withdrawing consent applies at once.
+- **Verified:**
+  - Rust (nc-agent, nc-bridge):
+    - `cargo test -p nc-agent -p nc-bridge` passed: 7 + 1 + 3 tests. Stop latency was 203.8 µs, worst of 20.
+    - `cargo fmt --all --check` passed.
+    - `cargo deny check`: advisories, bans, licenses and sources all ok.
+    - `cargo clippy --all-targets -D warnings` passed on the workspace excluding nc-protocol, nc-exec and
+      nc-identity.
+  - Rust (whole workspace):
+    - The full workspace clippy/test failed. Codex's parallel 1.P3 build overwrote nc-protocol's generated
+      `OUT_DIR` in the shared `C:\dev\nc-target` (serde derives, E0433). Not caused by this change.
+    - The retry in a private target dir hit a full C: (0 bytes free) and was deleted.
+    - The final `cargo test` (excluding those three crates) failed linking nc-netprobe (LNK1140) because C: was
+      full. So whole-workspace `cargo test` is **not verified locally**; CI must confirm it.
+  - Flutter:
+    - `flutter analyze`: no issues.
+    - `flutter test`: 4 passed with the real DLL (real round trip stop 4.1 ms); 3 passed and 1 skipped without it.
+    - `flutter doctor`: Visual Studio OK.
+    - `flutter build windows --release` succeeded: exe 91,136 B, nc_bridge.dll 504,320 B, Release folder
+      27,343,460 B.
+  - Manual: real mouse clicks on the release app. Give showed "Running, but not accepting jobs."; Stop showed
+    "Stopped. ... Stopped in 0 ms.".
+- **Not done / open:**
+  - The window-title change in `main.cpp` and README edits came after the last build and were not rebuilt.
+  - Windows UI Automation sees only `FLUTTERVIEW`.
+  - The `unsafe` in the generated bridge glue needs a coordinator ruling (rule 11).
+  - Dart stream cancel only completes at the next status change.
+  - No Android Rust build yet (0.9), no signing or installer.
+  - Deleted my own `C:\dev\nc-target\release` (nc_bridge only) and the temporary target dir to free space.
+
+---
+
 ## 2026-11-01 · Claude Code (coordinator) · `main`
 
 - **Asked:** review Codex task 1.P2 (nc-blob); cut disk use without changing runtime speed.
