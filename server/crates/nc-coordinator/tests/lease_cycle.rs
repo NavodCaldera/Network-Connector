@@ -223,9 +223,9 @@ async fn real_job_cycle_over_http() {
     let enroll = std::env::var("NC_TEST_ENROLL").expect("NC_TEST_ENROLL");
     let owner = Dev::new(&base);
     owner.register(&enroll).await;
-    let helper = Arc::new(Dev::new(&base));
+    let mut helper = Arc::new(Dev::new(&base));
     helper.register(&enroll).await;
-    let other = Dev::new(&base);
+    let mut other = Arc::new(Dev::new(&base));
     other.register(&enroll).await;
     let good = owner.manifest(1);
     let mut bad = good.clone();
@@ -269,6 +269,11 @@ async fn real_job_cycle_over_http() {
         "wait for input uploads"
     );
     let module = owner.upload(b"module").await;
+    let foreign_job = other.submit(other.manifest(1)).await;
+    assert_eq!(
+        other.status(&foreign_job).await["tasks"][0]["state"],
+        "queued"
+    );
     owner.upload(b"input").await;
     owner.upload(b"module").await;
     let r = other
@@ -306,21 +311,28 @@ async fn real_job_cycle_over_http() {
         "chunked stream is capped mid-upload"
     );
     let mut calls = tokio::task::JoinSet::new();
-    for _ in 0..20 {
-        let h = helper.clone();
-        calls.spawn(async move { h.post("/v1/leases/request", json!({})).await });
+    for i in 0..20 {
+        let h = if i % 2 == 0 {
+            helper.clone()
+        } else {
+            other.clone()
+        };
+        calls.spawn(async move { (i % 2, h.post("/v1/leases/request", json!({})).await) });
     }
     let mut leases = vec![];
     while let Some(r) = calls.join_next().await {
-        let (s, v) = r.unwrap();
+        let (device, (s, v)) = r.unwrap();
         if s == 200 {
-            leases.push(v)
+            leases.push((device, v))
         } else {
             assert_eq!(s, 404, "{v}")
         }
     }
     assert_eq!(leases.len(), 1);
-    let lease = &leases[0];
+    if leases[0].0 == 1 {
+        std::mem::swap(&mut helper, &mut other);
+    }
+    let lease = &leases[0].1;
     let r = helper
         .request(
             "GET",

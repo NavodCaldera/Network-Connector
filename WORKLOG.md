@@ -15,6 +15,43 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Codex - `feat/codex-jobs-api` - verification and hardening
+
+- **Commits:** 07c57b6, 3eabff2 and this follow-up.
+- **Asked:** finish 1.P6a with actual full-stack evidence and fail-closed transport handling.
+- **Done:** added malformed-path JSON error handling/tests; verified and removed the new migration's UTF-8 BOM.
+  Preserved 16 KiB control caps while allowing 384 KiB only for job submission. Extracted disk staging for
+  a real filesystem test of streamed hash mismatch, mid-stream oversize rejection, cleanup and success.
+  Strengthened the 20-call scheduler race to use two different devices; added an attempted blob-reference
+  possession escalation (foreign requester still cannot GET/schedule a blob it has not uploaded).
+- **Decisions:** requesters must prove upload possession before their referenced input blobs can be downloaded
+  or scheduled. This closes cross-requester hash-reference access while allowing submit-before-upload.
+  Existing v1 control request caps remain unchanged. No device/executor/blob-cache source changed.
+- **Verified:** all eight jobs on code commit 3eabff2 passed in GitHub Actions run 41345834502:
+  https://github.com/NavodCaldera/Network-Connector/actions/runs/41345834502
+  Both Windows/Ubuntu core and server jobs passed fmt, clippy -D warnings and tests; both cargo-deny jobs passed.
+  Docker job 124965625339 passed actual PostgreSQL migrations and real HTTP cycle:
+
+  ```text
+  Coordinator /healthz: ok
+  coordinator uid: 999
+  relay uid: 999
+  test real_job_cycle_over_http ... ok
+  test result: ok. 1 passed; 0 failed; 0 ignored; finished in 62.54s
+  Stack cleanup: down --volumes --remove-orphans
+  ```
+
+  All three containers, all three volumes (including jobblobs), and the network were removed. Local protocol
+  tests passed 12+11+22; local server tests passed 3+8+7+1, with Docker-only test ignored as designed.
+  Both local cargo-deny checks exited 0: `advisories ok, bans ok, licenses ok, sources ok`.
+- **Failures recorded:** initial CI 41345694803 failed fmt for a late build.rs edit; corrected in 3eabff2.
+  Local Docker API/verify.ps1 hung before stack startup and was interrupted. Initial unrestricted local core
+  compilation exhausted Windows memory; limited-worker retry was stopped in favor of successful hosted
+  core verification, with C: under disk pressure from concurrent builds. No unrelated processes were stopped.
+- **Not done / open:** this final hardening follow-up is being verified in a new CI run; local staging test is
+  linking. Dedicated C:\dev\nc-target-codex cleanup will be recorded after verification. Task is review.
+
+
 ## 2026-11-02 - Codex - `feat/codex-jobs-api`
 
 - **Commits:** this implementation commit; verification follow-ups recorded below.

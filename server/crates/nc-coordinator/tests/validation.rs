@@ -5,7 +5,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use nc_coordinator::{app, AppState, MAX_BODY};
+use nc_coordinator::{app, AppState, MAX_BODY, MAX_JOB_BODY};
 use tower::ServiceExt;
 
 fn router() -> axum::Router {
@@ -142,4 +142,16 @@ async fn malformed_paths_use_json_errors() {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_error(&v, "bad_request");
     }
+}
+
+#[tokio::test]
+async fn oversized_job_body_is_rejected_before_authentication() {
+    let (status, v) = call(post(
+        "/v1/jobs",
+        "application/json",
+        vec![b' '; MAX_JOB_BODY + 1],
+    ))
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_error(&v, "payload_too_large");
 }

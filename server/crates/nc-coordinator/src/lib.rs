@@ -33,7 +33,9 @@ use crate::auth::Caller;
 use crate::error::ApiError;
 
 /// Largest accepted request body.
-pub const MAX_BODY: usize = 384 * 1024;
+pub const MAX_BODY: usize = 16 * 1024;
+/// JSON byte arrays expand the 64 KiB canonical job envelope.
+pub const MAX_JOB_BODY: usize = 384 * 1024;
 /// Lease lifetime.
 pub const LEASE_TTL_SECS: i64 = 60;
 /// Relay token lifetime.
@@ -106,7 +108,12 @@ async fn read_signed(
     if method == Method::POST && !ct.starts_with("application/json") {
         return Err(ApiError::unsupported_media());
     }
-    let bytes = axum::body::to_bytes(body, MAX_BODY)
+    let cap = if uri.path() == "/v1/jobs" && method == Method::POST {
+        MAX_JOB_BODY
+    } else {
+        MAX_BODY
+    };
+    let bytes = axum::body::to_bytes(body, cap)
         .await
         .map_err(|_| ApiError::too_large())?;
     let t = now();

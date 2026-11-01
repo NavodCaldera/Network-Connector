@@ -23,30 +23,12 @@ impl Drop for Staging {
     }
 }
 
-pub async fn upload(
-    State(s): State<AppState>,
-    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
+async fn stage(
+    root: &std::path::Path,
+    hash: &str,
     mut body: Body,
-) -> Result<Response, ApiError> {
-    let Path(hash) = path.map_err(|_| ApiError::bad_request("invalid blob path"))?;
-    if !valid_hash(&hash) {
-        return Err(ApiError::bad_request("invalid sha256"));
-    }
-    let c = auth::verify_digest(&method, uri.path(), &headers, &hash, now())?;
-    record_nonce(&s, &c, now()).await?;
-    let d = device(&s, &c).await?;
-    if headers.get(header::CONTENT_LENGTH).is_some_and(|v| {
-        v.to_str()
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .is_none_or(|n| n > MAX_TRANSFER)
-    }) {
-        return Err(ApiError::too_large());
-    }
-    let staging = Staging(s.blob_dir.join(format!(".upload-{}", Uuid::new_v4())));
+) -> Result<(Staging, u64), ApiError> {
+    let staging = Staging(root.join(format!(".upload-{}", Uuid::new_v4())));
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -72,6 +54,33 @@ pub async fn upload(
     }
     file.sync_all().await?;
     drop(file);
+    Ok((staging, size))
+}
+
+pub async fn upload(
+    State(s): State<AppState>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Response, ApiError> {
+    let Path(hash) = path.map_err(|_| ApiError::bad_request("invalid blob path"))?;
+    if !valid_hash(&hash) {
+        return Err(ApiError::bad_request("invalid sha256"));
+    }
+    let c = auth::verify_digest(&method, uri.path(), &headers, &hash, now())?;
+    record_nonce(&s, &c, now()).await?;
+    let d = device(&s, &c).await?;
+    if headers.get(header::CONTENT_LENGTH).is_some_and(|v| {
+        v.to_str()
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .is_none_or(|n| n > MAX_TRANSFER)
+    }) {
+        return Err(ApiError::too_large());
+    }
+    let (staging, size) = stage(&s.blob_dir, &hash, body).await?;
     // A transaction-scoped advisory lock serializes publication of this content hash.
     let mut tx = s.pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
@@ -211,6 +220,29 @@ pub async fn download(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn streams_are_hashed_capped_and_cleaned() {
+        let root = std::env::temp_dir().join(format!("nc-upload-test-{}", Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let hash = hex::encode(Sha256::digest(b"module"));
+        let failed = stage(&root, &hash, Body::from("wrong")).await;
+        assert!(matches!(failed,Err(e) if e.status==StatusCode::BAD_REQUEST));
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        let stream = ReaderStream::with_capacity(
+            std::io::Cursor::new(vec![7; MAX_TRANSFER as usize + 1]),
+            8192,
+        );
+        let failed = stage(&root, &hash, Body::from_stream(stream)).await;
+        assert!(matches!(failed,Err(e) if e.status==StatusCode::PAYLOAD_TOO_LARGE));
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        let (guard, size) = stage(&root, &hash, Body::from("module")).await.unwrap();
+        assert_eq!(size, 6);
+        assert_eq!(std::fs::read(&guard.0).unwrap(), b"module");
+        drop(guard);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        std::fs::remove_dir(root).unwrap();
+    }
     #[test]
     fn range_edges() {
         assert_eq!(range(Some("bytes=3-"), 10).ok(), Some(Some((3, 9))));

@@ -12,7 +12,8 @@ been removed in this migration, so there are no removed numbers to reserve yet.
 When removing a field, add `reserved <number>;` and `reserved "<name>";` in that
 message. Never renumber or reuse a tag. Existing textual version prefixes are also
 represented by `uint32 version = 1` in RelayToken and tag 5 in PairingOffer, both 1.
-Coordinator bodies never carried a version field and retain their current shape.
+Coordinator v2 lease/complete messages add an explicit version=2 while retaining
+all historical tags.
 
 ## Coordinator HTTP JSON
 
@@ -23,7 +24,8 @@ serde helpers use the same UUID parser/normalization as the former UUID members.
 Unknown request fields are rejected; endpoint validation retains the existing
 name/platform/status/result/peer bounds. Database UUID conversions stay server-side.
 HealthResponse covers `/healthz`. Server-specific validation is an extension trait,
-not a second wire model. Requests still have a 16 KiB body limit before parsing.
+not a second wire model. Control requests retain their 16 KiB body limit; job submission allows 384 KiB
+for JSON byte-array expansion. Blob uploads have a separate streaming cap.
 
 ### Exact HTTP request-signing bytes
 
@@ -152,7 +154,8 @@ Devices decrypt and verify plaintext hashes and the module publisher signature.
 Maxima: 64 KiB encoded job, 16 MiB each transfer/output/checkpoint, fuel 10^10,
 memory 512 MiB, wall time 300000 ms, stack 8 MiB, deadline within seven days.
 Fuel, memory, wall time, stack and output caps must be nonzero. JSON request cap
-is 384 KiB (byte arrays expand in JSON); unknown fields at every nested level fail.
+is 384 KiB for submission (byte arrays expand in JSON), 16 KiB for other control
+requests; unknown fields at every nested level fail.
 
 POST /v1/jobs accepts SubmitJobRequest, idempotent only for identical bytes and
 requester. Submission may precede upload; scheduling waits for every referenced
