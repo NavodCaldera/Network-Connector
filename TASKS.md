@@ -35,6 +35,8 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.A1 | Owner UI: limits, night data, settings file, Home summary, navigation | app-agent (Claude) | `feat/app-ui` | `app/`, `core/crates/nc-bridge` | done |
 
 | 1.P7 | Make core CI green without weakening security | **Codex** | `feat/codex-ci-fix` | `core/crates/nc-{identity,exec}`, core CI test step, own task/log entries | done |
+| 1.N1 | Lease renewal endpoint (holder-only, attempt-bound, capped) | net-agent (Claude) | `feat/net-lease-renew` | `proto/`, `server/`, `infra/` | in progress |
+| 1.A2 | App/bridge use nc-agent today/budget/policy; Windows CI sandbox_jobs step | app-agent (Claude) | `feat/app-agent-wiring` | `app/`, `core/crates/nc-bridge`, `.github/workflows/` | in progress |
 
 ## Rules for Codex work
 

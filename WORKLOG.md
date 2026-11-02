@@ -15,6 +15,15 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 — Coordinator (Claude): start 1.N1 and 1.A2
+
+- Commits: board update on main.
+- Asked: keep working toward finishing the project.
+- Done: started net-agent on lease renewal (1.N1) and app-agent on wiring the app to nc-agent counters plus a Windows CI sandbox_jobs step (1.A2).
+- Decisions: separate target dirs on D: (nc-target-net, nc-target-app), -j 2, deleted after the work.
+- Verified: nothing yet; both are in progress.
+- Not done / open: 0.9a Android build, 0.5 two-ISP run, persistent tariff ledger, Windows idle wrapper.
+
 ## 2026-11-02 - Claude (coordinator) - `main`
 
 - Commits: merge of `feat/agent-supervisor` (1cab364, accc3be).
