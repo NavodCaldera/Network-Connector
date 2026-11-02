@@ -5,15 +5,20 @@
 //! `nc status`, `nc start`, `nc stop`, `nc policy show`, `nc policy set <policy.json>`, `nc shutdown`.
 //!
 //! Requester side (talks to the coordinator directly, signing as this device):
-//! `nc submit <module.wasm> <input> [--out <file>]` signs the job manifest (this device is the publisher),
-//! uploads the module and input, submits, polls `GET /v1/jobs/{id}` (riding out transient coordinator
-//! outages) and downloads the verified output. `--replicas 2` asks for two-helper validation.
+//! `nc submit <module.wasm> <input>` signs the job manifest (this device is the publisher), records it under
+//! `<data_dir>/requests/<id>/`, uploads the module and input, submits and prints the job id (detached).
+//! With `--wait` or `--out <file>` it also waits and writes the verified output (the old blocking form).
+//! `nc job status|wait <id>` and `nc job fetch <id> -o <file>` pick the job up from any later process, also
+//! after a crash or restart: a job the coordinator never got is uploaded and submitted first. Transient
+//! coordinator failures are retried until `--timeout`; the output is checked against the committed hash.
+//! `--replicas 2` asks for two-helper validation.
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use nc_agent::config::AgentConfig;
 use nc_agent::control::{self, Command};
 use nc_agent::coord::Coordinator;
+use nc_agent::jobs::{self, JobStore, Retry};
 use nc_agent::requester::{self, JobSpec};
 use nc_policy::OwnerPolicy;
 use nc_protocol::pb::v1::RegisterRequest;
@@ -48,7 +53,7 @@ enum Cmd {
         #[command(subcommand)]
         action: PolicyCmd,
     },
-    /// Submit a Wasm job and wait for its output.
+    /// Submit a Wasm job and print its id (add --wait or --out to block for the output).
     Submit {
         /// Wasm module (profile cpu-core-v1).
         module: PathBuf,
@@ -57,6 +62,9 @@ enum Cmd {
         /// Write the output here instead of stdout.
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Wait for the output (to stdout unless --out).
+        #[arg(long)]
+        wait: bool,
         /// Seconds to wait for the result.
         #[arg(long, default_value_t = 600)]
         timeout: u64,
@@ -75,6 +83,42 @@ enum Cmd {
         /// Independent helpers that must return the same output before the task commits (1 or 2).
         #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=2))]
         replicas: u32,
+    },
+    /// Follow up a submitted job (works from any later process).
+    Job {
+        #[command(subcommand)]
+        action: JobCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum JobCmd {
+    /// Print the job state (submits first if the coordinator never got it).
+    Status {
+        /// Job id from `nc submit`.
+        id: String,
+        /// Seconds to keep retrying an unreachable coordinator.
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+    },
+    /// Wait until the job is committed or ends.
+    Wait {
+        /// Job id.
+        id: String,
+        /// Seconds to wait.
+        #[arg(long, default_value_t = 600)]
+        timeout: u64,
+    },
+    /// Wait for, download and verify the output.
+    Fetch {
+        /// Job id.
+        id: String,
+        /// Output file.
+        #[arg(short = 'o', long = "out")]
+        out: PathBuf,
+        /// Seconds to wait.
+        #[arg(long, default_value_t = 600)]
+        timeout: u64,
     },
 }
 
@@ -128,29 +172,88 @@ fn submit(cfg: &AgentConfig, args: SubmitArgs) -> Result<()> {
     let signer = nc_identity::RootSigner(key.as_ref());
     let job = requester::build(&spec, &signer, chrono::Utc::now().timestamp_millis())
         .context("building the job")?;
-    let coord = cfg.coordinator(key.clone());
+    let coord = requester_coord(cfg)?;
+    let store = JobStore::new(&cfg.data_dir);
+    store
+        .stage(&job, chrono::Utc::now().timestamp_millis())
+        .context("recording the job")?;
+    let retry = Retry::cli(Duration::from_secs(args.timeout));
+    store
+        .ensure_submitted(&coord, &job.job_id, retry)
+        .with_context(|| {
+            format!(
+                "submitting job {}; resume with `nc job status {}`",
+                job.job_id, job.job_id
+            )
+        })?;
+    let id = job.job_id;
+    eprintln!("submitted job {id}");
+    if !args.wait && args.out.is_none() {
+        println!("{id}");
+        return Ok(());
+    }
+    eprintln!("waiting for job {id}");
+    let bytes = store
+        .fetch(&coord, &id, retry, POLL)
+        .context("waiting for the result")?;
+    match args.out {
+        Some(p) => jobs::write_output(&p, &bytes).context("writing output")?,
+        None => std::io::stdout().write_all(&bytes)?,
+    }
+    eprintln!("job {id} committed; output {} bytes", bytes.len());
+    Ok(())
+}
+
+const POLL: Duration = Duration::from_secs(2);
+
+fn requester_coord(cfg: &AgentConfig) -> Result<nc_agent::coord::HttpCoordinator> {
+    let key = cfg.device_key()?;
+    let coord = cfg.coordinator(key);
     coord
         .register(&RegisterRequest {
             name: cfg.device_name.clone(),
             platform: std::env::consts::OS.into(),
         })
         .context("registering with the coordinator")?;
-    let id = requester::submit(&coord, &job).context("submitting")?;
-    eprintln!("submitted job {id}; waiting");
-    let status = requester::wait(
-        &coord,
-        &id,
-        Duration::from_secs(args.timeout),
-        Duration::from_secs(2),
-    )
-    .context("waiting for the result")?;
-    let out = status.output.context("committed task has no output")?;
-    let bytes = requester::fetch_output(&coord, &out).context("downloading the output")?;
-    match args.out {
-        Some(p) => std::fs::write(p, &bytes).context("writing output")?,
-        None => std::io::stdout().write_all(&bytes)?,
+    Ok(coord)
+}
+
+fn job_cmd(cfg: &AgentConfig, action: JobCmd) -> Result<()> {
+    let store = JobStore::new(&cfg.data_dir);
+    match action {
+        JobCmd::Status { id, timeout } => {
+            store.load(&id).context("job")?;
+            let coord = requester_coord(cfg)?;
+            let t = store
+                .status(&coord, &id, Retry::cli(Duration::from_secs(timeout)))
+                .context("job status")?;
+            println!(
+                "{}",
+                if t.state.is_empty() {
+                    "unknown"
+                } else {
+                    &t.state
+                }
+            );
+        }
+        JobCmd::Wait { id, timeout } => {
+            store.load(&id).context("job")?;
+            let coord = requester_coord(cfg)?;
+            let t = store
+                .wait(&coord, &id, Retry::cli(Duration::from_secs(timeout)), POLL)
+                .context("waiting for the job")?;
+            println!("{}", t.state);
+        }
+        JobCmd::Fetch { id, out, timeout } => {
+            store.load(&id).context("job")?;
+            let coord = requester_coord(cfg)?;
+            let bytes = store
+                .fetch(&coord, &id, Retry::cli(Duration::from_secs(timeout)), POLL)
+                .context("fetching the output")?;
+            jobs::write_output(&out, &bytes).context("writing output")?;
+            eprintln!("job {id} output verified; {} bytes", bytes.len());
+        }
     }
-    eprintln!("job {id} committed; output {} bytes", bytes.len());
     Ok(())
 }
 
@@ -158,6 +261,7 @@ struct SubmitArgs {
     module: PathBuf,
     input: PathBuf,
     out: Option<PathBuf>,
+    wait: bool,
     timeout: u64,
     fuel: Option<u64>,
     wall_ms: Option<u64>,
@@ -217,6 +321,7 @@ fn main() -> Result<()> {
             module,
             input,
             out,
+            wait,
             timeout,
             fuel,
             wall_ms,
@@ -229,6 +334,7 @@ fn main() -> Result<()> {
                 module,
                 input,
                 out,
+                wait,
                 timeout,
                 fuel,
                 wall_ms,
@@ -237,6 +343,7 @@ fn main() -> Result<()> {
                 replicas,
             },
         )?,
+        Cmd::Job { action } => job_cmd(&cfg, action)?,
     }
     Ok(())
 }
@@ -259,6 +366,26 @@ mod tests {
             Ok(Cmd::Submit { replicas: 2, .. })
         ));
         assert!(Cli::try_parse_from(["nc", "submit", "m.wasm", "i", "--replicas", "3"]).is_err());
+        let c = Cli::try_parse_from(["nc", "job", "fetch", "id", "-o", "out.bin"]);
+        assert!(matches!(
+            c.map(|c| c.cmd),
+            Ok(Cmd::Job {
+                action: JobCmd::Fetch { .. }
+            })
+        ));
+        let c = Cli::try_parse_from(["nc", "job", "wait", "id", "--timeout", "5"]);
+        assert!(matches!(
+            c.map(|c| c.cmd),
+            Ok(Cmd::Job {
+                action: JobCmd::Wait { timeout: 5, .. }
+            })
+        ));
+        assert!(Cli::try_parse_from(["nc", "job", "fetch", "id"]).is_err());
+        let c = Cli::try_parse_from(["nc", "submit", "m.wasm", "i", "--wait"]);
+        assert!(matches!(
+            c.map(|c| c.cmd),
+            Ok(Cmd::Submit { wait: true, .. })
+        ));
         let c = Cli::try_parse_from(["nc", "key"]);
         assert!(matches!(c.map(|c| c.cmd), Ok(Cmd::Key)));
     }

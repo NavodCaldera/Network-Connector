@@ -19,6 +19,7 @@ pub mod budget;
 pub mod config;
 pub mod control;
 pub mod coord;
+pub mod jobs;
 pub mod journal;
 pub mod parked;
 pub mod probe;
