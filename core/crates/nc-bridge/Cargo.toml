@@ -13,8 +13,12 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 nc-agent = { path = "../nc-agent", version = "0.1.0" }
+nc-identity = { path = "../nc-identity", version = "0.1.0" }
+nc-protocol = { path = "../nc-protocol", version = "0.1.0" }
+nc-store = { path = "../nc-store", version = "0.1.0" }
 nc-policy = { path = "../nc-policy", version = "0.1.0" }
 nc-tariff = { path = "../nc-tariff", version = "0.1.0" }
+base64 = "0.22"
 chrono = { version = "0.4.42", default-features = false, features = ["std", "now"] }
 chrono-tz = "0.10.4"
 serde = { version = "1.0.228", features = ["derive"] }

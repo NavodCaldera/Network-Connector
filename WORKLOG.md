@@ -15,6 +15,46 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Claude (App agent) - `feat/app-enrol` - task 1.A3
+
+- **Commits:** the single commit on `feat/app-enrol` that adds this entry.
+- **Asked:** 1.A3: enrol the app with the coordinator so a PC runs real jobs; next start uses `Agent::with_backend`;
+  HTTPS except dev loopback/LAN; unenrol/reset; no secrets in logs.
+- **Done:**
+  - `nc-bridge/src/enrol.rs` (new): `enrol` follows the server contract (one signed `POST /v1/devices/register`
+    with `x-nc-enroll`). The secret is used for that call only: never saved, logged or returned (`EnrolRequest`
+    has a Debug impl without it). Device key: nc-identity `SoftwareKeyStore` at `<app dir>/agent/device.key`;
+    only the public key is shown. Saved `<app dir>/coordinator.json` (format 1, strict, 64 KiB cap, atomic):
+    URL, device name, owner-declared network (wired/Wi-Fi, connection name, speed), unlimited-data flag,
+    "device stays cool" (declared thermal Nominal, else unknown = no work), 1-16 trusted publisher keys.
+  - `build_agent` mirrors `nc_agent::config::AgentConfig::build_agent` (journal, blob cache, budget.sqlite
+    ledger, SandboxRunner with worker next to the exe or `NC_EXEC_WORKER`, SystemProbe) and wraps
+    `HttpCoordinator` so `register` is a no-op after enrolment (the server needs the secret on every register
+    and it is not stored; the signed heartbeat gets 401 if the server forgets the key).
+  - URL check: `https://` always; `http://` only for localhost / loopback / private or link-local IPs and only
+    with `NC_DEV_ALLOW_HTTP=1`; no path, query or userinfo; re-checked on every load.
+  - `api.rs`: `open_agent(dir)` (sync, must be first; builds `with_backend` when enrolled), `enrol`, `unenrol`
+    (stops the session, removes config, key, journal, blobs; keeps budget.sqlite so a reset cannot double-spend
+    the night budget; no new session until restart). Start/update policy add the enrolment's trusted keys and
+    `cpu-core-v1`. Night data is bound to the declared connection (unlimited data = Unmetered).
+  - `night.rs`: `to_profile_bound`. Cargo: nc-identity, nc-protocol, nc-store, base64 deps.
+  - App: new Connect tab (`coordinator_page.dart`), `AppModel` opens the agent before the status stream, enrol /
+    reset with confirm, restart notice; bindings regenerated (frb 2.13.0).
+- **Decisions (App agent):** trust is part of the enrolment (the owner pastes publisher keys) because the app had
+  no way to set `trusted_peers` / profiles, so no job could ever be admitted. The enrolment takes effect on restart
+  (the agent is a process-wide `OnceLock`).
+- **Verified (this PC, CARGO_TARGET_DIR=C:\nc-target-app, -j 2, nice):** `cargo fmt --all --check` ok;
+  `cargo clippy -p nc-bridge --all-targets --locked -- -D warnings` ok; `cargo test -p nc-bridge` 29 passed (fake
+  HTTP coordinator on 127.0.0.1: wrong secret 401 and nothing saved, http refused without dev flag, unreachable
+  message, enrol then backend agent sends signed heartbeat with no `x-nc-enroll` and no second register, Stop
+  under 1 s, no secret anywhere in the app folder, reset keeps budget.sqlite, metered binding); first test run
+  failed (heartbeat never sent: the test policy had no hours) and was fixed in the test. `flutter analyze` no
+  issues and `flutter test` +16 ~1 all passed, run from a copy of `app/` on C: because E: was full.
+- **Not done / open:** not run against the real coordinator or Docker stack. `nc-exec-worker` is not yet bundled
+  in the Windows app build (jobs are refused SANDBOX_UNAVAILABLE until it is). The server has no deregister call,
+  so reset only removes local state. E: ran out of space during the work (first build failed); E:\nc-target-app
+  could not be deleted (safety check). Git could not write on E:, so this commit was made from a fresh clone on C:\nc-app-enrol-clone with the same files.
+
 ## 2026-11-02 — Coordinator (Claude): merge 1.P8
 
 - Commits: merge of 12b2a58 (feat/core-agent-renew).

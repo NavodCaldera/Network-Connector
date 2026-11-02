@@ -7,8 +7,23 @@ import 'frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `agent`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
+// These functions are ignored because they are not marked as `pub`: `active`, `agent`, `with_trust`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
+
+/// Creates the agent. With a saved enrolment in `dir` it is `Agent::with_backend` (real coordinator, leases,
+/// budget and today counters); otherwise `Agent::new()`. Call once at start-up, before anything else.
+AgentStart openAgent({required String dir}) =>
+    RustLib.instance.api.crateApiOpenAgent(dir: dir);
+
+/// Registers this device with the coordinator and saves the enrolment in `dir`. Takes effect on the next
+/// start of the app. Plain-English errors; the secret is never logged or stored.
+Future<Enrolment> enrol({required String dir, required EnrolRequest request}) =>
+    RustLib.instance.api.crateApiEnrol(dir: dir, request: request);
+
+/// Stops helping, then removes the enrolment and this device's identity, journal and cache from `dir`.
+/// Until the app restarts, no new helper session can start.
+Future<void> unenrol({required String dir}) =>
+    RustLib.instance.api.crateApiUnenrol(dir: dir);
 
 /// The nc-policy safe defaults (no consent, charging only, 25 % CPU, no hours, ...).
 PolicySummary defaultPolicy() => RustLib.instance.api.crateApiDefaultPolicy();
@@ -102,6 +117,28 @@ enum ActivityKind {
   uploading,
 }
 
+/// Result of [`open_agent`].
+class AgentStart {
+  /// Saved enrolment, if any.
+  final Enrolment? enrolment;
+
+  /// Plain-English problem with the saved enrolment (the app then runs without a coordinator).
+  final String? notice;
+
+  const AgentStart({this.enrolment, this.notice});
+
+  @override
+  int get hashCode => enrolment.hashCode ^ notice.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AgentStart &&
+          runtimeType == other.runtimeType &&
+          enrolment == other.enrolment &&
+          notice == other.notice;
+}
+
 /// Everything the app saves. One versioned JSON file; no secrets.
 class AppSettings {
   /// Owner limits.
@@ -122,6 +159,126 @@ class AppSettings {
           runtimeType == other.runtimeType &&
           policy == other.policy &&
           nightData == other.nightData;
+}
+
+/// What the owner enters to enrol. `enrol_secret` is sent once to the coordinator and never stored.
+class EnrolRequest {
+  /// Coordinator base URL, `https://...`.
+  final String coordinatorUrl;
+
+  /// Enrolment secret from the coordinator owner.
+  final String enrolSecret;
+
+  /// Name shown on the coordinator, 1 to 64 characters.
+  final String deviceName;
+
+  /// Wired or Wi-Fi.
+  final NetworkKind network;
+
+  /// Owner's name for this connection, e.g. `home`.
+  final String connectionName;
+
+  /// Conservative connection speed, Mbit/s.
+  final int speedMbps;
+
+  /// The connection has no data limit (no night-data budget needed).
+  final bool unlimitedData;
+
+  /// The owner confirms the device stays cool enough (no thermal sensor is readable).
+  final bool coolDevice;
+
+  /// Public keys of the people whose jobs this device may run (base64url or hex), 1 to 16.
+  final List<String> trustedPublishers;
+
+  const EnrolRequest({
+    required this.coordinatorUrl,
+    required this.enrolSecret,
+    required this.deviceName,
+    required this.network,
+    required this.connectionName,
+    required this.speedMbps,
+    required this.unlimitedData,
+    required this.coolDevice,
+    required this.trustedPublishers,
+  });
+
+  @override
+  int get hashCode =>
+      coordinatorUrl.hashCode ^
+      enrolSecret.hashCode ^
+      deviceName.hashCode ^
+      network.hashCode ^
+      connectionName.hashCode ^
+      speedMbps.hashCode ^
+      unlimitedData.hashCode ^
+      coolDevice.hashCode ^
+      trustedPublishers.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is EnrolRequest &&
+          runtimeType == other.runtimeType &&
+          coordinatorUrl == other.coordinatorUrl &&
+          enrolSecret == other.enrolSecret &&
+          deviceName == other.deviceName &&
+          network == other.network &&
+          connectionName == other.connectionName &&
+          speedMbps == other.speedMbps &&
+          unlimitedData == other.unlimitedData &&
+          coolDevice == other.coolDevice &&
+          trustedPublishers == other.trustedPublishers;
+}
+
+/// The saved enrolment. No secrets, no keys.
+class Enrolment {
+  /// Coordinator base URL.
+  final String coordinatorUrl;
+
+  /// Name on the coordinator.
+  final String deviceName;
+
+  /// The connection has no data limit.
+  final bool unlimitedData;
+
+  /// Number of trusted publisher keys.
+  final int trustedPublishers;
+
+  /// This device's public key (base64url), to share with people who should trust it. Never the private key.
+  final String deviceKey;
+
+  /// The running agent uses this coordinator now (false until the app restarts after enrolling).
+  final bool active;
+
+  const Enrolment({
+    required this.coordinatorUrl,
+    required this.deviceName,
+    required this.unlimitedData,
+    required this.trustedPublishers,
+    required this.deviceKey,
+    required this.active,
+  });
+
+  @override
+  int get hashCode =>
+      coordinatorUrl.hashCode ^
+      deviceName.hashCode ^
+      unlimitedData.hashCode ^
+      trustedPublishers.hashCode ^
+      deviceKey.hashCode ^
+      active.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is Enrolment &&
+          runtimeType == other.runtimeType &&
+          coordinatorUrl == other.coordinatorUrl &&
+          deviceName == other.deviceName &&
+          unlimitedData == other.unlimitedData &&
+          trustedPublishers == other.trustedPublishers &&
+          deviceKey == other.deviceKey &&
+          active == other.active;
 }
 
 /// `nc_agent::Activity` as a plain struct. Never carries job data.
@@ -206,6 +363,15 @@ class LoadedSettings {
           runtimeType == other.runtimeType &&
           settings == other.settings &&
           resetNotice == other.resetNotice;
+}
+
+/// How this device reaches the coordinator. The owner states it; the platform cannot confirm it yet.
+enum NetworkKind {
+  /// Wired.
+  ethernet,
+
+  /// Wi-Fi.
+  wifi,
 }
 
 /// Night-data (tariff) settings. Windows are owner-configured, never ISP facts (PLAN.md §6).

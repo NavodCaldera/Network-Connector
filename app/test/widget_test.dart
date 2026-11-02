@@ -248,4 +248,76 @@ void main() {
       expect(find.byType(LicensePage), findsOneWidget);
     });
   });
+
+  group('Coordinator', () {
+    testWidgets('agent is opened before the status stream', (tester) async {
+      final a = await _app(tester);
+      expect(a.openedBeforeWatch, isTrue);
+    });
+
+    testWidgets('enrol sends the form, clears the secret, asks for restart', (
+      tester,
+    ) async {
+      final a = await _app(tester);
+      await _tab(tester, 'navCoord');
+      await tester.enterText(
+        find.byKey(const Key('coordUrl')),
+        'https://c.example',
+      );
+      await tester.enterText(find.byKey(const Key('enrolSecret')), 'bad');
+      await tester.enterText(find.byKey(const Key('deviceName')), 'pc');
+      await tester.tap(find.byKey(const Key('enrol')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('enrolError')), findsOneWidget);
+      _stopIsEnabled(tester);
+
+      await tester.enterText(find.byKey(const Key('enrolSecret')), 'good');
+      await tester.enterText(find.byKey(const Key('trusted')), ' k1 \n\nk2\n');
+      await tester.tap(find.byKey(const Key('cool')));
+      await tester.tap(find.byKey(const Key('enrol')));
+      await tester.pumpAndSettle();
+      final r = a.enrolRequests.last;
+      expect(r.coordinatorUrl, 'https://c.example');
+      expect(r.deviceName, 'pc');
+      expect(r.coolDevice, isTrue);
+      expect(r.unlimitedData, isFalse);
+      expect(r.speedMbps, 10);
+      expect(r.trustedPublishers, ['k1', 'k2']);
+      expect(find.text(S.trustedCount(2)), findsOneWidget);
+      expect(find.text('PUBKEY'), findsOneWidget);
+      expect(find.text(S.connectedTo('https://c.example')), findsOneWidget);
+      expect(find.byKey(const Key('restartNeeded')), findsOneWidget);
+      expect(find.text('good'), findsNothing);
+    });
+
+    testWidgets('reset asks first, then stops and removes the enrolment', (
+      tester,
+    ) async {
+      final a = FakeAgent()
+        ..enrolled = const Enrolment(
+          coordinatorUrl: 'https://c.example',
+          deviceName: 'pc',
+          unlimitedData: true,
+          trustedPublishers: 1,
+          deviceKey: 'PUBKEY',
+          active: true,
+        );
+      await _app(tester, a);
+      await _tab(tester, 'navCoord');
+      expect(find.text(S.connectedTo('https://c.example')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('reset')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(S.cancel));
+      await tester.pumpAndSettle();
+      expect(a.unenrols, 0);
+      await tester.tap(find.byKey(const Key('reset')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('resetConfirm')));
+      await tester.pumpAndSettle();
+      expect(a.unenrols, 1);
+      expect(a.stops, 1);
+      expect(find.byKey(const Key('coordUrl')), findsOneWidget);
+      expect(find.byKey(const Key('restartNeeded')), findsOneWidget);
+    });
+  });
 }

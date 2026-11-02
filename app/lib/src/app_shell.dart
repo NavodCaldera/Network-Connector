@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'about_page.dart';
 import 'app_model.dart';
+import 'coordinator_page.dart';
 import 'home_page.dart';
 import 'limits_page.dart';
 import 'night_data_page.dart';
@@ -34,6 +35,7 @@ class _AppShellState extends State<AppShell> {
             0 => HomePage(model: m),
             1 => LimitsPage(model: m),
             2 => NightDataPage(model: m),
+            3 => CoordinatorPage(model: m),
             _ => AboutPage(model: m),
           },
         ),
@@ -82,6 +84,11 @@ class _AppShellState extends State<AppShell> {
                   key: Key('navNight'),
                   icon: Icon(Icons.nightlight),
                   label: S.navNight,
+                ),
+                NavigationDestination(
+                  key: Key('navCoord'),
+                  icon: Icon(Icons.cloud_outlined),
+                  label: S.navCoord,
                 ),
                 NavigationDestination(
                   key: Key('navAbout'),

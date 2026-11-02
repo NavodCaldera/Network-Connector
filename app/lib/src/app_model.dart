@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'agent_api.dart';
+import 'strings.dart';
 
 /// App state shared by every screen: saved settings and the live helper status.
 /// Validation and saving are done by Rust; this class only calls it and stores the result.
@@ -18,6 +19,15 @@ class AppModel extends ChangeNotifier {
   HelperState state = HelperState.stopped;
   String? error;
   String? resetNotice;
+
+  /// Saved coordinator enrolment (null: not enrolled).
+  Enrolment? enrolment;
+
+  /// Problem with the saved enrolment, shown on the Coordinator page.
+  String? enrolNotice;
+
+  /// Enrolled or reset during this run: the change applies after a restart.
+  bool restartNeeded = false;
   int? lastStopMs;
   StreamSubscription<HelperStatus>? _sub;
   Stopwatch? _stopClock;
@@ -26,10 +36,16 @@ class AppModel extends ChangeNotifier {
   bool get running =>
       state != HelperState.stopped && state != HelperState.stopping;
 
-  /// Subscribe to status first, so Stop works even while settings load.
+  /// Open the agent (fast, local files only), then subscribe to status, so Stop works even while
+  /// settings load.
   Future<void> start() async {
-    _sub = api.watchStatus().listen(_onStatus);
     final dir = settingsDir;
+    if (dir != null) {
+      final opened = api.openAgent(dir);
+      enrolment = opened.enrolment;
+      enrolNotice = opened.notice;
+    }
+    _sub = api.watchStatus().listen(_onStatus);
     if (dir == null) return;
     final loaded = await api.loadSettings(dir);
     settings = loaded.settings;
@@ -117,6 +133,37 @@ class AppModel extends ChangeNotifier {
       error = err;
       notifyListeners();
     }
+  }
+
+  /// Enrols with the coordinator. Returns the error or null. Takes effect after a restart.
+  Future<String?> enrol(EnrolRequest r) async {
+    final dir = settingsDir;
+    if (dir == null) return S.noAppFolder;
+    try {
+      enrolment = await api.enrol(dir, r);
+      enrolNotice = null;
+      restartNeeded = true;
+      notifyListeners();
+      return null;
+    } catch (e) {
+      return e.toString();
+    }
+  }
+
+  /// Stops all work, then removes the enrolment and this device's identity.
+  Future<String?> unenrol() async {
+    final dir = settingsDir;
+    if (dir == null) return S.noAppFolder;
+    try {
+      await api.unenrol(dir);
+    } catch (e) {
+      return e.toString();
+    }
+    restartNeeded = enrolment?.active ?? false;
+    enrolment = null;
+    enrolNotice = null;
+    notifyListeners();
+    return null;
   }
 
   Future<String?> _persist(AppSettings next) async {

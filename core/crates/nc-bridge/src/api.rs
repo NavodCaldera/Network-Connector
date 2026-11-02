@@ -6,10 +6,11 @@
 use flutter_rust_bridge::frb;
 use nc_agent::{Agent, SessionState};
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use crate::frb_generated::StreamSink;
-use crate::{night, settings};
+use crate::{enrol, night, settings};
 
 /// One weekly time window, local time of `timezone`. Minutes count from midnight (0..1440).
 /// `end_minute` before `start_minute` means the window crosses midnight.
@@ -211,9 +212,163 @@ pub struct HelperStatus {
     pub seq: u64,
 }
 
+/// How this device reaches the coordinator. The owner states it; the platform cannot confirm it yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetworkKind {
+    /// Wired.
+    Ethernet,
+    /// Wi-Fi.
+    Wifi,
+}
+
+/// What the owner enters to enrol. `enrol_secret` is sent once to the coordinator and never stored.
+#[derive(Clone, PartialEq, Eq)]
+pub struct EnrolRequest {
+    /// Coordinator base URL, `https://...`.
+    pub coordinator_url: String,
+    /// Enrolment secret from the coordinator owner.
+    pub enrol_secret: String,
+    /// Name shown on the coordinator, 1 to 64 characters.
+    pub device_name: String,
+    /// Wired or Wi-Fi.
+    pub network: NetworkKind,
+    /// Owner's name for this connection, e.g. `home`.
+    pub connection_name: String,
+    /// Conservative connection speed, Mbit/s.
+    pub speed_mbps: u32,
+    /// The connection has no data limit (no night-data budget needed).
+    pub unlimited_data: bool,
+    /// The owner confirms the device stays cool enough (no thermal sensor is readable).
+    pub cool_device: bool,
+    /// Public keys of the people whose jobs this device may run (base64url or hex), 1 to 16.
+    pub trusted_publishers: Vec<String>,
+}
+
+impl std::fmt::Debug for EnrolRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print the enrolment secret.
+        f.debug_struct("EnrolRequest")
+            .field("coordinator_url", &self.coordinator_url)
+            .field("device_name", &self.device_name)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The saved enrolment. No secrets, no keys.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Enrolment {
+    /// Coordinator base URL.
+    pub coordinator_url: String,
+    /// Name on the coordinator.
+    pub device_name: String,
+    /// The connection has no data limit.
+    pub unlimited_data: bool,
+    /// Number of trusted publisher keys.
+    pub trusted_publishers: u32,
+    /// This device's public key (base64url), to share with people who should trust it. Never the private key.
+    pub device_key: String,
+    /// The running agent uses this coordinator now (false until the app restarts after enrolling).
+    pub active: bool,
+}
+
+/// Result of [`open_agent`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentStart {
+    /// Saved enrolment, if any.
+    pub enrolment: Option<Enrolment>,
+    /// Plain-English problem with the saved enrolment (the app then runs without a coordinator).
+    pub notice: Option<String>,
+}
+
+static AGENT: OnceLock<Agent> = OnceLock::new();
+/// The enrolment the running agent was built from.
+static ACTIVE: Mutex<Option<enrol::EnrolFile>> = Mutex::new(None);
+/// Set after unenrol: the running agent still holds the old identity, so no new session until restart.
+static RESET_PENDING: AtomicBool = AtomicBool::new(false);
+
 fn agent() -> &'static Agent {
-    static AGENT: OnceLock<Agent> = OnceLock::new();
     AGENT.get_or_init(Agent::new)
+}
+
+fn active() -> Option<enrol::EnrolFile> {
+    ACTIVE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+/// The owner's limits plus the trust from the active enrolment (none when not enrolled).
+fn with_trust(p: nc_policy::OwnerPolicy) -> nc_policy::OwnerPolicy {
+    match active() {
+        Some(f) => f.apply_trust(p),
+        None => p,
+    }
+}
+
+/// Creates the agent. With a saved enrolment in `dir` it is `Agent::with_backend` (real coordinator, leases,
+/// budget and today counters); otherwise `Agent::new()`. Call once at start-up, before anything else.
+#[frb(sync)]
+pub fn open_agent(dir: String) -> AgentStart {
+    let dir = Path::new(&dir);
+    if AGENT.get().is_some() {
+        return AgentStart {
+            enrolment: active().map(|f| f.summary(dir, true)),
+            notice: None,
+        };
+    }
+    let built = enrol::load(dir, enrol::dev_http_allowed()).and_then(|f| match f {
+        None => Ok(None),
+        Some(f) => {
+            let night = settings::load(dir).settings.night_data;
+            let budget = enrol::budget(&f, &night)?;
+            enrol::build_agent(dir, &f, &budget).map(|a| Some((f, a)))
+        }
+    });
+    match built {
+        Ok(Some((f, a))) => {
+            let summary = f.summary(dir, true);
+            if AGENT.set(a).is_ok() {
+                *ACTIVE.lock().unwrap_or_else(PoisonError::into_inner) = Some(f);
+            }
+            AgentStart {
+                enrolment: Some(summary),
+                notice: None,
+            }
+        }
+        Ok(None) => {
+            agent();
+            AgentStart {
+                enrolment: None,
+                notice: None,
+            }
+        }
+        Err(e) => {
+            agent();
+            AgentStart {
+                enrolment: None,
+                notice: Some(e),
+            }
+        }
+    }
+}
+
+/// Registers this device with the coordinator and saves the enrolment in `dir`. Takes effect on the next
+/// start of the app. Plain-English errors; the secret is never logged or stored.
+pub fn enrol(dir: String, request: EnrolRequest) -> Result<Enrolment, String> {
+    if RESET_PENDING.load(Ordering::SeqCst) {
+        return Err("Restart the app to finish the reset first.".into());
+    }
+    enrol::enrol(Path::new(&dir), request, enrol::dev_http_allowed())
+}
+
+/// Stops helping, then removes the enrolment and this device's identity, journal and cache from `dir`.
+/// Until the app restarts, no new helper session can start.
+pub fn unenrol(dir: String) -> Result<(), String> {
+    agent().stop_helper_session();
+    if active().is_some() {
+        RESET_PENDING.store(true, Ordering::SeqCst);
+    }
+    enrol::unenrol(Path::new(&dir))
 }
 
 /// Called once by the generated Dart `RustLib.init()`.
@@ -278,22 +433,28 @@ pub fn save_settings(dir: String, settings: AppSettings) -> Result<(), String> {
 
 /// `Agent::start_helper_session(policy)`. Errors are plain-English sentences for the UI.
 pub fn start_helper_session(policy: PolicySummary) -> Result<(), String> {
-    let p = settings::to_policy(&policy)?;
+    if RESET_PENDING.load(Ordering::SeqCst) {
+        return Err("Restart the app to finish the reset.".into());
+    }
+    let p = with_trust(settings::to_policy(&policy)?);
     agent().start_helper_session(p).map_err(|e| e.to_string())
 }
 
 /// `Agent::update_policy(policy)`: applies new limits to the running session (and later ones) at once.
 /// A running job the new limits no longer allow is cancelled by nc-agent.
 pub fn update_policy(policy: PolicySummary) -> Result<(), String> {
-    let p = settings::to_policy(&policy)?;
+    let p = with_trust(settings::to_policy(&policy)?);
     agent().update_policy(p).map_err(|e| e.to_string())
 }
 
 /// `Agent::update_network_budget(Metered(profile))` from the night-data settings, applied live.
 pub fn update_night_data(night_data: NightDataSettings) -> Result<(), String> {
-    let profile = night::to_profile(&night_data)?;
+    let budget = match active() {
+        Some(f) => enrol::budget(&f, &night_data)?,
+        None => nc_agent::NetworkBudget::Metered(night::to_profile(&night_data)?),
+    };
     agent()
-        .update_network_budget(nc_agent::NetworkBudget::Metered(profile))
+        .update_network_budget(budget)
         .map_err(|e| e.to_string())
 }
 
