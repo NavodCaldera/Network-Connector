@@ -103,6 +103,17 @@ pub async fn lease(s: &AppState, d: &Device) -> Result<Option<LeaseResponse>, Ap
     // Serialize each task, but allow independent tasks to be scheduled concurrently.
     for _ in 0..32 {
         let mut tx = s.pool.begin().await?;
+        // Lock the device row first (same order as deregister: device, then leases and tasks) so a
+        // concurrent deregister either finishes before us (key detached: refuse) or waits for this lease
+        // and then releases it.
+        let registered: bool =
+            sqlx::query_scalar("SELECT public_key IS NOT NULL FROM devices WHERE id=$1 FOR SHARE")
+                .bind(d.id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if !registered {
+            return Err(ApiError::unauthorized("device not registered"));
+        }
         let r = sqlx::query("SELECT t.id,t.attempts,j.manifest,j.deadline FROM tasks t JOIN jobs j ON j.id=t.job_id
             WHERE t.state IN ('queued','leased')
             AND NOT EXISTS(SELECT 1 FROM leases l WHERE l.task_id=t.id AND l.state='active' AND l.expires_at>$2)

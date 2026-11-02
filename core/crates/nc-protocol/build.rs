@@ -53,6 +53,10 @@ fn main() -> io::Result<()> {
         "ErrorEnvelope",
         "ErrorResponse",
         "HealthResponse",
+        "WhoAmIRequest",
+        "WhoAmIResponse",
+        "DeregisterRequest",
+        "DeregisterResponse",
     ] {
         cfg.type_attribute(
             format!("nc.v1.{name}"),
@@ -65,6 +69,8 @@ fn main() -> io::Result<()> {
         "LeaseRequest",
         "CompleteRequest",
         "RelayTokenRequest",
+        "WhoAmIRequest",
+        "DeregisterRequest",
     ] {
         cfg.type_attribute(format!("nc.v1.{name}"), "#[serde(deny_unknown_fields)]");
     }

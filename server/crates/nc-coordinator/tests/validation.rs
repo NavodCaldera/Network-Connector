@@ -93,6 +93,9 @@ async fn unsigned_requests_are_rejected() {
         "/v1/leases/request",
         "/v1/leases/complete",
         "/v1/relay/token",
+        "/v1/devices/me",
+        "/v1/devices/deregister",
+        "/v1/devices/register",
     ] {
         let (s, v) = call(post(path, "application/json", b"{}".to_vec())).await;
         assert_eq!(s, StatusCode::UNAUTHORIZED, "{path}");

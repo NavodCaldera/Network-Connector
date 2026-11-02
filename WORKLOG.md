@@ -15,6 +15,53 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 · Claude (coordinator) · main · merge 1.N2
+
+- **Asked:** review and merge 1.N2.
+- **Done:** reviewed `feat/net-device-lifecycle` (ef84ef6, 16fbfbb) and merged into main. Accepted the 6-line `nc-protocol/build.rs` change (serde derives + deny_unknown_fields for WhoAmI/Deregister messages), as coordinator sign-off for Core. TASKS.md 1.N2 set to done.
+- **Verified:** agent report: server fmt/clippy clean, cargo test passing; `infra/verify.ps1` run 1 FAILED (`no queued task` at lease_cycle.rs:212 after the 61 s expiry sleep, older section), run 2 passed (122 s). Same section flaked once in 1.N1; cause unknown. `verify.sh` not run (no jq).
+- **Open:** investigate the expiry-section flake; app/agent do not yet call `/me` or `/deregister`; nc-bridge should use `build_agent_with(SkipRegister)` (from 1.P9).
+
+## 2026-11-02 - Claude (Net agent) - `feat/net-device-lifecycle` - task 1.N2
+
+- **Commits:** 36b87e4 (rebased onto main 5636878) plus the review/verify commit that updates this entry.
+- **Asked:** 1.N2: device-signed "who am I", secret-free idempotent re-register for known keys, device-signed
+  deregister that releases leases; tests incl. replay protection.
+- **Done:**
+  - `proto/nc/v1/coordinator.proto`: `WhoAmIRequest/Response`, `DeregisterRequest/Response` (new tags only);
+    `core/crates/nc-protocol/build.rs`: serde derives + `deny_unknown_fields` for them (6 lines, Core-owned file,
+    needed so the generated types serialise); `proto/README.md`: lifecycle contract.
+  - `nc-coordinator/src/lib.rs`: `POST /v1/devices/me`; `POST /v1/devices/deregister`; `register` now verifies
+    the signature and nonce first, returns the existing device (`created:false`, nothing changed) for a known key
+    without the secret, and still requires the secret for an unknown key.
+  - Migration `0004_device_lifecycle.sql`: `public_key` nullable, `deregistered_at`. Deregister (one transaction,
+    device row locked) expires the device's active leases, puts their `leased` tasks back to `queued` (`failed`
+    at the six-attempt cap, same rule as lease fail) and detaches the key, so the row stays for job/blob history.
+  - Tests: `lease_cycle.rs` `device_lifecycle` section (run at the end of the Docker test so it cannot disturb the
+    exact-count lease race); `validation.rs` unsigned `/me`, `/deregister`, `/register` get 401.
+- **Decisions (Net agent):** soft delete (key detached) instead of row delete, because jobs, leases, attempts and
+  blobs reference the device. A deregistered key is unknown afterwards: `/me` says `registered:false`, other calls
+  401, and re-enrolling it needs the secret and gives a new device id. Jobs it submitted are left in place.
+  Released attempts still count toward the six-attempt cap.
+- **Review and finish (resumed session):** reviewed the branch; found a race: `lease` did not look at the device
+  row, so a lease request that resolved the device before a concurrent deregister committed could still insert an
+  active lease for a deregistered device. Fix in `jobs.rs`: each lease transaction now takes `FOR SHARE` on the
+  device row first and refuses (401) if the key is detached; deregister holds `FOR UPDATE`, so the two serialise
+  in the same lock order (device, then leases/tasks). `infra/verify.ps1` and `verify.sh`: unsigned POST to
+  `/v1/devices/me`, `/deregister`, `/register` must be 401 against the running stack.
+- **Verified (this PC, worktree C:\nc-wt-net, CARGO_TARGET_DIR=C:\nc-target-net, -j 2, nice):** server
+  `cargo fmt --all --check` ok; `cargo clippy --all-targets --locked -- -D warnings` ok; `cargo test --locked`:
+  coordinator 7 unit + 9 validation, relay 7 + 1, Docker test ignored as designed. `infra/verify.ps1` (Docker
+  29.3.1): run 1 FAILED: `/healthz ok`, `Unsigned device lifecycle calls: 401`, uids 999, then
+  `real_job_cycle_over_http` panicked at lease_cycle.rs:212 (`no queued task`) on the lease right after the 61 s
+  lease-expiry sleep (pre-lifecycle section). Run 2, same code: `1 passed; 0 failed; finished in 122.47s`. Cause of
+  run 1 not found. `verify.sh` not run (no jq here). Core nc-protocol not rebuilt this session (build.rs unchanged
+  since the earlier run).
+- **Not done / open:** the one-off expiry-section failure above (possible timing flake at the 60 s TTL boundary;
+  needs a few more runs or CI to tell). `core/crates/nc-protocol/build.rs` (Core-owned) has 6 added lines for
+  serde derives of the new messages: needs Core sign-off. App/agent do not call `/me` or `/deregister` yet (App
+  agent). No extra rate limit on `/me` for unknown keys beyond the body cap and nonce table.
+
 ## 2026-11-02 · Claude (coordinator) · main · merge 1.P9
 
 - **Asked:** resume paused work; review and merge 1.P9.

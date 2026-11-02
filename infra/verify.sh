@@ -65,6 +65,12 @@ for ((attempt=0; attempt<120; attempt++)); do
 done
 if ! "$healthy"; then printf '%s\n' 'Coordinator health check timed out.' >&2; exit 1; fi
 printf '%s\n' 'Coordinator /healthz: ok'
+for path in /v1/devices/me /v1/devices/deregister /v1/devices/register; do
+  code="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 -X POST \
+    -H 'content-type: application/json' --data '{}' "$NC_TEST_URL$path")"
+  if [[ "$code" != 401 ]]; then printf 'Unsigned POST %s must be 401, got %s.\n' "$path" "$code" >&2; exit 1; fi
+done
+printf '%s\n' 'Unsigned device lifecycle calls: 401'
 for service in coordinator relay; do
   runtime_uid="$("${compose[@]}" exec -T "$service" id -u)"
   if [[ ! "$runtime_uid" =~ ^[0-9]+$ ]] || [[ "$runtime_uid" -eq 0 ]]; then
