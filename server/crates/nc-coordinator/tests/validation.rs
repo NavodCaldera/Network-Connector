@@ -17,6 +17,7 @@ fn router() -> axum::Router {
         pool,
         enroll_secret: "0123456789abcdef".into(),
         relay_key: None,
+        relay_addr: None,
         uploads: Default::default(),
     })
 }
@@ -94,6 +95,7 @@ async fn unsigned_requests_are_rejected() {
         "/v1/leases/request",
         "/v1/leases/complete",
         "/v1/relay/token",
+        "/v1/devices/peer",
         "/v1/devices/me",
         "/v1/devices/deregister",
         "/v1/devices/register",

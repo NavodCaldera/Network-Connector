@@ -6,6 +6,7 @@
 //! - `/v1/devices/me`        — "who am I": does the server know the signing key, and its device id
 //! - `/v1/devices/deregister` — remove the calling device (app reset); releases its active leases
 //! - `/v1/devices/heartbeat` — liveness + status
+//! - `/v1/devices/peer`      — register/refresh this device's libp2p PeerId and addresses (1.L14, [`peer`])
 //! - `/v1/leases/request`    — lease the next uploaded real job
 //! - `/v1/leases/renew`     - extend the caller's live lease (capped by runtime, deadline and a server max)
 //! - `/v1/leases/complete`   — commit a result; idempotent and attempt-checked (AGENT.md §1 rule 8)
@@ -20,6 +21,7 @@ pub mod auth;
 mod blobs;
 pub mod error;
 mod jobs;
+pub mod peer;
 pub mod resumable;
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -68,6 +70,8 @@ pub struct AppState {
     pub enroll_secret: String,
     /// Relay token key; `None` disables `/v1/relay/token`.
     pub relay_key: Option<nc_relay::TokenKey>,
+    /// 1.L14: relay multiaddr (with `/p2p/<relay id>`) put into lease peer hints; `None` leaves it empty.
+    pub relay_addr: Option<String>,
     /// 1.L5: resumable upload sessions with a request in flight.
     pub uploads: resumable::UploadLocks,
 }
@@ -100,6 +104,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/devices/me", post(whoami))
         .route("/v1/devices/deregister", post(deregister))
         .route("/v1/devices/heartbeat", post(heartbeat))
+        .route("/v1/devices/peer", post(peer::register))
         .route("/v1/leases/request", post(lease_request))
         .route("/v1/leases/complete", post(jobs::complete))
         .route("/v1/jobs", post(jobs::submit))
@@ -306,7 +311,8 @@ async fn deregister(
     .execute(&mut *tx)
     .await?;
     sqlx::query(
-        "UPDATE devices SET public_key = NULL, deregistered_at = $1, status = 'idle', heartbeat_at = NULL
+        "UPDATE devices SET public_key = NULL, deregistered_at = $1, status = 'idle', heartbeat_at = NULL,
+         peer_id = NULL, peer_addrs = '{}', peer_seen_at = NULL
          WHERE id = $2",
     )
     .bind(t)

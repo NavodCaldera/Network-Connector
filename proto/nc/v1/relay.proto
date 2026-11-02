@@ -9,6 +9,9 @@ message RelayTokenClaims {
   optional string device = 3;  // Device quota identity.
   optional uint64 iat = 4;     // Issued at, Unix seconds.
   optional uint64 exp = 5;     // Exclusive expiry, Unix seconds.
+  // 1.L14: present only on lease-scoped tokens. Both or neither.
+  optional string lease = 6;       // Lease UUID the token was issued for.
+  optional string counterpart = 7; // Only PeerId this peer may open relay circuits to.
 }
 message RelayToken {
   uint32 version = 1; // 1, previously carried by the textual v1 prefix.

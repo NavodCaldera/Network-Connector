@@ -57,6 +57,9 @@ fn main() -> io::Result<()> {
         "WhoAmIResponse",
         "DeregisterRequest",
         "DeregisterResponse",
+        "PeerHints",
+        "PeerRegisterRequest",
+        "PeerRegisterResponse",
     ] {
         cfg.type_attribute(
             format!("nc.v1.{name}"),
@@ -71,6 +74,7 @@ fn main() -> io::Result<()> {
         "RelayTokenRequest",
         "WhoAmIRequest",
         "DeregisterRequest",
+        "PeerRegisterRequest",
     ] {
         cfg.type_attribute(format!("nc.v1.{name}"), "#[serde(deny_unknown_fields)]");
     }
@@ -106,6 +110,7 @@ fn main() -> io::Result<()> {
         "LeaseResponse.manifest",
         "LeaseResponse.transfers",
         "LeaseResponse.version",
+        "LeaseResponse.peer",
         "CompleteRequest.output_sha256",
         "CompleteRequest.output_size",
         "CompleteRequest.version",
@@ -128,6 +133,7 @@ fn main() -> io::Result<()> {
         "nc.v1.RelayToken",
         "nc.v1.RelayAuthFrame",
         "nc.v1.RelayTokenResponse",
+        "nc.v1.PeerHints",
     ]);
     let files: Vec<PathBuf> = FILES.iter().map(|f| root.join(f)).collect();
     for f in &files {

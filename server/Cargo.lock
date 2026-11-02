@@ -2350,6 +2350,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "hex",
  "http-body-util",
+ "libp2p",
  "nc-protocol",
  "nc-relay",
  "prost",

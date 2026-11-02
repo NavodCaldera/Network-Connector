@@ -45,6 +45,8 @@ impl Default for Limits {
 struct Grant {
     account: String,
     expires: Instant,
+    /// 1.L14: lease-scoped grants may only open circuits to this peer.
+    counterpart: Option<PeerId>,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -98,15 +100,45 @@ impl Quotas {
 
     /// Records a verified token for `peer`, valid for `ttl`.
     pub fn grant(&self, peer: PeerId, account: String, ttl: Duration, now: Instant) {
+        self.grant_scoped(peer, account, None, ttl, now);
+    }
+
+    /// Records a verified token; `counterpart` restricts circuits to that destination (1.L14).
+    pub fn grant_scoped(
+        &self,
+        peer: PeerId,
+        account: String,
+        counterpart: Option<PeerId>,
+        ttl: Duration,
+        now: Instant,
+    ) {
         if let Ok(mut g) = self.inner.lock() {
             g.grants.insert(
                 peer,
                 Grant {
                     account,
                     expires: now + ttl,
+                    counterpart,
                 },
             );
         }
+    }
+
+    /// Removes `peer`'s grant (scope violation).
+    pub fn revoke(&self, peer: &PeerId) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.grants.remove(peer);
+        }
+    }
+
+    /// Whether `src` may hold a circuit to `dst`: it needs a live grant, and a lease-scoped grant
+    /// only covers its counterpart.
+    pub fn circuit_allowed(&self, src: &PeerId, dst: &PeerId, now: Instant) -> bool {
+        self.with(now, |g, _| match g.grants.get(src) {
+            Some(gr) => gr.counterpart.is_none_or(|c| &c == dst),
+            None => false,
+        })
+        .unwrap_or(false)
     }
 
     fn with<T>(&self, now: Instant, f: impl FnOnce(&mut Inner, &Limits) -> T) -> Option<T> {
@@ -169,6 +201,22 @@ mod tests {
         let now = Instant::now();
         assert_eq!(q.try_reserve(p, now), Err(Deny::NoGrant));
         assert_eq!(q.try_circuit(p, now), Err(Deny::NoGrant));
+    }
+
+    #[test]
+    fn scoped_grant_only_reaches_counterpart() {
+        let q = Quotas::new(Limits::default());
+        let (p, b, c) = (PeerId::random(), PeerId::random(), PeerId::random());
+        let now = Instant::now();
+        assert!(!q.circuit_allowed(&p, &b, now));
+        q.grant_scoped(p, "a".into(), Some(b), Duration::from_secs(10), now);
+        assert!(q.circuit_allowed(&p, &b, now));
+        assert!(!q.circuit_allowed(&p, &c, now));
+        q.revoke(&p);
+        assert!(!q.circuit_allowed(&p, &b, now));
+        q.grant(p, "a".into(), Duration::from_secs(10), now);
+        assert!(q.circuit_allowed(&p, &c, now));
+        assert!(!q.circuit_allowed(&p, &c, now + Duration::from_secs(11)));
     }
 
     #[test]

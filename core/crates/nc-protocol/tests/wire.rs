@@ -182,6 +182,7 @@ fn relay_claims_roundtrip() {
         device: Some("dev".into()),
         iat: Some(1000),
         exp: Some(1600),
+        ..Default::default()
     };
     assert_eq!(
         decode_strict::<RelayTokenClaims>(&value.encode_to_vec()).unwrap(),
@@ -206,7 +207,8 @@ fn relay_token_golden_and_roundtrip() {
             account: Some("acct".into()),
             device: Some("dev".into()),
             iat: Some(1000),
-            exp: Some(1600)
+            exp: Some(1600),
+            ..Default::default()
         }
     );
     assert_eq!(
@@ -281,4 +283,47 @@ fn uuid_json_validation_and_normalization_is_preserved() {
         serde_json::json!({"lease_id":"garbage","attempt_id":UUID,"result":""})
     )
     .is_err());
+}
+// 1.L14: lease peer hints and peer registration.
+http_case!(
+    lease_response_with_peer_hints,
+    LeaseResponse,
+    LeaseResponse {
+        lease_id: UUID.into(),
+        task_id: UUID.into(),
+        attempt_id: UUID.into(),
+        expires_at: 1600,
+        peer: Some(PeerHints {
+            peer_id: "12D3KooWpeer".into(),
+            addrs: vec!["/ip4/10.0.0.2/udp/4001/quic-v1".into()],
+            relay_addr: String::new(),
+            relay_token: "v1.x".into(),
+            relay_token_expires_at: 1900,
+        }),
+        ..Default::default()
+    },
+    serde_json::json!({"lease_id":UUID,"task_id":UUID,"attempt_id":UUID,"expires_at":1600,"input":"",
+        "peer":{"peer_id":"12D3KooWpeer","addrs":["/ip4/10.0.0.2/udp/4001/quic-v1"],"relay_addr":"",
+        "relay_token":"v1.x","relay_token_expires_at":1900}})
+);
+#[test]
+fn peer_register_request_is_strict_and_hints_are_redacted() {
+    let ok = serde_json::json!({"peer_id":"p","libp2p_public_key":"k","binding_signature":"s","addrs":[]});
+    assert!(serde_json::from_value::<PeerRegisterRequest>(ok.clone()).is_ok());
+    let mut bad = ok;
+    bad["x"] = serde_json::json!(1);
+    assert!(serde_json::from_value::<PeerRegisterRequest>(bad).is_err());
+    let h = PeerHints {
+        relay_token: "v1.secret".into(),
+        ..Default::default()
+    };
+    assert!(!format!("{h:?}").contains("secret"));
+    // A lease without hints serializes without the key, exactly as before 1.L14.
+    let l = LeaseResponse {
+        lease_id: UUID.into(),
+        task_id: UUID.into(),
+        attempt_id: UUID.into(),
+        ..Default::default()
+    };
+    assert!(serde_json::to_value(&l).unwrap().get("peer").is_none());
 }

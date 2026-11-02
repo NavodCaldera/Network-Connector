@@ -35,6 +35,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 nc-relay = { path = "../nc-relay" }
+# 1.L14: PeerId derivation and multiaddr parsing only (same pinned version as nc-relay).
+libp2p = { version = "=0.57.1", default-features = false, features = ["ed25519"] }
 
 [dev-dependencies]
 ed25519-dalek = { version = "2", features = ["rand_core"] }
