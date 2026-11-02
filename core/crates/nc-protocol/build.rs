@@ -60,6 +60,8 @@ fn main() -> io::Result<()> {
         "PeerHints",
         "PeerRegisterRequest",
         "PeerRegisterResponse",
+        "JobLease",
+        "JobLeasesResponse",
     ] {
         cfg.type_attribute(
             format!("nc.v1.{name}"),
@@ -111,6 +113,7 @@ fn main() -> io::Result<()> {
         "LeaseResponse.transfers",
         "LeaseResponse.version",
         "LeaseResponse.peer",
+        "JobLease.helper_peer_id",
         "CompleteRequest.output_sha256",
         "CompleteRequest.output_size",
         "CompleteRequest.version",

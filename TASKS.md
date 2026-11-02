@@ -55,7 +55,7 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.L12 | nc-agent Windows service (virtual account, ProgramData ACL, restart policy) | core-agent (Claude) | `feat/1.L12-win-service` | `core/crates/nc-agent` | review (elevated install test pending: owner runs `infra/service-test.ps1`, 1.L12b) |
 | 1.L14 | Peer hints + lease-scoped relay token in the lease; /v1/devices/peer | net-agent (Claude) | `feat/1.L14-peer-hints` | `proto/`, `server/`, nc-protocol | done (fleet-e2e rerun pending) |
 | 1.L15 | nc-agent runs an nc-net node: peer registration, direct blob fetch with PeerId check and HTTP fallback | core-agent (Claude) | `feat/1.L15-agent-node` | `core/crates/nc-agent` | done (helper side live; requester serve off until 1.L15b) |
-| 1.L15b | Requester learns its leased helper's PeerId (proto + server), turns on `PeerNet::grant`; document `/nc/blob/1.0.0` | net-agent + core-agent (Claude) | `feat/1.L15b-helper-peer` | `proto/`, `server/`, `core/crates/nc-agent` | todo |
+| 1.L15b | Requester learns its leased helper's PeerId (proto + server), turns on `PeerNet::grant`; document `/nc/blob/1.0.0` | net-agent + core-agent (Claude) | `feat/1.L15b-helper-peer` | `proto/`, `server/`, `core/crates/nc-agent` | in progress (server + proto done; agent grant wiring next) |
 | 1.L18 | App requester flow: Ask tab, submit/track/fetch via nc_agent::jobs | app-agent (Claude) | `feat/1.L18-app-requester` | `app/`, `core/crates/nc-bridge` | done |
 
 ## Rules for Codex work

@@ -142,3 +142,15 @@ message DeregisterResponse {
   string device_id = 1;       // UUID of the removed device.
   uint32 released_leases = 2; // Active leases released back to the queue (or failed at the attempt cap).
 }
+// 1.L15b: GET /v1/jobs/{job_id}/leases (signed, empty body): the requester device's view of the live
+// leases of its own job, so it can grant the helper's PeerId on nc-net. 404 for anyone else.
+message JobLease {
+  string lease_id = 1;       // UUID.
+  string attempt_id = 2;     // UUID.
+  string helper_peer_id = 3; // Helper's libp2p PeerId; omitted (empty) unless its registration is fresh.
+  uint64 expires_at = 4;     // Unix seconds; only leases with expires_at > now are listed.
+}
+message JobLeasesResponse {
+  string job_id = 1;            // UUID.
+  repeated JobLease leases = 2; // At most 16, active only.
+}

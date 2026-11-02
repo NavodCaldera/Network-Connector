@@ -7,6 +7,7 @@
 //! - `/v1/devices/deregister` — remove the calling device (app reset); releases its active leases
 //! - `/v1/devices/heartbeat` — liveness + status
 //! - `/v1/devices/peer`      — register/refresh this device's libp2p PeerId and addresses (1.L14, [`peer`])
+//! - `/v1/jobs/{id}/leases` — requester lists its job's live leases with the helper PeerId (1.L15b, [`peer`])
 //! - `/v1/leases/request`    — lease the next uploaded real job
 //! - `/v1/leases/renew`     - extend the caller's live lease (capped by runtime, deadline and a server max)
 //! - `/v1/leases/complete`   — commit a result; idempotent and attempt-checked (AGENT.md §1 rule 8)
@@ -109,6 +110,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/leases/complete", post(jobs::complete))
         .route("/v1/jobs", post(jobs::submit))
         .route("/v1/jobs/{id}", get(jobs::status))
+        .route("/v1/jobs/{id}/leases", get(peer::job_leases))
         .route("/v1/leases/fail", post(jobs::fail))
         .route("/v1/leases/renew", post(jobs::renew))
         .route("/v1/blobs/{hash}", get(blobs::download).put(blobs::upload))
