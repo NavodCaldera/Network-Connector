@@ -37,7 +37,7 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.P7 | Make core CI green without weakening security | **Codex** | `feat/codex-ci-fix` | `core/crates/nc-{identity,exec}`, core CI test step, own task/log entries | done |
 | 1.N1 | Lease renewal endpoint (holder-only, attempt-bound, capped) | net-agent (Claude) | `feat/net-lease-renew` | `proto/`, `server/`, `infra/` | done |
 | 1.A2 | App/bridge use nc-agent today/budget/policy; Windows CI sandbox_jobs step | app-agent (Claude) | `feat/app-agent-wiring` | `app/`, `core/crates/nc-bridge`, `.github/workflows/` | done |
-| 1.P8 | nc-agent lease renewal loop, persistent tariff ledger, Store::list_unfinished | core-agent (Claude) | `feat/core-agent-renew` | `core/crates/{nc-agent,nc-store}` | in progress |
+| 1.P8 | nc-agent lease renewal loop, persistent tariff ledger, Store::list_unfinished | core-agent (Claude) | `feat/core-agent-renew` | `core/crates/{nc-agent,nc-store}` | done |
 
 ## Rules for Codex work
 

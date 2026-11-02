@@ -15,6 +15,16 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 — Coordinator (Claude): merge 1.P8
+
+- Commits: merge of 12b2a58 (feat/core-agent-renew).
+- Asked: keep working toward finishing the project.
+- Done: merged the nc-agent lease renewal loop, the SQLite budget ledger (store v2 migration) and Store::list_unfinished crash recovery.
+- Decisions: a lost lease drops the job locally with no LeaseFail, since the server would refuse it.
+- Verified: the agent reported core fmt, clippy, the full test suite and deny clean, renew.rs 7/7 and unfinished.rs 5/5. GitHub CI on main is checked after this push.
+- Not done / open: per-window tariff caps are still in memory (needs an nc-tariff API); not run against the real server or Docker e2e; one capped-test run showed only 2 renews and was not reproduced; E:
+c-target-core needs deleting by hand.
+
 ## 2026-11-02 - Claude (Core agent) - `feat/core-agent-renew` - task 1.P8
 
 - **Commits:** the single commit on `feat/core-agent-renew` that adds this entry.
