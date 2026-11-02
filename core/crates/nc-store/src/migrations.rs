@@ -38,6 +38,15 @@ const MIGRATIONS: &[&str] = &[
         UNIQUE (task_id, attempt_no)
     );
     "#,
+    // v2: network-budget usage ledger, so used bytes survive a restart.
+    r#"
+    CREATE TABLE budget_usage (
+        ledger_key TEXT NOT NULL CHECK (length(ledger_key) BETWEEN 1 AND 256),
+        day        TEXT NOT NULL CHECK (length(day) = 10),
+        bytes      INTEGER NOT NULL CHECK (bytes >= 0),
+        PRIMARY KEY (ledger_key, day)
+    );
+    "#,
 ];
 
 /// Newest schema version this build knows.

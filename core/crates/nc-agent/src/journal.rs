@@ -6,8 +6,9 @@
 //! resend the same Complete (result uploaded). nc-store's attempt-checked, idempotent commit means a resent
 //! Complete is counted once.
 //!
-//! nc-store has no "list unfinished" query yet, so a small index file (attempt ids only, no job data) lists
-//! the attempts to look at after a restart.
+//! A small index file (ids and output reference only, no job data) lists the open attempts. After a restart
+//! [`Journal::pending`] also asks nc-store for every unfinished task ([`Store::list_unfinished`]), so an attempt
+//! whose index write was lost in a crash is still found and finished.
 
 use nc_store::{CommitOutcome, RetryPolicy, Store, StoreError, TaskState};
 use serde::{Deserialize, Serialize};
@@ -228,6 +229,45 @@ impl Journal {
             let state = self.store.task(&key)?.state;
             out.push((e, Local { key, attempt }, state));
         }
+        // Tasks the store has open but the index lost (crash between the store write and the index write).
+        let mut added = false;
+        for u in self.store.list_unfinished()? {
+            if out.iter().any(|(_, l, _)| l.key == u.task_id) {
+                continue;
+            }
+            let raw = self.store.manifest(&u.task_id)?;
+            let e: Entry = serde_json::from_slice(&raw).map_err(|_| JournalError::Inconsistent)?;
+            if uuid_bytes(&e.attempt_id)? != u.task_id {
+                return Err(JournalError::Inconsistent);
+            }
+            let attempt = match u.current_attempt {
+                Some(a) => a,
+                None => {
+                    // Enqueued but never leased locally: take the local lease so it can be ended.
+                    self.store
+                        .lease_next(WORKER, LOCAL_LEASE_MS, u.updated_ms)?;
+                    self.store
+                        .task(&u.task_id)?
+                        .current_attempt
+                        .ok_or(JournalError::Inconsistent)?
+                }
+            };
+            let state = self.store.task(&u.task_id)?.state;
+            self.index
+                .insert(e.attempt_id.clone(), (e.clone(), attempt));
+            added = true;
+            out.push((
+                e,
+                Local {
+                    key: u.task_id,
+                    attempt,
+                },
+                state,
+            ));
+        }
+        if added {
+            self.save()?;
+        }
         Ok(out)
     }
 
@@ -287,6 +327,51 @@ mod tests {
         let mut j = Journal::open(dir.path()).unwrap();
         j.begin(entry(1), 1000).unwrap();
         assert!(j.begin(entry(1), 1001).is_err());
+    }
+
+    #[test]
+    fn attempts_missing_from_the_index_are_found_after_a_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut j = Journal::open(dir.path()).unwrap();
+        let running = j.begin(entry(1), 1000).unwrap();
+        j.start(running, 1001).unwrap();
+        // Crash right after the store write of a second lease, before its index entry or local lease.
+        let e2 = entry(2);
+        let k2 = uuid_bytes(&e2.attempt_id).unwrap();
+        j.store
+            .enqueue(
+                &k2,
+                &serde_json::to_vec(&e2).unwrap(),
+                RetryPolicy {
+                    max_attempts: 1,
+                    base_backoff_ms: 0,
+                    max_backoff_ms: 0,
+                },
+                1002,
+            )
+            .unwrap();
+        j.index.clear();
+        j.save().unwrap();
+        drop(j);
+        let mut j = Journal::open(dir.path()).unwrap();
+        let p = j.pending().unwrap();
+        let mut ids: Vec<_> = p
+            .iter()
+            .map(|(e, _, s)| (e.attempt_id.clone(), *s))
+            .collect();
+        ids.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut want = vec![
+            (entry(1).attempt_id, TaskState::Running),
+            (e2.attempt_id.clone(), TaskState::Leased),
+        ];
+        want.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(ids, want);
+        for (_, l, _) in p {
+            j.failed(l, 2000).unwrap();
+        }
+        assert_eq!(j.open_count(), 0);
+        assert!(j.store.list_unfinished().unwrap().is_empty());
+        assert!(j.pending().unwrap().is_empty());
     }
 
     proptest! {

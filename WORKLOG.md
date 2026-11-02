@@ -15,6 +15,40 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Claude (Core agent) - `feat/core-agent-renew` - task 1.P8
+
+- **Commits:** the single commit on `feat/core-agent-renew` that adds this entry.
+- **Asked:** 1.P8: agent lease-renewal loop, persistent tariff usage ledger, `Store::list_unfinished`.
+- **Done:**
+  - `nc-agent/src/coord.rs`: `Coordinator::renew` (`POST /v1/leases/renew` via `post_json`); `CoordError::lease_gone`
+    (404, 409 `lease_expired` / `attempt_mismatch`).
+  - `nc-agent/src/session.rs`: a scoped renewal thread runs from the grant until Complete/Fail. Renews every
+    `Tuning::renew_every` (20 s) and early when under `renew_margin` (30 s) is left; each renew is charged as one
+    4 KiB control call. Lease gone: job stopped at once (download aborted or run cancelled), no upload, no
+    Complete, no Fail, local record failed. Network errors (or tariff refusing control traffic) are retried with
+    backoff (max 5 s) until `expires_at`, then the job is dropped. `capped` with a stationary expiry: renewals
+    stop and the job is dropped 5 s before `expires_at`. Expiry is never shortened.
+  - `nc-store`: migration v2 `budget_usage(ledger_key, day, bytes)`; `add_budget_usage`, `budget_usage`;
+    `list_unfinished` (+ `Unfinished`).
+  - `nc-agent/src/budget.rs`: `BudgetGate::with_usage_store`; settles are written per profile id and local day,
+    and a new gate / budget update seeds the period total from the store. `config.rs` uses
+    `<data_dir>/budget.sqlite`.
+  - `nc-agent/src/journal.rs`: `pending()` also uses `list_unfinished`, so attempts whose index write was lost in a
+    crash are found and reported (never-leased ones get a local lease first).
+  - Tests: `nc-agent/tests/renew.rs` (long job renewed 27 times and completed, usage = controls x 4096 + bytes;
+    lost lease for each of 409/409/404 stops the job with nothing uploaded; other 409 codes are not lease loss;
+    network errors retried 18 times and job stopped 3.01 s into a 3 s lease; capped lease stopped at ~0.86 s of
+    a 0.9 s capped lease; used bytes survive restart and reset next period; Stop with renewals 16 ms). Journal test
+    for index-lost attempts. `nc-store/tests/unfinished.rs` (unfinished across reopen, proptest vs task states,
+    budget usage restart/keys/saturation, v1 to v2 upgrade).
+- **Decisions (Core agent):** lost lease sends no LeaseFail (server would refuse it); usage key is the profile id
+  (a new version of the same tariff keeps usage); period start computed in nc-agent, mirroring nc-tariff.
+- **Verified:** `cargo fmt --check` ok; `cargo clippy --all-targets -- -D warnings` clean; `cargo test` (whole core
+  workspace) all pass, 0 failed; `cargo deny check`: advisories, bans, licenses, sources ok.
+- **Not done / open:** per-window byte caps are still memory-only (nc-tariff has no API to seed window usage;
+  Request to whoever owns nc-tariff changes). Renew not exercised against the real server (Docker e2e not run).
+  One early capped run reported only 2 renews (still stopped in time); not reproduced, cause unknown.
+
 ## 2026-11-02 — Coordinator (Claude): merge 1.A2 and 1.N1
 
 - Commits: 48eb4c8 (merge 1.A2, 9a966c3), 5e2f719 (merge 1.N1, 8510d5c).

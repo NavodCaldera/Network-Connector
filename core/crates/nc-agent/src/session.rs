@@ -6,6 +6,10 @@
 //!                   → download (Range resume, tariff-gated) → run in nc-exec (Stop < 1 s)
 //!                   → upload output → Complete v2 }
 //! ```
+//! From the grant until Complete or Fail a renewal thread keeps the lease alive (`POST /v1/leases/renew` every
+//! ~20 s, sooner when under 30 s are left). If the coordinator says the lease is gone (404, 409
+//! `lease_expired` / `attempt_mismatch`), or the lease runs out because renewals keep failing or the server cap
+//! stopped extending it, the job is stopped at once and its result is never uploaded or completed.
 //! Any refusal after a lease is reported with `POST /v1/leases/fail` and the matching reason. Logs carry
 //! reason codes and sizes only, never manifests, blob bytes, keys or tokens.
 
@@ -24,7 +28,7 @@ use nc_policy::{
 use nc_protocol::jobs::verify_job;
 use nc_protocol::pb::v1::{
     CompleteRequest, HeartbeatRequest, JobManifest, LeaseFailReason, LeaseFailRequest,
-    LeaseResponse, RegisterRequest, TaskManifest, TransferRef,
+    LeaseRenewRequest, LeaseResponse, RegisterRequest, TaskManifest, TransferRef,
 };
 use nc_protocol::PROFILE_CPU_CORE_V1;
 use nc_store::{CommitOutcome, TaskState};
@@ -35,8 +39,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-/// Approximate wire bytes charged for one control call (heartbeat, lease request, fail, complete).
+/// Approximate wire bytes charged for one control call (heartbeat, lease request, renew, fail, complete).
 const CONTROL_BYTES: u64 = 4096;
+
+/// When the server cap stops extending a lease, the job is stopped this long before the lease ends.
+const CAPPED_GUARD_MS: i64 = 5_000;
+
+/// Longest wait between renewal retries after a network error.
+const RENEW_MAX_BACKOFF: Duration = Duration::from_secs(5);
 
 pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -51,6 +61,10 @@ pub struct Tuning {
     pub max_backoff: Duration,
     /// How often the run monitor re-checks Stop and policy.
     pub monitor_tick: Duration,
+    /// Lease renewal interval while a lease is held.
+    pub renew_every: Duration,
+    /// Renew early when less than this is left on the lease.
+    pub renew_margin: Duration,
 }
 
 impl Default for Tuning {
@@ -59,6 +73,8 @@ impl Default for Tuning {
             poll: Duration::from_secs(10),
             max_backoff: Duration::from_secs(60),
             monitor_tick: Duration::from_millis(50),
+            renew_every: Duration::from_secs(20),
+            renew_margin: Duration::from_secs(30),
         }
     }
 }
@@ -361,6 +377,112 @@ enum StopCause {
     None,
     Stop,
     Policy,
+    Lease,
+}
+
+/// Shared between the job and its lease-renewal thread.
+#[derive(Debug, Default)]
+struct LeaseWatch {
+    /// Set when the lease is gone or about to end; the job must stop and drop its result.
+    lost: AtomicBool,
+    /// Set when the job no longer needs the lease (renewals stop).
+    done: AtomicBool,
+    /// Why the lease was lost (log code only).
+    why: Mutex<&'static str>,
+}
+
+impl LeaseWatch {
+    fn lose(&self, why: &'static str) {
+        *lock(&self.why) = why;
+        self.lost.store(true, Ordering::SeqCst);
+    }
+    fn lost(&self) -> bool {
+        self.lost.load(Ordering::SeqCst)
+    }
+}
+
+fn lease_lost_fail() -> Fail {
+    fail(LeaseFailReason::Timeout, "LEASE_LOST")
+}
+
+fn unix_ms(secs: u64) -> i64 {
+    i64::try_from(secs)
+        .unwrap_or(i64::MAX / 1000)
+        .saturating_mul(1000)
+}
+
+/// Charge a control call to the budget; `false` means the tariff forbids even control traffic now.
+fn control_allowed(b: &Backend) -> bool {
+    let net = b.probe.network();
+    match b
+        .budget
+        .authorize(TrafficClass::Control, CONTROL_BYTES, b.clock.now(), &net)
+    {
+        Ok(g) => {
+            b.budget.settle(g, CONTROL_BYTES);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Renewal thread body: keeps the lease alive until `watch.done`, or marks it lost.
+fn keep_lease(b: &Backend, l: &LeaseResponse, watch: &LeaseWatch) {
+    let t = b.tuning;
+    let req = LeaseRenewRequest {
+        lease_id: l.lease_id.clone(),
+        attempt_id: l.attempt_id.clone(),
+    };
+    let mut expires_ms = unix_ms(l.expires_at);
+    let margin_ms = i64::try_from(t.renew_margin.as_millis()).unwrap_or(i64::MAX);
+    let min_gap = t.renew_every / 4;
+    let mut backoff = Backoff::new(t.max_backoff.min(RENEW_MAX_BACKOFF));
+    let mut last_ok = Instant::now();
+    let mut next_try = Instant::now();
+    let mut capped_stuck = false;
+    while !watch.done.load(Ordering::SeqCst) {
+        let now = b.clock.now().timestamp_millis();
+        if now >= expires_ms {
+            watch.lose("LEASE_EXPIRED");
+            return;
+        }
+        if capped_stuck && now >= expires_ms.saturating_sub(CAPPED_GUARD_MS) {
+            watch.lose("LEASE_CAPPED");
+            return;
+        }
+        let due = !capped_stuck
+            && Instant::now() >= next_try
+            && (last_ok.elapsed() >= t.renew_every || expires_ms.saturating_sub(now) < margin_ms);
+        if due {
+            if control_allowed(b) {
+                match b.coord.renew(&req) {
+                    Ok(r) => {
+                        backoff.reset();
+                        last_ok = Instant::now();
+                        next_try = last_ok + min_gap;
+                        let new = unix_ms(r.expires_at);
+                        if r.capped && new <= expires_ms {
+                            capped_stuck = true;
+                        }
+                        // Never shorten what we already hold.
+                        expires_ms = expires_ms.max(new);
+                    }
+                    Err(e) if e.lease_gone() => {
+                        watch.lose("LEASE_GONE");
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "lease renew failed; retrying");
+                        next_try = Instant::now() + backoff.step();
+                    }
+                }
+            } else {
+                // The tariff forbids even control traffic now; retry until the lease runs out.
+                next_try = Instant::now() + backoff.step();
+            }
+        }
+        std::thread::sleep(t.monitor_tick);
+    }
 }
 
 impl Session<'_> {
@@ -370,19 +492,7 @@ impl Session<'_> {
 
     /// Charge a control call to the budget; `false` means the tariff forbids even control traffic now.
     fn control_allowed(&self) -> bool {
-        let net = self.b.probe.network();
-        match self.b.budget.authorize(
-            TrafficClass::Control,
-            CONTROL_BYTES,
-            self.b.clock.now(),
-            &net,
-        ) {
-            Ok(g) => {
-                self.b.budget.settle(g, CONTROL_BYTES);
-                true
-            }
-            Err(_) => false,
-        }
+        control_allowed(self.b)
     }
 
     /// Main loop. Returns when Stop is requested.
@@ -604,18 +714,34 @@ impl Session<'_> {
                 return;
             }
         };
-        match self.process(l, local) {
-            Ok(entry) => self.complete(&entry, local),
-            Err(f) => {
-                let _ = self.send_fail(&entry, &f);
-                let _ = lock(&self.b.journal).failed(local, self.now_ms());
+        let watch = LeaseWatch::default();
+        let result = std::thread::scope(|s| {
+            let b = self.b;
+            let w = &watch;
+            s.spawn(move || keep_lease(b, l, w));
+            let r = self.process(l, local, &watch);
+            watch.done.store(true, Ordering::SeqCst);
+            r
+        });
+        if watch.lost() {
+            // The coordinator no longer holds this lease for us: no upload, no Complete, no Fail (it would be
+            // refused). Only the local record is closed.
+            tracing::warn!(code = *lock(&watch.why), "lease lost; job dropped");
+            let _ = lock(&self.b.journal).failed(local, self.now_ms());
+        } else {
+            match result {
+                Ok(entry) => self.complete(&entry, local),
+                Err(f) => {
+                    let _ = self.send_fail(&entry, &f);
+                    let _ = lock(&self.b.journal).failed(local, self.now_ms());
+                }
             }
         }
         self.live.set_activity(Activity::Idle);
     }
 
     /// Verify, download, run and upload. Returns the entry with output fields set, ready for Complete.
-    fn process(&self, l: &LeaseResponse, local: Local) -> Result<Entry, Fail> {
+    fn process(&self, l: &LeaseResponse, local: Local, watch: &LeaseWatch) -> Result<Entry, Fail> {
         use LeaseFailReason as R;
         // 1. Signed manifest, before anything big is downloaded.
         let signed = match (&l.manifest, l.version) {
@@ -670,7 +796,7 @@ impl Session<'_> {
 
         // 4. Downloads.
         self.live.set_activity(Activity::Downloading);
-        let stopped = || self.ctl.stopped();
+        let stopped = || self.ctl.stopped() || watch.lost();
         let ctx = transfer::Ctx {
             coord: self.b.coord.as_ref(),
             budget: &self.b.budget,
@@ -702,6 +828,9 @@ impl Session<'_> {
             };
             input.extend_from_slice(&bytes);
         }
+        if watch.lost() {
+            return Err(lease_lost_fail());
+        }
         if self.ctl.stopped() {
             return Err(fail(R::StoppedByOwner, "STOP"));
         }
@@ -715,8 +844,11 @@ impl Session<'_> {
             policy.trusted_peers.iter().map(|k| *k.as_bytes()).collect();
         let started = self.b.clock.now();
         let t0 = Instant::now();
-        let (result, cause) = self.run_watched(&task, &publishers, module, input, started);
+        let (result, cause) = self.run_watched(&task, &publishers, module, input, started, watch);
         lock(&self.live.counters).job_ran(self.b.clock.now(), t0.elapsed().as_secs());
+        if watch.lost() {
+            return Err(lease_lost_fail());
+        }
         let outcome = result.map_err(|e| exec_fail(&e))?;
         if let Some(f) = termination_fail(&outcome.termination, cause) {
             return Err(f);
@@ -746,6 +878,10 @@ impl Session<'_> {
                 Refusal::Budget => fail(R::Budget, "UPLOAD_BUDGET"),
                 Refusal::Window => fail(R::TariffWindow, "UPLOAD_WINDOW"),
             })?;
+        if watch.lost() {
+            self.b.budget.settle(grant, 0);
+            return Err(lease_lost_fail());
+        }
         let mut tries = 0;
         let put = loop {
             match self.b.coord.put_blob(&sha_hex, &output) {
@@ -782,6 +918,7 @@ impl Session<'_> {
         module: Vec<u8>,
         input: Vec<u8>,
         started: chrono::DateTime<chrono::Utc>,
+        watch: &LeaseWatch,
     ) -> (Result<nc_exec::Outcome, ExecError>, StopCause) {
         let cancel = CancelToken::new();
         *lock(&self.live.cancel) = Some(cancel.clone());
@@ -806,6 +943,11 @@ impl Session<'_> {
                 while !done.load(Ordering::SeqCst) {
                     if self.ctl.stopped() {
                         *lock(&cause) = StopCause::Stop;
+                        cancel.cancel();
+                        return;
+                    }
+                    if watch.lost() {
+                        *lock(&cause) = StopCause::Lease;
                         cancel.cancel();
                         return;
                     }

@@ -21,4 +21,5 @@ mod store;
 
 pub use store::{
     AttemptId, CommitOutcome, Lease, RetryPolicy, Store, StoreError, TaskId, TaskState, TaskView,
+    Unfinished,
 };
