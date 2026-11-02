@@ -2,15 +2,22 @@
 //!
 //! ```text
 //! nc-agent run --config <agent.json>
+//! nc-agent service install --config <agent.json>     (Windows, elevated)
+//! nc-agent service uninstall                        (Windows, elevated; keeps the data dir)
+//! nc-agent service start | stop                       (Windows, elevated)
 //! ```
 //! Loads the config and the owner policy, starts the helper session and serves the loopback control socket
-//! that `nc status|start|stop|policy` talk to. The enrolment secret comes from `NC_ENROLL_SECRET`.
+//! that `nc status|start|stop|policy` talk to. The enrolment secret comes from `NC_ENROLL_SECRET` (console) or
+//! the ACL-protected `enroll.secret` file in the data dir (service).
+
+#[cfg(windows)]
+mod service;
 
 use anyhow::{bail, Context, Result};
 use nc_agent::config::AgentConfig;
 use nc_agent::control;
 use nc_policy::OwnerPolicy;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 struct Daemon {
     cfg: AgentConfig,
@@ -25,23 +32,45 @@ impl control::Handler for Daemon {
     }
 }
 
-fn parse_args(args: &[String]) -> Result<PathBuf> {
-    match args {
-        [cmd, flag, path] if cmd == "run" && flag == "--config" => Ok(PathBuf::from(path)),
-        _ => bail!("usage: nc-agent run --config <agent.json>"),
-    }
+/// Parsed command line.
+#[derive(Debug, PartialEq, Eq)]
+enum Cmd {
+    Run(PathBuf),
+    ServiceRun(PathBuf),
+    Install(PathBuf),
+    Uninstall,
+    Start,
+    Stop,
 }
 
-fn main() -> Result<()> {
+const USAGE: &str = "usage: nc-agent run --config <agent.json>\n       \
+nc-agent service install --config <agent.json> | uninstall | start | stop";
+
+fn parse_args(args: &[String]) -> Result<Cmd> {
+    let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    Ok(match a.as_slice() {
+        ["run", "--config", p] => Cmd::Run(PathBuf::from(p)),
+        ["service", "run", "--config", p] => Cmd::ServiceRun(PathBuf::from(p)),
+        ["service", "install", "--config", p] => Cmd::Install(PathBuf::from(p)),
+        ["service", "uninstall"] => Cmd::Uninstall,
+        ["service", "start"] => Cmd::Start,
+        ["service", "stop"] => Cmd::Stop,
+        _ => bail!(USAGE),
+    })
+}
+
+fn init_console_logs() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let path = parse_args(&args)?;
-    let cfg = AgentConfig::load(&path).context("loading config")?;
+}
+
+/// Run the daemon until a Shutdown command. `on_ready(port, token)` is called once the control socket is up
+/// (the service host uses it to turn an SCM Stop into an authenticated loopback Shutdown).
+fn run_daemon(cfg: AgentConfig, on_ready: impl FnOnce(u16, &str)) -> Result<()> {
     let policy = cfg.load_policy().context("loading policy")?;
     let listener = control::bind(cfg.control_port).context("binding the loopback control port")?;
     let token = control::new_token().context("no system randomness")?;
@@ -52,6 +81,7 @@ fn main() -> Result<()> {
         tracing::warn!(error = %e, "helper session not started");
     }
     tracing::info!(port = cfg.control_port, "nc-agent running");
+    on_ready(cfg.control_port, &token);
     let daemon = Daemon { cfg };
     control::serve(&listener, &token, &agent, &daemon);
     agent.stop_helper_session();
@@ -60,17 +90,57 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn load(path: &Path) -> Result<AgentConfig> {
+    AgentConfig::load(path).context("loading config")
+}
+
+fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match parse_args(&args)? {
+        Cmd::Run(p) => {
+            init_console_logs();
+            run_daemon(load(&p)?, |_, _| {})
+        }
+        #[cfg(windows)]
+        Cmd::ServiceRun(p) => service::dispatch(p),
+        #[cfg(windows)]
+        Cmd::Install(p) => service::install(&p, &load(&p)?),
+        #[cfg(windows)]
+        Cmd::Uninstall => service::uninstall(),
+        #[cfg(windows)]
+        Cmd::Start => service::start(),
+        #[cfg(windows)]
+        Cmd::Stop => service::stop(),
+        #[cfg(not(windows))]
+        _ => bail!("Windows service commands are only available on Windows"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn v(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
     fn args_parse() {
-        let a: Vec<String> = ["run", "--config", "x.json"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(parse_args(&a).ok(), Some(PathBuf::from("x.json")));
+        assert_eq!(
+            parse_args(&v(&["run", "--config", "x.json"])).ok(),
+            Some(Cmd::Run(PathBuf::from("x.json")))
+        );
+        assert_eq!(
+            parse_args(&v(&["service", "install", "--config", "x.json"])).ok(),
+            Some(Cmd::Install(PathBuf::from("x.json")))
+        );
+        assert_eq!(
+            parse_args(&v(&["service", "uninstall"])).ok(),
+            Some(Cmd::Uninstall)
+        );
+        assert_eq!(parse_args(&v(&["service", "stop"])).ok(), Some(Cmd::Stop));
         assert!(parse_args(&[]).is_err());
+        assert!(parse_args(&v(&["service", "install"])).is_err());
+        assert!(parse_args(&v(&["service", "uninstall", "--purge"])).is_err());
     }
 }
