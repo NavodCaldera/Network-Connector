@@ -71,7 +71,15 @@ jobs:
             --setenv="PATH=$PATH" --setenv="CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
             --setenv="RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
             --setenv="CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$PWD/target}" --setenv="RUSTFLAGS=${RUSTFLAGS:-}" \
-            bash crates/nc-exec/tests/linux-sandbox.sh --inside
+            bash -c '
+              unit=$(basename "$(sed -n "s/^0:://p" /proc/self/cgroup)")
+              systemctl show "$unit" --property=ProtectSystem --property=PrivateTmp \
+                --property=ProtectProc --property=ProcSubset --property=RestrictNamespaces \
+                --property=NoNewPrivileges --property=PrivateMounts
+              cat /proc/self/attr/current
+              cat /proc/self/mountinfo
+              exec bash crates/nc-exec/tests/linux-sandbox.sh --inside
+            '
       # Real sandbox (AppContainer + Job Object) under the whole helper session: Stop < 1 s, memory and
       # output caps. Ignored by default because it needs the built worker binary.
       - name: nc-agent sandbox_jobs (real sandbox)

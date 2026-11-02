@@ -553,6 +553,17 @@ fn filesystem(root: &Path) -> Result<(), SandboxError> {
         )?;
     }
     fs::create_dir(root.join("proc")).map_err(|e| error("mount", e))?;
+    // Mount proc while the inherited procfs is still visible. Newer kernels refuse a new
+    // unprivileged procfs mount after the old root (and its procfs) has been detached.
+    // We are already PID 1 in the new PID namespace: this is a fresh procfs, never a bind
+    // of the host's procfs. pivot_root carries it with the tmpfs and detaches the host tree.
+    mount(
+        "mount:proc",
+        None,
+        &root.join("proc"),
+        Some(c"proc"),
+        libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+    )?;
     fs::create_dir(root.join("old")).map_err(|e| error("mount", e))?;
     std::env::set_current_dir(root).map_err(|e| error("mount", e))?;
     // SAFETY: both paths are valid C strings relative to our private tmpfs mount.
@@ -565,13 +576,6 @@ fn filesystem(root: &Path) -> Result<(), SandboxError> {
         libc::umount2(c"/old".as_ptr(), libc::MNT_DETACH)
     })?;
     fs::remove_dir("/old").map_err(|e| error("mount", e))?;
-    mount(
-        "mount:proc",
-        None,
-        Path::new("/proc"),
-        Some(c"proc"),
-        libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
-    )?;
     Ok(())
 }
 fn restrictions() -> Result<(), SandboxError> {
