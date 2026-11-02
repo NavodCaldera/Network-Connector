@@ -177,11 +177,11 @@ pub(crate) fn check_url(url: &str, dev: bool) -> Result<String, String> {
     }
 }
 
-fn agent_dir(dir: &Path) -> PathBuf {
+pub(crate) fn agent_dir(dir: &Path) -> PathBuf {
     dir.join(AGENT_DIR)
 }
 
-fn open_key(dir: &Path) -> Result<Arc<dyn DeviceKeyStore>, String> {
+pub(crate) fn open_key(dir: &Path) -> Result<Arc<dyn DeviceKeyStore>, String> {
     let d = agent_dir(dir);
     fs::create_dir_all(&d).map_err(|_| "Could not create the app data folder.".to_string())?;
     let k = SoftwareKeyStore::open_or_create(d.join("device.key"))

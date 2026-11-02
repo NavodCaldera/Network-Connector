@@ -7,9 +7,12 @@ import 'strings.dart';
 /// Home: role, live status, today's summary and a short view of the rules.
 /// Stop lives in the app shell, so it is on every screen.
 class HomePage extends StatelessWidget {
-  const HomePage({super.key, required this.model});
+  const HomePage({super.key, required this.model, this.onAsk});
 
   final AppModel model;
+
+  /// Opens the Ask page.
+  final VoidCallback? onAsk;
 
   @override
   Widget build(BuildContext context) {
@@ -38,14 +41,11 @@ class HomePage extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 12),
-            const Expanded(
-              child: Tooltip(
-                message: S.askSoon,
-                child: OutlinedButton(
-                  key: Key('ask'),
-                  onPressed: null,
-                  child: Text(S.askRole),
-                ),
+            Expanded(
+              child: OutlinedButton(
+                key: const Key('ask'),
+                onPressed: onAsk,
+                child: const Text(S.askRole),
               ),
             ),
           ],

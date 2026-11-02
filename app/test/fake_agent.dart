@@ -214,4 +214,61 @@ class FakeAgent implements AgentApi {
     _watched = true;
     return _ctl.stream;
   }
+
+  /// Requester: jobs "on disk" (survive a new FakeAgent sharing this list = an app restart).
+  List<RequestedJob> jobs = [];
+  final submits = <SubmitJobRequest>[];
+  final fetches = <String>[];
+  var jobStatusCalls = 0;
+
+  /// Phase the next jobStatus reports (null: keep the job as is).
+  JobPhase? nextPhase;
+
+  /// Thrown by jobStatus / fetchOutput when set.
+  String? jobError;
+
+  @override
+  Future<RequestedJob> submitJob(String dir, SubmitJobRequest r) async {
+    submits.add(r);
+    if (r.replicas < 1 || r.replicas > 2) throw 'Choose 1 or 2 helpers.';
+    if (!r.modulePath.endsWith('.wasm')) {
+      throw 'The module file is not a WebAssembly (.wasm) module.';
+    }
+    final j = RequestedJob(
+      jobId: '${submits.length}0000000-0000-4000-8000-000000000000',
+      phase: JobPhase.queued,
+      createdMs: 1700000000000 + submits.length,
+    );
+    jobs.insert(0, j);
+    return j;
+  }
+
+  @override
+  Future<List<RequestedJob>> listJobs(String dir) async => List.of(jobs);
+
+  @override
+  Future<RequestedJob> jobStatus(String dir, String id) async {
+    jobStatusCalls++;
+    final e = jobError;
+    if (e != null) throw e;
+    final i = jobs.indexWhere((j) => j.jobId == id);
+    final old = jobs[i];
+    final p = nextPhase ?? old.phase;
+    final done = p == JobPhase.committed;
+    return jobs[i] = RequestedJob(
+      jobId: id,
+      phase: p,
+      createdMs: old.createdMs,
+      outputSha256: done ? 'ab' * 32 : null,
+      outputSize: done ? BigInt.from(12) : null,
+    );
+  }
+
+  @override
+  Future<FetchedOutput> fetchOutput(String dir, String id, String out) async {
+    fetches.add(out);
+    final e = jobError;
+    if (e != null) throw e;
+    return FetchedOutput(sha256: 'ab' * 32, size: BigInt.from(12));
+  }
 }

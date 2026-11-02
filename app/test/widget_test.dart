@@ -53,7 +53,7 @@ void main() {
       final sw = tester.widget<SwitchListTile>(find.byKey(const Key('accept')));
       expect(sw.value, isFalse);
       final ask = tester.widget<OutlinedButton>(find.byKey(const Key('ask')));
-      expect(ask.onPressed, isNull);
+      expect(ask.onPressed, isNotNull);
     });
 
     testWidgets('start then Stop reaches Stopped within 1 s', (tester) async {
