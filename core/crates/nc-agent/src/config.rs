@@ -5,6 +5,7 @@
 use crate::budget::{BudgetGate, NetworkBudget};
 use crate::coord::{Coordinator, HttpCoordinator};
 use crate::journal::Journal;
+use crate::parked::{derive_key, ParkedResults};
 use crate::probe::{ProbeConfig, SystemClock, SystemProbe};
 use crate::runner::SandboxRunner;
 use crate::session::{Backend, Tuning};
@@ -70,6 +71,9 @@ pub struct AgentConfig {
     #[serde(default)]
     pub budget_ledger: Option<PathBuf>,
 }
+
+/// Message the device key signs to derive the parked-result key (never sent anywhere).
+const PARKED_KEY_LABEL: &[u8] = b"nc-agent/parked-results/v1";
 
 fn default_port() -> u16 {
     47_611
@@ -211,6 +215,18 @@ impl AgentConfig {
             self.cache_quota_mb.saturating_mul(1024 * 1024),
         )
         .map_err(|_| ConfigError::Open("blob cache"))?;
+        // Parked results must survive a restart, so their key is derived from the device key: Ed25519
+        // signatures are deterministic, and the key file itself is OS-protected (DPAPI on Windows).
+        let device_key = self.device_key()?;
+        let secret = device_key
+            .sign(PARKED_KEY_LABEL)
+            .map_err(|_| ConfigError::Open("device key"))?;
+        let parked = ParkedResults::open(
+            &self.data_dir.join("parked"),
+            self.cache_quota_mb.saturating_mul(1024 * 1024),
+            derive_key(&secret),
+        )
+        .map_err(|_| ConfigError::Open("parked results"))?;
         let ledger = self.budget_ledger_path();
         if let Some(parent) = ledger.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).map_err(|_| ConfigError::Open("budget usage"))?;
@@ -226,6 +242,7 @@ impl AgentConfig {
             runner: Arc::new(runner),
             journal: Mutex::new(journal),
             cache: Mutex::new(cache),
+            parked: Mutex::new(parked),
             budget,
             staging,
             device_name: self.device_name.clone(),

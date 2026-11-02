@@ -20,6 +20,7 @@ pub mod config;
 pub mod control;
 pub mod coord;
 pub mod journal;
+pub mod parked;
 pub mod probe;
 pub mod requester;
 pub mod runner;
