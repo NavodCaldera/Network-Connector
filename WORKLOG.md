@@ -15,6 +15,39 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-03 · Claude (Net agent) · `feat/1.L5-resumable-upload` · task 1.L5
+
+- **Asked:** G5 server side: resumable chunked uploads into the coordinator blob store, per-chunk and final hash
+  checks, existing caps and auth, GC of abandoned partials, keep the single PUT, write the exact HTTP contract for
+  1.L6.
+- **Done:**
+  - New `server/crates/nc-coordinator/src/resumable.rs`: `GET /v1/blobs/{sha}/upload/{size}` (held offset in
+    `x-nc-upload-offset`) and `PUT /v1/blobs/{sha}/upload/{size}/{offset}` (one chunk, 1 B to 4 MiB, signed
+    NC-REQ-V1 with the chunk hash sent in `x-nc-chunk-sha256`, signature checked before the body is read). Session =
+    (device, sha, size) in one append-only partial file; exact-offset append + fsync, rolled back on a failed
+    write; 409 `upload_offset` reports where to resume; 409 `upload_busy` for a concurrent request; at most 8 open
+    sessions per device; last chunk checks the whole file and publishes it. Any failure there deletes the session.
+  - `blobs.rs`: publication split out into `publish()`, which the single PUT and the last chunk share (same
+    advisory lock, `blobs`/`blob_uploaders` rows). The single PUT is unchanged.
+  - GC: `resumable::gc` deletes partials (and single-PUT temporaries left by a killed process) not written for
+    24 h, skipping sessions in flight; `main.rs` runs it at start-up and hourly (tokio `time` feature added).
+  - `lib.rs`: routes, `AppState.uploads`. `proto/README.md`: full contract (no .proto change). docs/laptop-gap.md
+    G5 marked server-done.
+  - Tests: unit `numbers_are_strict`, `locks_are_exclusive_and_released`, `append_hash_and_gc`; ignored HTTP
+    test `resumable_upload_over_http` (9 MiB blob in 3 chunks with a simulated interruption and resume, 413 for an
+    oversize chunk, 401 for a bad signature, 400 for a chunk hash mismatch and for a final hash mismatch that
+    discards the session, 409 offset replay, another device cannot see or extend the session, module/input
+    uploaded by chunks make the requester an uploader so the GET returns 200 with the exact bytes).
+- **Decisions:** state only in the path and headers, no new protobuf/JSON message. The status GET never reveals
+  whether a blob already exists, so a device must upload every byte to become an uploader. The in-flight lock is
+  in process (single coordinator), which is enough for Phase 0.
+- **Verified:** server `cargo fmt --check` and `cargo clippy --all-targets -D warnings` clean; `cargo test`
+  all passed (3 ignored). `infra/verify.ps1` exit 0, lease_cycle 3 passed (dispute_and_tariff, real_job_cycle,
+  resumable_upload). `infra/fleet-e2e.ps1` exit 0: S1-S6 and G PASS, X1/X3/X4 EXPECTED-FAIL as before.
+- **Not done / open:** 1.L6 (the agent and requester still use the single PUT). Sessions are not stored in the
+  database, so a lost blob volume loses them, which is fine because they are only resumable state. Restarting the
+  coordinator keeps the partials, since they are on the blob volume.
+
 ## 2026-11-03 - Claude (coordinator) - main - merge 1.L2 + 1.L4
 
 - Asked: review and merge 1.L2 and 1.L4 (1ed5a3f).

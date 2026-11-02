@@ -52,11 +52,32 @@ async fn main() -> Result<()> {
     tokio::fs::create_dir_all(&blob_dir)
         .await
         .context("creating blob directory")?;
+    let uploads = nc_coordinator::resumable::UploadLocks::default();
+    {
+        // 1.L5: sweep abandoned partial uploads at start-up and then hourly.
+        let (dir, locks) = (blob_dir.clone(), uploads.clone());
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                tick.tick().await;
+                let n = nc_coordinator::resumable::gc(
+                    &dir,
+                    &locks,
+                    nc_coordinator::resumable::PARTIAL_TTL,
+                )
+                .await;
+                if n > 0 {
+                    tracing::info!(removed = n, "removed abandoned partial uploads");
+                }
+            }
+        });
+    }
     let router = app(AppState {
         blob_dir,
         pool,
         enroll_secret,
         relay_key,
+        uploads,
     });
     match (std::env::var("NC_TLS_CERT"), std::env::var("NC_TLS_KEY")) {
         (Ok(cert), Ok(key)) => {

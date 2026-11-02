@@ -829,3 +829,167 @@ async fn device_lifecycle(base: &str, enroll: &str, owner: &Dev, helper: &Dev) {
     assert_eq!(owner.status(&job).await["tasks"][0]["state"], "committed");
     println!("deregister releases lease -> queued -> other device commits; key then 401: passed");
 }
+
+impl Dev {
+    /// 1.L5 chunk PUT: signs `signed` and sends `actual` (they differ only in tamper tests).
+    async fn chunk_put(&self, path: &str, signed: &[u8], actual: Vec<u8>) -> reqwest::Response {
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let sig = self
+            .sk
+            .sign(signing_string("PUT", path, ts, &nonce, signed).as_bytes());
+        self.http
+            .put(format!("{}{path}", self.base))
+            .header(
+                "x-nc-key",
+                URL_SAFE_NO_PAD.encode(self.sk.verifying_key().to_bytes()),
+            )
+            .header("x-nc-ts", ts.to_string())
+            .header("x-nc-nonce", nonce)
+            .header("x-nc-sig", URL_SAFE_NO_PAD.encode(sig.to_bytes()))
+            .header("x-nc-chunk-sha256", hex::encode(Sha256::digest(signed)))
+            .header("content-type", "application/octet-stream")
+            .body(actual)
+            .send()
+            .await
+            .unwrap()
+    }
+    async fn chunk(&self, blob: &[u8], offset: usize, len: usize) -> reqwest::Response {
+        let path = format!(
+            "/v1/blobs/{}/upload/{}/{offset}",
+            hex::encode(Sha256::digest(blob)),
+            blob.len()
+        );
+        let part = &blob[offset..offset + len];
+        self.chunk_put(&path, part, part.to_vec()).await
+    }
+    async fn held(&self, blob: &[u8]) -> u64 {
+        let path = format!(
+            "/v1/blobs/{}/upload/{}",
+            hex::encode(Sha256::digest(blob)),
+            blob.len()
+        );
+        let r = self.request("GET", &path, vec![], None).await;
+        assert_eq!(r.status(), 200);
+        offset_of(&r)
+    }
+}
+
+fn offset_of(r: &reqwest::Response) -> u64 {
+    r.headers()["x-nc-upload-offset"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "needs a fresh infra Docker stack with PostgreSQL; run infra/verify.ps1 or verify.sh"]
+async fn resumable_upload_over_http() {
+    let base = std::env::var("NC_TEST_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".into());
+    let enroll = std::env::var("NC_TEST_ENROLL").expect("NC_TEST_ENROLL");
+    let owner = Dev::new(&base);
+    owner.register(&enroll).await;
+    let other = Dev::new(&base);
+    other.register(&enroll).await;
+    const MIB: usize = 1024 * 1024;
+    let big: Vec<u8> = (0..(9 * MIB + 123)).map(|i| (i * 31 % 251) as u8).collect();
+    assert_eq!(owner.held(&big).await, 0);
+    // Chunk larger than 4 MiB is refused.
+    let r = owner.chunk(&big, 0, 4 * MIB + 1).await;
+    assert_eq!(r.status(), 413);
+    // Unsigned / wrongly signed chunk is refused before anything is stored.
+    let hash = hex::encode(Sha256::digest(&big));
+    let p0 = format!("/v1/blobs/{hash}/upload/{}/0", big.len());
+    let r = other
+        .request(
+            "PUT",
+            &p0,
+            big[..MIB].to_vec(),
+            Some(("x-nc-chunk-sha256", &hash)),
+        )
+        .await;
+    assert_eq!(r.status(), 401);
+    // Body that does not match the signed chunk hash is refused and nothing is held.
+    let r = owner
+        .chunk_put(&p0, &big[..MIB], big[1..=MIB].to_vec())
+        .await;
+    assert_eq!(r.status(), 400);
+    assert_eq!(owner.held(&big).await, 0);
+    // First chunk, then an "interruption": the client forgets its position.
+    let r = owner.chunk(&big, 0, 4 * MIB).await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(offset_of(&r), 4 * MIB as u64);
+    assert!(r.headers().get("x-nc-upload-complete").is_none());
+    // Replaying the same chunk is an offset conflict that reports where to resume.
+    let r = owner.chunk(&big, 0, 4 * MIB).await;
+    assert_eq!(r.status(), 409);
+    assert_eq!(offset_of(&r), 4 * MIB as u64);
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["error"]["code"], "upload_offset", "{v}");
+    // Sessions belong to the device: another device sees nothing and cannot append.
+    assert_eq!(other.held(&big).await, 0);
+    assert_eq!(other.chunk(&big, 4 * MIB, MIB).await.status(), 409);
+    // Resume from the server-reported offset.
+    let at = owner.held(&big).await as usize;
+    assert_eq!(at, 4 * MIB);
+    let r = owner.chunk(&big, at, 4 * MIB).await;
+    assert_eq!(offset_of(&r), 8 * MIB as u64);
+    let r = owner.chunk(&big, 8 * MIB, big.len() - 8 * MIB).await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(offset_of(&r), big.len() as u64);
+    assert_eq!(r.headers()["x-nc-upload-complete"], "true");
+    assert_eq!(owner.held(&big).await, 0, "session is gone after publish");
+
+    // A chunk past the declared size is refused.
+    let tiny = b"abc".to_vec();
+    let th = hex::encode(Sha256::digest(&tiny));
+    let r = owner
+        .chunk_put(
+            &format!("/v1/blobs/{th}/upload/3/0"),
+            b"abcd",
+            b"abcd".to_vec(),
+        )
+        .await;
+    assert_eq!(r.status(), 413);
+    // Final-blob hash mismatch discards the session.
+    let r = owner
+        .chunk_put(&format!("/v1/blobs/{th}/upload/3/0"), b"ab", b"ab".to_vec())
+        .await;
+    assert_eq!(offset_of(&r), 2);
+    let r = owner
+        .chunk_put(&format!("/v1/blobs/{th}/upload/3/2"), b"X", b"X".to_vec())
+        .await;
+    assert_eq!(r.status(), 400);
+    assert_eq!(owner.held(&tiny).await, 0);
+    // Bad paths.
+    for p in [
+        format!("/v1/blobs/{th}/upload/0/0"),
+        format!("/v1/blobs/{th}/upload/03/0"),
+        format!("/v1/blobs/{th}/upload/3/3"),
+        format!("/v1/blobs/{th}/upload/{}/0", 16 * MIB + 1),
+    ] {
+        let s = owner.chunk_put(&p, b"a", b"a".to_vec()).await.status();
+        assert!(s == 400 || s == 413, "{p}: {s}");
+    }
+
+    // A resumable upload proves upload ownership exactly like the single PUT: the job's module
+    // (two chunks) and input (one chunk) arrive this way and the requester can then GET them.
+    let id = owner.submit(owner.manifest(1)).await;
+    assert_eq!(owner.chunk(b"module", 0, 3).await.status(), 200);
+    assert_eq!(owner.held(b"module").await, 3);
+    let r = owner.chunk(b"module", 3, 3).await;
+    assert_eq!(r.headers()["x-nc-upload-complete"], "true");
+    let r = owner.chunk(b"input", 0, 5).await;
+    assert_eq!(r.headers()["x-nc-upload-complete"], "true");
+    let module = hex::encode(Sha256::digest(b"module"));
+    let r = owner
+        .request("GET", &format!("/v1/blobs/{module}"), vec![], None)
+        .await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(&r.bytes().await.unwrap()[..], b"module");
+    let _ = id;
+}
