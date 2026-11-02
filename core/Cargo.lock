@@ -2894,14 +2894,18 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "flutter_rust_bridge",
+ "hex",
  "nc-agent",
  "nc-identity",
  "nc-policy",
  "nc-protocol",
  "nc-tariff",
+ "prost",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
+ "uuid",
 ]
 
 [[package]]

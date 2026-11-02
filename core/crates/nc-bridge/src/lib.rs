@@ -16,4 +16,5 @@ mod enrol;
 )]
 mod frb_generated;
 mod night;
+mod requests;
 mod settings;

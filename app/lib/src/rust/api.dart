@@ -8,7 +8,7 @@ import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `active`, `agent`, `of`, `with_trust`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
 
 /// Creates the agent. With a saved enrolment in `dir` it is `Agent::with_backend` (real coordinator, leases,
 /// budget and today counters); otherwise `Agent::new()`. Call once at start-up, before anything else.
@@ -35,6 +35,33 @@ Future<EnrolmentCheck> checkEnrolment({required String dir}) =>
 /// saved. On `Err` (plain English, e.g. offline) the owner may still reset with [`unenrol`].
 Future<void> deregisterDevice({required String dir}) =>
     RustLib.instance.api.crateApiDeregisterDevice(dir: dir);
+
+/// Requester: reads the module and input files, signs the job with this device's key (as `nc submit`),
+/// records it on this device, then sends it. A job recorded but not yet sent comes back as `Uploading`
+/// with a message; [`job_status`] sends it later. Helpers must trust this device's key (Coordinator page).
+Future<RequestedJob> submitJob({
+  required String dir,
+  required SubmitJobRequest request,
+}) => RustLib.instance.api.crateApiSubmitJob(dir: dir, request: request);
+
+/// Requester: every job recorded on this device, newest first (local files; survives restarts).
+Future<List<RequestedJob>> listJobs({required String dir}) =>
+    RustLib.instance.api.crateApiListJobs(dir: dir);
+
+/// Requester: asks the coordinator about one job (network, retried briefly), sending it first if needed.
+Future<RequestedJob> jobStatus({required String dir, required String jobId}) =>
+    RustLib.instance.api.crateApiJobStatus(dir: dir, jobId: jobId);
+
+/// Requester: downloads the committed output, checks its SHA-256 and size, and saves it to `out_path`.
+Future<FetchedOutput> fetchOutput({
+  required String dir,
+  required String jobId,
+  required String outPath,
+}) => RustLib.instance.api.crateApiFetchOutput(
+  dir: dir,
+  jobId: jobId,
+  outPath: outPath,
+);
 
 /// The nc-policy safe defaults (no consent, charging only, 25 % CPU, no hours, ...).
 PolicySummary defaultPolicy() => RustLib.instance.api.crateApiDefaultPolicy();
@@ -329,6 +356,28 @@ enum EnrolmentState {
   unknown,
 }
 
+/// A saved, hash-checked output.
+class FetchedOutput {
+  /// SHA-256 (hex) the bytes were checked against.
+  final String sha256;
+
+  /// Bytes written.
+  final BigInt size;
+
+  const FetchedOutput({required this.sha256, required this.size});
+
+  @override
+  int get hashCode => sha256.hashCode ^ size.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is FetchedOutput &&
+          runtimeType == other.runtimeType &&
+          sha256 == other.sha256 &&
+          size == other.size;
+}
+
 /// `nc_agent::Activity` as a plain struct. Never carries job data.
 class HelperActivity {
   /// What the helper is doing.
@@ -389,6 +438,30 @@ class HelperStatus {
           runtimeType == other.runtimeType &&
           state == other.state &&
           seq == other.seq;
+}
+
+/// Where a requested job is.
+enum JobPhase {
+  /// Recorded on this device; not yet accepted by the coordinator.
+  uploading,
+
+  /// Waiting for a helper.
+  queued,
+
+  /// A helper is working on it.
+  running,
+
+  /// Result ready.
+  committed,
+
+  /// Two helpers disagreed; no result.
+  disputed,
+
+  /// Ended without a result.
+  failed,
+
+  /// Not known yet (refresh to ask the coordinator).
+  unknown,
 }
 
 /// Result of [`load_settings`].
@@ -591,6 +664,88 @@ class PolicySummary {
           idleMinutes == other.idleMinutes &&
           timezone == other.timezone &&
           hours == other.hours;
+}
+
+/// One requested job. No job data; the output hash and size are public metadata.
+class RequestedJob {
+  /// Job id (UUID).
+  final String jobId;
+
+  /// Where it is.
+  final JobPhase phase;
+
+  /// When it was recorded (unix ms).
+  final PlatformInt64 createdMs;
+
+  /// Committed output SHA-256 (hex), once known.
+  final String? outputSha256;
+
+  /// Committed output size, bytes.
+  final BigInt? outputSize;
+
+  /// Plain-English problem from the last attempt (e.g. offline), if any.
+  final String? message;
+
+  const RequestedJob({
+    required this.jobId,
+    required this.phase,
+    required this.createdMs,
+    this.outputSha256,
+    this.outputSize,
+    this.message,
+  });
+
+  @override
+  int get hashCode =>
+      jobId.hashCode ^
+      phase.hashCode ^
+      createdMs.hashCode ^
+      outputSha256.hashCode ^
+      outputSize.hashCode ^
+      message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RequestedJob &&
+          runtimeType == other.runtimeType &&
+          jobId == other.jobId &&
+          phase == other.phase &&
+          createdMs == other.createdMs &&
+          outputSha256 == other.outputSha256 &&
+          outputSize == other.outputSize &&
+          message == other.message;
+}
+
+/// What the owner asks for on the Requester screen. Paths only: job bytes never cross the bridge.
+class SubmitJobRequest {
+  /// The signed-by-this-device Wasm module file.
+  final String modulePath;
+
+  /// The input file.
+  final String inputPath;
+
+  /// Independent helpers that must agree, 1 or 2.
+  final int replicas;
+
+  const SubmitJobRequest({
+    required this.modulePath,
+    required this.inputPath,
+    required this.replicas,
+  });
+
+  @override
+  int get hashCode =>
+      modulePath.hashCode ^ inputPath.hashCode ^ replicas.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SubmitJobRequest &&
+          runtimeType == other.runtimeType &&
+          modulePath == other.modulePath &&
+          inputPath == other.inputPath &&
+          replicas == other.replicas;
 }
 
 /// A starting point for the night window. The owner must check it against their own package.

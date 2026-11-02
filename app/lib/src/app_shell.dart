@@ -6,14 +6,21 @@ import 'coordinator_page.dart';
 import 'home_page.dart';
 import 'limits_page.dart';
 import 'night_data_page.dart';
+import 'file_picker.dart';
+import 'requester_page.dart';
 import 'strings.dart';
 
 /// Navigation plus the Stop bar. Stop sits above the navigation bar on every screen,
 /// always enabled (AGENT.md §1: the owner is in control).
 class AppShell extends StatefulWidget {
-  const AppShell({super.key, required this.model});
+  const AppShell({
+    super.key,
+    required this.model,
+    this.picker = const SystemFilePicker(),
+  });
 
   final AppModel model;
+  final FilePicker picker;
 
   @override
   State<AppShell> createState() => _AppShellState();
@@ -32,10 +39,11 @@ class _AppShellState extends State<AppShell> {
         appBar: AppBar(title: const Text(S.appTitle)),
         body: SafeArea(
           child: switch (_tab) {
-            0 => HomePage(model: m),
-            1 => LimitsPage(model: m),
-            2 => NightDataPage(model: m),
-            3 => CoordinatorPage(model: m),
+            0 => HomePage(model: m, onAsk: () => setState(() => _tab = 1)),
+            1 => RequesterPage(model: m, picker: widget.picker),
+            2 => LimitsPage(model: m),
+            3 => NightDataPage(model: m),
+            4 => CoordinatorPage(model: m),
             _ => AboutPage(model: m),
           },
         ),
@@ -74,6 +82,11 @@ class _AppShellState extends State<AppShell> {
                   key: Key('navHome'),
                   icon: Icon(Icons.home),
                   label: S.navHome,
+                ),
+                NavigationDestination(
+                  key: Key('navAsk'),
+                  icon: Icon(Icons.send_outlined),
+                  label: S.navAsk,
                 ),
                 NavigationDestination(
                   key: Key('navLimits'),

@@ -7,6 +7,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart'
 import 'src/agent_api.dart';
 import 'src/app_model.dart';
 import 'src/app_shell.dart';
+import 'src/file_picker.dart';
 import 'src/rust/api.dart' as rust;
 import 'src/rust/frb_generated.dart';
 import 'src/strings.dart';
@@ -29,10 +30,18 @@ Future<void> main() async {
 }
 
 class NetworkConnectorApp extends StatefulWidget {
-  const NetworkConnectorApp({super.key, required this.api, this.settingsDir});
+  const NetworkConnectorApp({
+    super.key,
+    required this.api,
+    this.settingsDir,
+    this.picker = const SystemFilePicker(),
+  });
 
   final AgentApi api;
   final String? settingsDir;
+
+  /// Native file dialogs (a fake in widget tests).
+  final FilePicker picker;
 
   @override
   State<NetworkConnectorApp> createState() => _NetworkConnectorAppState();
@@ -60,7 +69,7 @@ class _NetworkConnectorAppState extends State<NetworkConnectorApp> {
           brightness: Brightness.dark,
         ),
       ),
-      home: AppShell(model: _model),
+      home: AppShell(model: _model, picker: widget.picker),
     );
   }
 }

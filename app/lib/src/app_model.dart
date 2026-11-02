@@ -3,14 +3,20 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'agent_api.dart';
+import 'requester_model.dart';
 import 'strings.dart';
 
 /// App state shared by every screen: saved settings and the live helper status.
 /// Validation and saving are done by Rust; this class only calls it and stores the result.
 class AppModel extends ChangeNotifier {
-  AppModel(this.api, this.settingsDir) : settings = api.defaultSettings();
+  AppModel(this.api, this.settingsDir)
+    : settings = api.defaultSettings(),
+      requester = RequesterModel(api, settingsDir);
 
   final AgentApi api;
+
+  /// Jobs this device asked for.
+  final RequesterModel requester;
 
   /// App-support folder for `settings.json`; null when the platform has none (settings are not saved).
   final String? settingsDir;
@@ -58,7 +64,10 @@ class AppModel extends ChangeNotifier {
     resetNotice = loaded.resetNotice;
     await _applyNightData(settings.nightData);
     notifyListeners();
-    if (enrolment != null) unawaited(checkEnrolment());
+    if (enrolment != null) {
+      unawaited(checkEnrolment());
+      unawaited(requester.load());
+    }
   }
 
   /// Asks the coordinator whether it still knows this device (network; never blocks Stop).
@@ -79,6 +88,7 @@ class AppModel extends ChangeNotifier {
   @override
   void dispose() {
     _sub?.cancel();
+    requester.dispose();
     super.dispose();
   }
 

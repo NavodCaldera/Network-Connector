@@ -9,6 +9,8 @@ export 'rust/api.dart'
         Enrolment,
         EnrolmentCheck,
         EnrolmentState,
+        FetchedOutput,
+        JobPhase,
         HelperActivity,
         HelperState,
         HelperStatus,
@@ -17,6 +19,8 @@ export 'rust/api.dart'
         NightDataSettings,
         NightDataStatus,
         PolicySummary,
+        RequestedJob,
+        SubmitJobRequest,
         TariffPreset,
         TimeWindow,
         TodaySummary;
@@ -66,6 +70,26 @@ abstract class AgentApi {
   /// Applies the night-data budget to the agent at once. Throws a message string when invalid.
   Future<void> updateNightData(rust.NightDataSettings nightData);
   Stream<rust.HelperStatus> watchStatus();
+
+  /// Requester: signs the job with this device's key, records it and sends it. Paths only, never bytes.
+  /// Throws a message string when the request is invalid.
+  Future<rust.RequestedJob> submitJob(
+    String dir,
+    rust.SubmitJobRequest request,
+  );
+
+  /// Requester: jobs recorded on this device, newest first (local files only).
+  Future<List<rust.RequestedJob>> listJobs(String dir);
+
+  /// Requester: asks the coordinator about one job. Throws a message string.
+  Future<rust.RequestedJob> jobStatus(String dir, String jobId);
+
+  /// Requester: downloads, hash-checks and saves the output. Throws a message string.
+  Future<rust.FetchedOutput> fetchOutput(
+    String dir,
+    String jobId,
+    String outPath,
+  );
 }
 
 /// The real agent, in-process through flutter_rust_bridge.
@@ -139,4 +163,25 @@ class RustAgentApi implements AgentApi {
 
   @override
   Stream<rust.HelperStatus> watchStatus() => rust.watchStatus();
+
+  @override
+  Future<rust.RequestedJob> submitJob(
+    String dir,
+    rust.SubmitJobRequest request,
+  ) => rust.submitJob(dir: dir, request: request);
+
+  @override
+  Future<List<rust.RequestedJob>> listJobs(String dir) =>
+      rust.listJobs(dir: dir);
+
+  @override
+  Future<rust.RequestedJob> jobStatus(String dir, String jobId) =>
+      rust.jobStatus(dir: dir, jobId: jobId);
+
+  @override
+  Future<rust.FetchedOutput> fetchOutput(
+    String dir,
+    String jobId,
+    String outPath,
+  ) => rust.fetchOutput(dir: dir, jobId: jobId, outPath: outPath);
 }

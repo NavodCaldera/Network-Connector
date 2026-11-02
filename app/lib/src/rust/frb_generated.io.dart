@@ -60,6 +60,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PolicySummary dco_decode_box_autoadd_policy_summary(dynamic raw);
 
   @protected
+  SubmitJobRequest dco_decode_box_autoadd_submit_job_request(dynamic raw);
+
+  @protected
+  BigInt dco_decode_box_autoadd_u_64(dynamic raw);
+
+  @protected
   EnrolRequest dco_decode_enrol_request(dynamic raw);
 
   @protected
@@ -70,6 +76,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   EnrolmentState dco_decode_enrolment_state(dynamic raw);
+
+  @protected
+  FetchedOutput dco_decode_fetched_output(dynamic raw);
 
   @protected
   HelperActivity dco_decode_helper_activity(dynamic raw);
@@ -84,10 +93,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int dco_decode_i_32(dynamic raw);
 
   @protected
+  PlatformInt64 dco_decode_i_64(dynamic raw);
+
+  @protected
+  JobPhase dco_decode_job_phase(dynamic raw);
+
+  @protected
   List<String> dco_decode_list_String(dynamic raw);
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
+
+  @protected
+  List<RequestedJob> dco_decode_list_requested_job(dynamic raw);
 
   @protected
   List<TariffPreset> dco_decode_list_tariff_preset(dynamic raw);
@@ -114,7 +132,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Enrolment? dco_decode_opt_box_autoadd_enrolment(dynamic raw);
 
   @protected
+  BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw);
+
+  @protected
   PolicySummary dco_decode_policy_summary(dynamic raw);
+
+  @protected
+  RequestedJob dco_decode_requested_job(dynamic raw);
+
+  @protected
+  SubmitJobRequest dco_decode_submit_job_request(dynamic raw);
 
   @protected
   TariffPreset dco_decode_tariff_preset(dynamic raw);
@@ -185,6 +212,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SubmitJobRequest sse_decode_box_autoadd_submit_job_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
+
+  @protected
   EnrolRequest sse_decode_enrol_request(SseDeserializer deserializer);
 
   @protected
@@ -195,6 +230,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   EnrolmentState sse_decode_enrolment_state(SseDeserializer deserializer);
+
+  @protected
+  FetchedOutput sse_decode_fetched_output(SseDeserializer deserializer);
 
   @protected
   HelperActivity sse_decode_helper_activity(SseDeserializer deserializer);
@@ -209,10 +247,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int sse_decode_i_32(SseDeserializer deserializer);
 
   @protected
+  PlatformInt64 sse_decode_i_64(SseDeserializer deserializer);
+
+  @protected
+  JobPhase sse_decode_job_phase(SseDeserializer deserializer);
+
+  @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
+
+  @protected
+  List<RequestedJob> sse_decode_list_requested_job(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<TariffPreset> sse_decode_list_tariff_preset(
@@ -243,7 +292,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Enrolment? sse_decode_opt_box_autoadd_enrolment(SseDeserializer deserializer);
 
   @protected
+  BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer);
+
+  @protected
   PolicySummary sse_decode_policy_summary(SseDeserializer deserializer);
+
+  @protected
+  RequestedJob sse_decode_requested_job(SseDeserializer deserializer);
+
+  @protected
+  SubmitJobRequest sse_decode_submit_job_request(SseDeserializer deserializer);
 
   @protected
   TariffPreset sse_decode_tariff_preset(SseDeserializer deserializer);
@@ -327,6 +385,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_submit_job_request(
+    SubmitJobRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
+
+  @protected
   void sse_encode_enrol_request(EnrolRequest self, SseSerializer serializer);
 
   @protected
@@ -345,6 +412,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_fetched_output(FetchedOutput self, SseSerializer serializer);
+
+  @protected
   void sse_encode_helper_activity(
     HelperActivity self,
     SseSerializer serializer,
@@ -360,11 +430,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_i_32(int self, SseSerializer serializer);
 
   @protected
+  void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_job_phase(JobPhase self, SseSerializer serializer);
+
+  @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_prim_u_8_strict(
     Uint8List self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_requested_job(
+    List<RequestedJob> self,
     SseSerializer serializer,
   );
 
@@ -411,7 +493,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer);
+
+  @protected
   void sse_encode_policy_summary(PolicySummary self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_requested_job(RequestedJob self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_submit_job_request(
+    SubmitJobRequest self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_tariff_preset(TariffPreset self, SseSerializer serializer);

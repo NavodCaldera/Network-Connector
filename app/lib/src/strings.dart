@@ -1,3 +1,5 @@
+import 'agent_api.dart' show JobPhase;
+
 /// All UI text in one place, so Sinhala and Tamil translations can be added later
 /// (move to `flutter gen-l10n` ARB files when the first translation arrives).
 class S {
@@ -12,7 +14,6 @@ class S {
   // Home
   static const giveRole = 'Give performance';
   static const askRole = 'Ask for performance';
-  static const askSoon = 'Coming later';
   static const yourRules = 'Your rules';
   static const acceptJobs = 'Accept jobs';
   static const acceptJobsHelp =
@@ -94,6 +95,47 @@ class S {
       'An estimate from this app, not your provider\'s bill.';
   static String mb(BigInt bytes) =>
       '${(bytes ~/ BigInt.from(1000000)).toString()} MB';
+
+  // Ask for performance (requester)
+  static const navAsk = 'Ask';
+  static const askTitle = 'Ask for performance';
+  static const askHelp =
+      'Send a WebAssembly job to helpers. Your files stay on this device until the job is sent.';
+  static const askNeedsEnrol =
+      'Connect this device to a coordinator first (Connect page).';
+  static const module = 'Module (.wasm)';
+  static const input = 'Input';
+  static const wasmModules = 'WebAssembly modules';
+  static const inputFile = 'Input file';
+  static const notChosen = 'not chosen';
+  static const choose = 'Choose';
+  static const helpers = 'Helpers that must agree';
+  static const oneHelper = '1 helper';
+  static const twoHelpers = '2 helpers';
+  static const signedBy =
+      'Signed with this device key. Helpers must add it as a trusted publisher:';
+  static const send = 'Send job';
+  static const sending = 'Sending...';
+  static const yourJobs = 'Your jobs';
+  static const refresh = 'Check all';
+  static const noJobs = 'No jobs yet.';
+  static const check = 'Check now';
+  static const saveResult = 'Save result';
+  static const saving = 'Saving...';
+  static String jobTitle(String shortId, DateTime when) =>
+      'Job $shortId, ${when.year}-${_two(when.month)}-${_two(when.day)} ${_two(when.hour)}:${_two(when.minute)}';
+  static String _two(int n) => n.toString().padLeft(2, '0');
+  static String phase(JobPhase p) => switch (p) {
+    JobPhase.uploading => 'Not sent yet. It will be sent when you check.',
+    JobPhase.queued => 'Waiting for a helper',
+    JobPhase.running => 'A helper is working on it',
+    JobPhase.committed => 'Result ready',
+    JobPhase.disputed => 'Helpers disagreed. No result.',
+    JobPhase.failed => 'Ended without a result',
+    JobPhase.unknown => 'Not checked yet',
+  };
+  static String fetched(int bytes, String sha256) =>
+      'Saved $bytes bytes. Checksum verified (${sha256.substring(0, 12)}...).';
 
   // Coordinator
   static const navCoord = 'Connect';

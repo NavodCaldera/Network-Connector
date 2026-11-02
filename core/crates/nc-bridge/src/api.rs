@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use crate::frb_generated::StreamSink;
-use crate::{enrol, night, settings};
+use crate::{enrol, night, requests, settings};
 
 /// One weekly time window, local time of `timezone`. Minutes count from midnight (0..1440).
 /// `end_minute` before `start_minute` means the window crosses midnight.
@@ -311,6 +311,62 @@ impl EnrolmentCheck {
     }
 }
 
+/// What the owner asks for on the Requester screen. Paths only: job bytes never cross the bridge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubmitJobRequest {
+    /// The signed-by-this-device Wasm module file.
+    pub module_path: String,
+    /// The input file.
+    pub input_path: String,
+    /// Independent helpers that must agree, 1 or 2.
+    pub replicas: u32,
+}
+
+/// Where a requested job is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JobPhase {
+    /// Recorded on this device; not yet accepted by the coordinator.
+    Uploading,
+    /// Waiting for a helper.
+    Queued,
+    /// A helper is working on it.
+    Running,
+    /// Result ready.
+    Committed,
+    /// Two helpers disagreed; no result.
+    Disputed,
+    /// Ended without a result.
+    Failed,
+    /// Not known yet (refresh to ask the coordinator).
+    Unknown,
+}
+
+/// One requested job. No job data; the output hash and size are public metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestedJob {
+    /// Job id (UUID).
+    pub job_id: String,
+    /// Where it is.
+    pub phase: JobPhase,
+    /// When it was recorded (unix ms).
+    pub created_ms: i64,
+    /// Committed output SHA-256 (hex), once known.
+    pub output_sha256: Option<String>,
+    /// Committed output size, bytes.
+    pub output_size: Option<u64>,
+    /// Plain-English problem from the last attempt (e.g. offline), if any.
+    pub message: Option<String>,
+}
+
+/// A saved, hash-checked output.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FetchedOutput {
+    /// SHA-256 (hex) the bytes were checked against.
+    pub sha256: String,
+    /// Bytes written.
+    pub size: u64,
+}
+
 static AGENT: OnceLock<Agent> = OnceLock::new();
 /// The enrolment the running agent was built from.
 static ACTIVE: Mutex<Option<enrol::EnrolFile>> = Mutex::new(None);
@@ -439,6 +495,37 @@ pub fn check_enrolment(dir: String) -> EnrolmentCheck {
 pub fn deregister_device(dir: String) -> Result<(), String> {
     agent().stop_helper_session();
     enrol::deregister(Path::new(&dir), enrol::dev_http_allowed())
+}
+
+/// Requester: reads the module and input files, signs the job with this device's key (as `nc submit`),
+/// records it on this device, then sends it. A job recorded but not yet sent comes back as `Uploading`
+/// with a message; [`job_status`] sends it later. Helpers must trust this device's key (Coordinator page).
+pub fn submit_job(dir: String, request: SubmitJobRequest) -> Result<RequestedJob, String> {
+    let dir = Path::new(&dir);
+    let c = requests::ctx(dir, enrol::dev_http_allowed())?;
+    requests::submit(&c, &request, chrono::Utc::now().timestamp_millis())
+}
+
+/// Requester: every job recorded on this device, newest first (local files; survives restarts).
+pub fn list_jobs(dir: String) -> Vec<RequestedJob> {
+    let dir = Path::new(&dir);
+    requests::list(&requests::store(dir), dir)
+}
+
+/// Requester: asks the coordinator about one job (network, retried briefly), sending it first if needed.
+pub fn job_status(dir: String, job_id: String) -> Result<RequestedJob, String> {
+    let c = requests::ctx(Path::new(&dir), enrol::dev_http_allowed())?;
+    requests::status(&c, &job_id)
+}
+
+/// Requester: downloads the committed output, checks its SHA-256 and size, and saves it to `out_path`.
+pub fn fetch_output(
+    dir: String,
+    job_id: String,
+    out_path: String,
+) -> Result<FetchedOutput, String> {
+    let c = requests::ctx(Path::new(&dir), enrol::dev_http_allowed())?;
+    requests::fetch(&c, &job_id, &out_path)
 }
 
 /// Called once by the generated Dart `RustLib.init()`.
