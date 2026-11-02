@@ -118,9 +118,10 @@ pub async fn lease(s: &AppState, d: &Device) -> Result<Option<LeaseResponse>, Ap
             WHERE t.state IN ('queued','leased')
             AND NOT EXISTS(SELECT 1 FROM leases l WHERE l.task_id=t.id AND l.state='active' AND l.expires_at>$2)
             AND NOT EXISTS(SELECT 1 FROM task_results r WHERE r.task_id=t.id AND r.device_id=$1)
+            AND NOT EXISTS(SELECT 1 FROM task_results r JOIN devices od ON od.id=r.device_id WHERE r.task_id=t.id AND od.account_id=$3 AND $3<>$4)
             AND NOT EXISTS(SELECT 1 FROM job_blobs jb LEFT JOIN blobs b ON b.sha256=jb.sha256 WHERE jb.job_id=j.id AND (b.sha256 IS NULL OR b.size<>jb.size OR NOT EXISTS(SELECT 1 FROM blob_uploaders u WHERE u.sha256=jb.sha256 AND u.device_id=j.requester)))
             ORDER BY t.created_at,t.id LIMIT 1 FOR UPDATE OF t SKIP LOCKED")
-            .bind(d.id).bind(now).fetch_optional(&mut *tx).await?;
+            .bind(d.id).bind(now).bind(&d.account).bind(PHASE0_ACCOUNT).fetch_optional(&mut *tx).await?;
         let Some(r) = r else { return Ok(None) };
         let id: Uuid = r.try_get("id")?;
         // READ COMMITTED: the row lock re-evaluates only the task row, while the
@@ -130,11 +131,14 @@ pub async fn lease(s: &AppState, d: &Device) -> Result<Option<LeaseResponse>, Ap
         let taken: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM leases WHERE task_id=$1 AND state='active' AND expires_at>$2)
              OR EXISTS(SELECT 1 FROM task_results WHERE task_id=$1 AND device_id=$3)
+             OR EXISTS(SELECT 1 FROM task_results r JOIN devices od ON od.id=r.device_id WHERE r.task_id=$1 AND od.account_id=$4 AND $4<>$5)
              OR (SELECT state NOT IN ('queued','leased') FROM tasks WHERE id=$1)",
         )
         .bind(id)
         .bind(now)
         .bind(d.id)
+        .bind(&d.account)
+        .bind(PHASE0_ACCOUNT)
         .fetch_one(&mut *tx)
         .await?;
         if taken {
@@ -142,7 +146,9 @@ pub async fn lease(s: &AppState, d: &Device) -> Result<Option<LeaseResponse>, Ap
             continue;
         }
         sqlx::query("UPDATE leases SET state='expired' WHERE task_id=$1 AND state='active' AND expires_at<=$2").bind(id).bind(now).execute(&mut *tx).await?;
-        if r.try_get::<i32, _>("attempts")? >= 6 || r.try_get::<i64, _>("deadline")? <= now * 1000 {
+        if r.try_get::<i32, _>("attempts")? >= MAX_ATTEMPTS
+            || r.try_get::<i64, _>("deadline")? <= now * 1000
+        {
             sqlx::query("UPDATE tasks SET state='failed' WHERE id=$1")
                 .bind(id)
                 .execute(&mut *tx)
@@ -208,7 +214,7 @@ async fn lock_attempt(
         .bind(id)
         .fetch_one(&mut **tx)
         .await?;
-    let r = sqlx::query("SELECT l.*,t.state AS task_state,t.attempts,j.deadline,j.validation_count,j.output_cap FROM leases l JOIN tasks t ON t.id=l.task_id JOIN jobs j ON j.id=t.job_id WHERE l.id=$1 FOR UPDATE OF l")
+    let r = sqlx::query("SELECT l.*,t.state AS task_state,t.attempts,t.tariff_releases,j.deadline,j.validation_count,j.output_cap FROM leases l JOIN tasks t ON t.id=l.task_id JOIN jobs j ON j.id=t.job_id WHERE l.id=$1 FOR UPDATE OF l")
         .bind(lease).fetch_one(&mut **tx).await?;
     if r.try_get::<Uuid, _>("attempt_id")? != attempt {
         return Err(ApiError::conflict(
@@ -361,34 +367,74 @@ pub async fn complete(
     .bind(req.output_size as i64)
     .execute(&mut *tx)
     .await?;
-    let results = sqlx::query("SELECT sha256,size FROM task_results WHERE task_id=$1")
+    let results = sqlx::query("SELECT attempt_id,sha256,size FROM task_results WHERE task_id=$1")
         .bind(id)
         .fetch_all(&mut *tx)
         .await?;
-    let mismatch = results.iter().any(|v| {
-        v.get::<String, _>("sha256") != req.output_sha256
-            || v.get::<i64, _>("size") as u64 != req.output_size
-    });
-    let state = if mismatch {
-        "disputed"
-    } else if results.len() >= r.try_get::<i32, _>("validation_count")? as usize {
-        "committed"
-    } else if r.try_get::<i32, _>("attempts")? >= 6 {
-        "failed"
-    } else {
-        "queued"
+    let mut votes: Vec<(Uuid, String, i64)> = Vec::with_capacity(results.len());
+    for v in &results {
+        votes.push((
+            v.try_get("attempt_id")?,
+            v.try_get("sha256")?,
+            v.try_get("size")?,
+        ));
+    }
+    let need = r.try_get::<i32, _>("validation_count")?.max(1) as usize;
+    let (state, winner) = match verdict(&votes, need) {
+        Verdict::Commit(a) => ("committed", Some(a)),
+        Verdict::Disputed => ("disputed", None),
+        Verdict::NeedMore if r.try_get::<i32, _>("attempts")? >= MAX_ATTEMPTS => ("failed", None),
+        Verdict::NeedMore => ("queued", None),
     };
     sqlx::query("UPDATE leases SET state='completed' WHERE attempt_id=$1")
         .bind(attempt)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE tasks SET state=$2,committed_attempt=CASE WHEN $2='committed' THEN $3 ELSE NULL END WHERE id=$1").bind(id).bind(state).bind(attempt).execute(&mut *tx).await?;
+    sqlx::query("UPDATE tasks SET state=$2,committed_attempt=$3 WHERE id=$1")
+        .bind(id)
+        .bind(state)
+        .bind(winner)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(Json(CompleteResponse {
         task_id: id.to_string(),
         state: state.into(),
         duplicate: false,
     }))
+}
+
+/// Outcome of the results recorded so far for one task.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// `need` replicas agree; commit this attempt's result.
+    Commit(Uuid),
+    /// Not enough agreement yet; lease one more replica to another device.
+    NeedMore,
+    /// No majority is possible within the replica budget.
+    Disputed,
+}
+
+/// 1.L4 dispute resolution. A task needs `need` agreeing results (same sha256 and size, from
+/// distinct devices). On a mismatch one extra replica goes to a third helper; with `need + 1`
+/// results and no group of `need` (no 2-of-3 majority) the task is `disputed`.
+pub fn verdict(votes: &[(Uuid, String, i64)], need: usize) -> Verdict {
+    let need = need.max(1);
+    let mut best: Option<(usize, Uuid)> = None;
+    for (a, h, z) in votes {
+        let n = votes
+            .iter()
+            .filter(|(_, h2, z2)| h2 == h && z2 == z)
+            .count();
+        if best.is_none_or(|(m, _)| n > m) {
+            best = Some((n, *a));
+        }
+    }
+    match best {
+        Some((n, a)) if n >= need => Verdict::Commit(a),
+        _ if votes.len() > need => Verdict::Disputed,
+        _ => Verdict::NeedMore,
+    }
 }
 
 pub async fn fail(
@@ -433,7 +479,12 @@ pub async fn fail(
         }));
     }
     active(&r)?;
-    let state = if r.try_get::<i32, _>("attempts")? >= 6 {
+    // 1.L2: a refusal or failure caused only by the helper's tariff window is not the task's fault,
+    // so it is released without counting toward the attempt cap (up to MAX_TARIFF_RELEASES).
+    let released = req.reason == LeaseFailReason::TariffWindow as i32
+        && r.try_get::<i32, _>("tariff_releases")? < MAX_TARIFF_RELEASES;
+    let counted = r.try_get::<i32, _>("attempts")? - i32::from(released);
+    let state = if counted >= MAX_ATTEMPTS {
         "failed"
     } else {
         "queued"
@@ -448,11 +499,15 @@ pub async fn fail(
         .bind(attempt)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE tasks SET state=$2 WHERE id=$1")
-        .bind(id)
-        .bind(state)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE tasks SET state=$2,attempts=$3,tariff_releases=tariff_releases+$4 WHERE id=$1",
+    )
+    .bind(id)
+    .bind(state)
+    .bind(counted)
+    .bind(i32::from(released))
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(Json(LeaseFailResponse {
         task_id: id.to_string(),
@@ -484,7 +539,7 @@ pub async fn status(
         state = "failed".into();
     }
     let output = if state == "committed" {
-        let r = sqlx::query("SELECT sha256,size FROM task_results WHERE task_id=$1 LIMIT 1")
+        let r = sqlx::query("SELECT r.sha256,r.size FROM task_results r JOIN tasks t ON t.committed_attempt=r.attempt_id WHERE t.id=$1")
             .bind(id)
             .fetch_one(&s.pool)
             .await?;
@@ -508,6 +563,33 @@ pub async fn status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn v(a: u128, h: &str) -> (Uuid, String, i64) {
+        (Uuid::from_u128(a), h.into(), 1)
+    }
+
+    #[test]
+    fn verdict_majority_and_dispute() {
+        let id = Uuid::from_u128;
+        assert_eq!(verdict(&[], 2), Verdict::NeedMore);
+        assert_eq!(verdict(&[v(1, "a")], 1), Verdict::Commit(id(1)));
+        assert_eq!(verdict(&[v(1, "a")], 2), Verdict::NeedMore);
+        assert_eq!(verdict(&[v(1, "a"), v(2, "a")], 2), Verdict::Commit(id(1)));
+        // Mismatch: schedule a third helper.
+        assert_eq!(verdict(&[v(1, "a"), v(2, "b")], 2), Verdict::NeedMore);
+        // 2-of-3 commits the majority result, whichever replica came first.
+        let three = [v(1, "a"), v(2, "b"), v(3, "b")];
+        assert_eq!(verdict(&three, 2), Verdict::Commit(id(2)));
+        let three = [v(1, "a"), v(2, "b"), v(3, "a")];
+        assert_eq!(verdict(&three, 2), Verdict::Commit(id(1)));
+        // No majority.
+        let three = [v(1, "a"), v(2, "b"), v(3, "c")];
+        assert_eq!(verdict(&three, 2), Verdict::Disputed);
+        // Same hash with a different size is a different result.
+        let mut w = v(2, "a");
+        w.2 = 2;
+        assert_eq!(verdict(&[v(1, "a"), w], 2), Verdict::NeedMore);
+    }
 
     #[test]
     fn renewal_extends_by_ttl() {

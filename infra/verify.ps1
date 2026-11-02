@@ -65,7 +65,7 @@ try {
         Write-Output "$service uid: $uid"
     }
     # This is the existing HTTP/database integration test. Keep captured output off logs.
-    Invoke-Native -Exe cargo -CommandArgs @('test', '--manifest-path', 'server/Cargo.toml', '-p', 'nc-coordinator', '--test', 'lease_cycle', '--', '--ignored')
+    Invoke-Native -Exe cargo -CommandArgs @('test', '--manifest-path', 'server/Cargo.toml', '-p', 'nc-coordinator', '--test', 'lease_cycle', '--', '--ignored', '--test-threads=1')
 } finally {
     try {
         if ($cleanupNeeded) {

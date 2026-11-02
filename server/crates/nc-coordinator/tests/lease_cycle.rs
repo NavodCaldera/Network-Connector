@@ -397,27 +397,7 @@ async fn real_job_cycle_over_http() {
         "completed lease no longer authorizes download"
     );
     println!("submit -> upload -> 20 concurrent lease calls -> Range -> complete -> status committed: passed");
-    for mismatch in [false, true] {
-        let id = owner.submit(owner.manifest(2)).await;
-        let l = helper.lease().await;
-        let (s, v) = helper.complete(&l, b"a").await;
-        assert_eq!(s, 200, "{v}");
-        assert_eq!(v["state"], "queued");
-        assert_eq!(
-            helper.post("/v1/leases/request", json!({})).await.0,
-            404,
-            "distinct devices required"
-        );
-        let l = other.lease().await;
-        let (s, v) = other.complete(&l, if mismatch { b"b" } else { b"a" }).await;
-        assert_eq!(s, 200, "{v}");
-        assert_eq!(v["state"], if mismatch { "disputed" } else { "committed" });
-        assert_eq!(
-            owner.status(&id).await["tasks"][0]["state"],
-            if mismatch { "disputed" } else { "committed" }
-        );
-    }
-    println!("2-of-2 validation match/mismatch: passed");
+    // Dispute resolution and tariff releases: dispute_and_tariff_over_http.
     let id = owner.submit(owner.manifest(1)).await;
     let expired = helper.lease().await;
     // No database shortcuts: exercise the real lease clock over HTTP.
@@ -579,6 +559,106 @@ async fn real_job_cycle_over_http() {
     );
 
     device_lifecycle(&base, &enroll, &owner, &helper).await;
+}
+
+/// 1.L4 dispute resolution and 1.L2 tariff-window releases over real signed HTTP. Run by
+/// infra/verify.ps1 and as fleet-e2e S6 (after the real helpers are stopped, so they cannot take
+/// these synthetic tasks).
+#[tokio::test]
+#[ignore = "needs a fresh infra Docker stack with PostgreSQL; run infra/verify.ps1 or verify.sh"]
+async fn dispute_and_tariff_over_http() {
+    let base = std::env::var("NC_TEST_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".into());
+    let enroll = std::env::var("NC_TEST_ENROLL").expect("NC_TEST_ENROLL");
+    let owner = Dev::new(&base);
+    owner.register(&enroll).await;
+    owner.upload(b"module").await;
+    owner.upload(b"input").await;
+    let helper = Dev::new(&base);
+    helper.register(&enroll).await;
+    let other = Dev::new(&base);
+    other.register(&enroll).await;
+    let third = Dev::new(&base);
+    third.register(&enroll).await;
+    // (second replica, third replica, final state, committed output)
+    type Case = (
+        &'static [u8],
+        Option<&'static [u8]>,
+        &'static str,
+        Option<&'static [u8]>,
+    );
+    let cases: [Case; 4] = [
+        (b"a", None, "committed", Some(b"a")),
+        (b"b", Some(b"a"), "committed", Some(b"a")),
+        (b"b", Some(b"b"), "committed", Some(b"b")),
+        (b"b", Some(b"c"), "disputed", None),
+    ];
+    for (second, tie, end, out) in cases {
+        let id = owner.submit(owner.manifest(2)).await;
+        let l = helper.lease().await;
+        let (s, v) = helper.complete(&l, b"a").await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["state"], "queued");
+        assert_eq!(
+            helper.post("/v1/leases/request", json!({})).await.0,
+            404,
+            "distinct devices required"
+        );
+        let l = other.lease().await;
+        let (s, v) = other.complete(&l, second).await;
+        assert_eq!(s, 200, "{v}");
+        let v = if let Some(tie) = tie {
+            assert_eq!(v["state"], "queued", "mismatch schedules a third helper");
+            assert_eq!(owner.status(&id).await["tasks"][0]["state"], "queued");
+            assert_eq!(helper.post("/v1/leases/request", json!({})).await.0, 404);
+            assert_eq!(other.post("/v1/leases/request", json!({})).await.0, 404);
+            let l = third.lease().await;
+            assert_eq!(l["task_id"], id.as_str());
+            let (s, v) = third.complete(&l, tie).await;
+            assert_eq!(s, 200, "{v}");
+            v
+        } else {
+            v
+        };
+        assert_eq!(v["state"], end);
+        let st = owner.status(&id).await;
+        assert_eq!(st["tasks"][0]["state"], end);
+        match out {
+            Some(want) => {
+                let path = st["tasks"][0]["output"]["path"].as_str().unwrap();
+                let got = owner.request("GET", path, vec![], None).await;
+                assert_eq!(got.bytes().await.unwrap().as_ref(), want);
+            }
+            None => assert!(st["tasks"][0]["output"].is_null()),
+        }
+    }
+    println!("2-of-2 match / mismatch -> third helper -> 2-of-3 commit majority / no majority disputed: passed");
+    // 1.L2: TARIFF_WINDOW failures do not count toward the six-attempt cap.
+    let id = owner.submit(owner.manifest(1)).await;
+    for _ in 0..8 {
+        let l = third.lease().await;
+        let (s, v) = third
+            .post(
+                "/v1/leases/fail",
+                json!({"lease_id":l["lease_id"],"attempt_id":l["attempt_id"],"reason":2,"code":"TARIFF_WINDOW"}),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["state"], "queued");
+    }
+    for _ in 0..5 {
+        let l = third.lease().await;
+        let (s, v) = third
+            .post(
+                "/v1/leases/fail",
+                json!({"lease_id":l["lease_id"],"attempt_id":l["attempt_id"],"reason":9}),
+            )
+            .await;
+        assert_eq!((s, v["state"].as_str()), (200, Some("queued")), "{v}");
+    }
+    let l = third.lease().await;
+    assert_eq!(third.complete(&l, b"late-window").await.0, 200);
+    assert_eq!(owner.status(&id).await["tasks"][0]["state"], "committed");
+    println!("8 tariff-window releases + 5 counted failures still leave the 6th attempt: passed");
 }
 
 /// 1.N2: who-am-I, secret-free re-register for known keys, deregister releasing leases, replay kept.

@@ -15,6 +15,32 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-03 · Claude (Net agent) · `feat/1.L2-attempts-disputes` · tasks 1.L2 + 1.L4
+
+- **Asked:** 1.L2 tariff-window failures must not burn the attempt cap; 1.L4 dispute resolution (third helper,
+  2-of-3 majority commit, else `disputed`; replicas from distinct devices/owners). Spec: docs/laptop-gap.md G3/G4.
+- **Done:**
+  - `server/crates/nc-coordinator/src/jobs.rs`: `fail` with reason `TARIFF_WINDOW` (any code, incl.
+    `UPLOAD_WINDOW`) gives the attempt back, bounded by `MAX_TARIFF_RELEASES` = 24 per task (then it counts).
+    `complete` uses new `verdict()`: N agreeing results commit; a mismatch re-queues for one more replica on a
+    device that has not answered; N+1 results with no N-group end `disputed`. `committed_attempt` is the majority
+    attempt and job status returns that result (was `LIMIT 1` over any result). Lease query also refuses a device
+    whose account already answered the task, unless the account is `PHASE0_ACCOUNT` (single-owner Phase 0:
+    distinct devices only).
+  - `lib.rs`: `MAX_ATTEMPTS`, `MAX_TARIFF_RELEASES`. Migration `0005_tariff_releases.sql` (`tasks.tariff_releases`).
+  - Tests: unit `verdict_majority_and_dispute`; new ignored HTTP test `dispute_and_tariff_over_http` (4 dispute
+    cases, 8 tariff releases + 5 counted fails then commit). verify.ps1/.sh run lease_cycle with `--test-threads=1`.
+  - `infra/fleet-e2e.ps1`: X2 replaced by real scenario S6 (helpers stopped, runs that test against the fleet
+    coordinator); G invariant allows +1 tie-breaker result for replicated tasks. docs/laptop-gap.md G3/G4 updated.
+- **Decisions:** no proto change (LeaseFailReason already has TARIFF_WINDOW = 2); release cap 24 so an always-
+  refusing helper cannot pin a task (deadline also bounds it). nc-agent not touched.
+- **Verified:** server fmt/clippy -D warnings clean; cargo test 25 passed, 2 ignored. infra/verify.ps1: both
+  lease_cycle tests ok (126 s). fleet-e2e run 1: S2-S5 FAIL because the host stalled ~31 min during S2 (23:31 to
+  00:03) and job deadlines passed; S6 PASS. Run 2 (-SkipBuild): S1-S6 and G PASS, X1/X3/X4 EXPECTED-FAIL.
+- **Not done / open:** a lease lost to blocked control traffic (no fail call) still counts on expiry. No per-helper
+  correctness record or higher replication for new helpers. proto/README.md (Core) still says "after six
+  attempts a task fails" without the tariff exception: request to Core.
+
 ## 2026-11-02 Â· Claude (coordinator) Â· main Â· merge 1.L1
 
 - Asked: owner moved priority to finishing laptop sharing before mobile; review and merge 1.L1 (0c5124a).

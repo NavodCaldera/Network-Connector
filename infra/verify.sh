@@ -80,4 +80,4 @@ for service in coordinator relay; do
   printf '%s uid: %s\n' "$service" "$runtime_uid"
 done
 # Keep test stdout captured; credentials and signed requests must not be printed.
-cargo test --manifest-path server/Cargo.toml -p nc-coordinator --test lease_cycle -- --ignored
+cargo test --manifest-path server/Cargo.toml -p nc-coordinator --test lease_cycle -- --ignored --test-threads=1
