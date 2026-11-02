@@ -9,6 +9,7 @@
 //! - `/v1/leases/request`    — lease the next uploaded real job
 //! - `/v1/leases/renew`     - extend the caller's live lease (capped by runtime, deadline and a server max)
 //! - `/v1/leases/complete`   — commit a result; idempotent and attempt-checked (AGENT.md §1 rule 8)
+//! - `/v1/blobs/{hash}/upload/{size}[/{offset}]` — resumable chunked upload (1.L5, [`resumable`])
 //! - `/v1/relay/token`       — short-lived relay token for this device's peer id
 //!
 //! plus unauthenticated `GET /healthz`. Bodies are capped at [`MAX_BODY`] bytes, parsed with
@@ -19,6 +20,7 @@ pub mod auth;
 mod blobs;
 pub mod error;
 mod jobs;
+pub mod resumable;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -66,6 +68,8 @@ pub struct AppState {
     pub enroll_secret: String,
     /// Relay token key; `None` disables `/v1/relay/token`.
     pub relay_key: Option<nc_relay::TokenKey>,
+    /// 1.L5: resumable upload sessions with a request in flight.
+    pub uploads: resumable::UploadLocks,
 }
 
 mod subtle_eq {
@@ -103,6 +107,11 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/leases/fail", post(jobs::fail))
         .route("/v1/leases/renew", post(jobs::renew))
         .route("/v1/blobs/{hash}", get(blobs::download).put(blobs::upload))
+        .route("/v1/blobs/{hash}/upload/{size}", get(resumable::status))
+        .route(
+            "/v1/blobs/{hash}/upload/{size}/{offset}",
+            axum::routing::put(resumable::put_chunk),
+        )
         .route("/v1/relay/token", post(relay_token))
         .fallback(|| async { ApiError::not_found("no such endpoint") })
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })

@@ -189,9 +189,40 @@ cap applied. Unknown lease or another device's lease: 404 not_found. Wrong attem
 409 attempt_mismatch. Expired, reclaimed, completed or failed lease: 409
 lease_expired. Renew roughly every TTL/3 (20 s) while transferring or running.
 GET /v1/jobs/{uuid} returns per-task state and only committed output refs, no data.
+Resumable chunked upload (1.L5). Same store, caps and ownership proof as the single
+PUT, which stays supported. No protobuf/JSON message is involved: state travels in the
+path and in headers. A session is keyed by (calling device key, final lowercase sha256
+H, final byte size N); N is decimal without leading zeros, 1..=16 MiB (empty blobs use
+the single PUT). Only the device that started a session can see or extend it.
+GET /v1/blobs/{H}/upload/{N} signs an empty body (NC-REQ-V1, fresh nonce) and returns
+200 with header `x-nc-upload-offset: K`, the number of verified bytes held (0 if no
+session). It never says whether the blob already exists: a device must upload all N
+bytes to become an uploader.
+PUT /v1/blobs/{H}/upload/{N}/{K} carries one chunk, 1..=4 MiB (4194304) and at most N-K
+bytes, `content-type: application/octet-stream`, plus header `x-nc-chunk-sha256:
+<lowercase hex sha256 of this chunk>`. NC-REQ-V1 is signed with that chunk hash as the
+body digest (identical to signing the chunk bytes); the server checks the signature
+before reading the body, then checks the received bytes against the header. K must be
+exactly the held offset. Responses (errors use the common JSON format):
+- 200 + `x-nc-upload-offset: K+len`: chunk appended durably (fsync).
+- 200 + `x-nc-upload-offset: N` + `x-nc-upload-complete: true`: last chunk; the whole
+  file matched H and was published exactly like a single PUT (the caller is recorded as
+  uploader). The session is gone afterwards (GET reports 0).
+- 409 `upload_offset` + `x-nc-upload-offset: held`: K is not the held offset (e.g. a
+  replayed or lost-ack chunk); continue from the reported offset.
+- 409 `upload_busy`: another request for the same session is in flight; retry later.
+- 409 `upload_limit`: the device already has 8 unfinished sessions.
+- 400 chunk hash mismatch (nothing stored), bad path/offset/size, empty chunk, or K >= N.
+- 400 blob hash mismatch on the last chunk: the session is deleted; restart at 0.
+  Any other failure while finishing also deletes the session.
+- 413 chunk larger than 4 MiB or than N-K, or N > 16 MiB. 401 bad/missing signature.
+Client loop: K = GET offset; while K < N, PUT bytes [K, K+c) and set K from the response
+offset header (on 409 `upload_offset` too). Recommended chunk 1 MiB on slow links.
+Partial sessions not appended to for 24 h are deleted (sweep at start-up and hourly);
+GC also removes single-PUT temporary files older than 24 h.
 NC_BLOB_DIR names a private server-owned directory on a persistent volume. Never
 share it with untrusted filesystem writers. Temporary uploads are removed on all
-normal errors; process-kill leftovers need operator cleanup while stopped.
+normal errors; process-kill leftovers older than 24 h are swept by the coordinator.
 
 Device lifecycle (1.N2). All three are signed NC-REQ-V1 POSTs with a JSON body.
 POST /v1/devices/register: a key that is already registered may call it again

@@ -17,6 +17,7 @@ fn router() -> axum::Router {
         pool,
         enroll_secret: "0123456789abcdef".into(),
         relay_key: None,
+        uploads: Default::default(),
     })
 }
 

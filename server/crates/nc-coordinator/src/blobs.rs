@@ -81,25 +81,38 @@ pub async fn upload(
         return Err(ApiError::too_large());
     }
     let (staging, size) = stage(&s.blob_dir, &hash, body).await?;
+    publish(&s, &hash, size, d.id, &staging.0).await?;
+    Ok(StatusCode::OK.into_response())
+}
+
+/// Moves a fully hash-checked file into the content store (if new) and records the device as an
+/// uploader. Shared by the single PUT and the last chunk of a resumable upload.
+pub(crate) async fn publish(
+    s: &AppState,
+    hash: &str,
+    size: u64,
+    device: Uuid,
+    src: &std::path::Path,
+) -> Result<(), ApiError> {
     // A transaction-scoped advisory lock serializes publication of this content hash.
     let mut tx = s.pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
-        .bind(&hash)
+        .bind(hash)
         .execute(&mut *tx)
         .await?;
     let old: Option<i64> = sqlx::query_scalar("SELECT size FROM blobs WHERE sha256=$1")
-        .bind(&hash)
+        .bind(hash)
         .fetch_optional(&mut *tx)
         .await?;
     if old.is_some_and(|n| n != size as i64) {
         return Err(ApiError::internal());
     }
     if old.is_none() {
-        tokio::fs::rename(&staging.0, s.blob_dir.join(&hash)).await?;
+        tokio::fs::rename(src, s.blob_dir.join(hash)).await?;
         sqlx::query("INSERT INTO blobs(sha256,size,uploader,created_at) VALUES($1,$2,$3,$4)")
-            .bind(&hash)
+            .bind(hash)
             .bind(size as i64)
-            .bind(d.id)
+            .bind(device)
             .bind(now())
             .execute(&mut *tx)
             .await?;
@@ -107,12 +120,12 @@ pub async fn upload(
     sqlx::query(
         "INSERT INTO blob_uploaders(sha256,device_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
     )
-    .bind(&hash)
-    .bind(d.id)
+    .bind(hash)
+    .bind(device)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    Ok(StatusCode::OK.into_response())
+    Ok(())
 }
 
 fn range(text: Option<&str>, size: u64) -> Result<Option<(u64, u64)>, ApiError> {
