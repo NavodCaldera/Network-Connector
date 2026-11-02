@@ -91,6 +91,11 @@ coordinator staging, so it comes after the fleet is reliable. G6 (app requester)
   no per-helper correctness record; no higher replication for new helpers. The requester gets
   `RequesterError::Ended("disputed")`.
 - fleet-e2e S4 checks the happy path with two real helpers; X2 reports the missing resolution.
+- 1.L4 (branch `feat/1.L2-attempts-disputes`): a 2-of-2 mismatch now re-queues the task for a third device
+  (never one that already answered); 2-of-3 agreement commits the majority result (`committed_attempt` points at
+  it and job status returns that output); three different results end `disputed`. Replicas of one task must
+  come from distinct devices, and from distinct accounts once accounts other than `PHASE0_ACCOUNT` exist. Still
+  missing: per-helper correctness record, higher replication for new helpers. fleet-e2e S6 replaces X2.
 - Task: 1.L4 (on mismatch queue one more replica on a third device, commit on 2-of-3 agreement, keep `disputed`
   only when there is no majority). Distinct-owner rule follows real accounts.
 
@@ -105,6 +110,10 @@ coordinator staging, so it comes after the fleet is reliable. G6 (app requester)
 - PLAN.md §6 wants stages scheduled separately (download at night, compute, upload in the next cheap window).
   There is no "parked" state: the journal has `Uploaded`, but nothing keeps a finished result and its lease across
   a closed window, and the coordinator lease cannot outlive `LEASE_MAX_TOTAL_SECS` (6 h).
+- 1.L2 (branch `feat/1.L2-attempts-disputes`): a `LeaseFailReason::TARIFF_WINDOW` fail (any code, e.g.
+  `TARIFF_WINDOW` or `UPLOAD_WINDOW`) no longer counts toward the 6-attempt cap, up to 24 releases per task
+  (`tasks.tariff_releases`, migration 0005); beyond that it counts again. No proto change. A lease lost because
+  control traffic was blocked (no fail call) still counts on expiry: the coordinator cannot tell it apart.
 - Tasks: 1.L2 (net: a `TARIFF_WINDOW` fail does not count toward the attempt cap; optional "release" without
   penalty), 1.L3 (core: keep a finished output on disk when the upload window is closed, release the lease cleanly,
   and either upload later under a new lease for the same task or let another helper take it; never upload outside

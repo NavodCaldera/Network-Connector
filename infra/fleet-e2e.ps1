@@ -8,7 +8,10 @@
 #   S4 two-helper       --replicas 2: both helpers must return the same output before commit
 #   S5 tariff-boundary  helper B gets a metered profile whose window closes mid-run; after the boundary B must
 #                       not lease or upload anything, and the jobs still complete on A
-#   X1..X4              not possible yet (gaps); reported as EXPECTED-FAIL with a real check where one exists
+#   S6 dispute-tariff   helpers stopped; the signed-HTTP integration test dispute_and_tariff_over_http runs
+#                       against this coordinator: 2-of-2 mismatch -> third helper -> 2-of-3 commit or
+#                       'disputed', and TARIFF_WINDOW fails that do not burn attempts (G3, G4/1.L2)
+#   X1, X3, X4          not possible yet (gaps); reported as EXPECTED-FAIL with a real check where one exists
 #
 # Windows only (the executor sandbox is AppContainer + Job Object; nothing is weakened for this test).
 # Needs Docker Desktop (Linux engine), Rust/Cargo, free ports 8080, 47711, 47712.
@@ -34,7 +37,7 @@ $projectName = "nc-fleet-$runId"
 $image = "nc-server:fleet-e2e-$runId"
 $override = Join-Path $runDir 'compose.override.yml'
 $composeArgs = @('compose', '--project-name', $projectName, '--file', (Join-Path $repo 'infra/docker-compose.yml'), '--file', $override, '--progress', 'plain')
-$secretNames = @('NC_PG_PASSWORD', 'NC_ENROLL_SECRET', 'NC_RELAY_TOKEN_KEY', 'NC_AGENT_CONFIG', 'RUST_LOG')
+$secretNames = @('NC_PG_PASSWORD', 'NC_ENROLL_SECRET', 'NC_RELAY_TOKEN_KEY', 'NC_AGENT_CONFIG', 'RUST_LOG', 'NC_TEST_ENROLL', 'NC_TEST_URL')
 $previous = @{}
 $dockerUp = $false
 $helpers = @{}
@@ -427,10 +430,11 @@ try {
 
     # ---- Global invariants over the whole run ----
     try {
-        $dbl = Sql 'SELECT count(*) FROM tasks t JOIN jobs j ON j.id=t.job_id WHERE (SELECT count(*) FROM task_results r WHERE r.task_id=t.id) > j.validation_count'
+        # A replicated task may take one extra (tie-breaker) result after a mismatch (1.L4).
+        $dbl = Sql 'SELECT count(*) FROM tasks t JOIN jobs j ON j.id=t.job_id WHERE (SELECT count(*) FROM task_results r WHERE r.task_id=t.id) > j.validation_count + CASE WHEN j.validation_count > 1 THEN 1 ELSE 0 END'
         $left = @(Get-Workers).Count
         if ($dbl[0] -ne '0' -or $left -ne 0) { Add-Result 'G invariants' 'FAIL' "tasks with extra results: $($dbl[0]); live workers: $left" }
-        else { Add-Result 'G invariants' 'PASS' 'no task has more results than its validation count; no sandbox worker left running' }
+        else { Add-Result 'G invariants' 'PASS' 'no task has more results than its validation count (+1 tie-breaker when replicated); no sandbox worker left running' }
     } catch { Add-Result 'G invariants' 'FAIL' $_.Exception.Message }
 
     # ---- Expected failures (gaps). Each makes a real check so a closed gap shows up as UNEXPECTED-PASS. ----
@@ -438,10 +442,21 @@ try {
     if (@($tree | Select-String '^nc-net ').Count -eq 0) {
         Add-Result 'X1 p2p-direct-relay' 'EXPECTED-FAIL' 'nc-agent does not depend on nc-net: all payloads go through coordinator blob staging; no direct QUIC, no relay fallback, no LAN-only mode' 'G1/G2'
     } else { Add-Result 'X1 p2p-direct-relay' 'UNEXPECTED-PASS' 'nc-agent now links nc-net; add a real direct/relay scenario here' 'G1/G2' }
-    $disp = @(Select-String -Path 'server/crates/nc-coordinator/src/*.rs' -Pattern 'third|tie.?break|verifier_device' -ErrorAction SilentlyContinue).Count
-    if ($disp -eq 0) {
-        Add-Result 'X2 dispute-resolution' 'EXPECTED-FAIL' 'mismatching replicas end the task as "disputed" (terminal); no third helper or trusted verifier, no distinct-owner rule' 'G3'
-    } else { Add-Result 'X2 dispute-resolution' 'UNEXPECTED-PASS' 'coordinator mentions a tie-breaker; add a scenario' 'G3' }
+    # ---- S6 dispute resolution and tariff releases (1.L4, 1.L2) ----
+    # The real helpers are stopped first so they cannot lease the synthetic tasks. The test devices are
+    # driven over the same signed HTTP API as nc-agent; the enrolment secret stays in this process env.
+    try {
+        foreach ($name in @($helpers.Keys)) { Stop-Helper $name }
+        $env:NC_TEST_URL = 'http://127.0.0.1:8080'
+        $env:NC_TEST_ENROLL = $env:NC_ENROLL_SECRET
+        $out = Get-Native cargo @('test', '--manifest-path', 'server/Cargo.toml', '-p', 'nc-coordinator', '--test', 'lease_cycle',
+            '--', '--ignored', '--exact', 'dispute_and_tariff_over_http', '--nocapture')
+        $code = $script:lastExit
+        $env:NC_TEST_ENROLL = $null; $env:NC_TEST_URL = $null
+        $disputed = Sql "SELECT count(*) FROM tasks t JOIN jobs j ON j.id=t.job_id WHERE j.validation_count=2 AND (SELECT count(*) FROM task_results r WHERE r.task_id=t.id)=3"
+        if ($code -ne 0) { Add-Result 'S6 dispute-tariff' 'FAIL' ("cargo test exit $code; " + ((@($out | Select-String 'panicked|assert') | Select-Object -First 2) -join ' ')) 'G3' }
+        else { Add-Result 'S6 dispute-tariff' 'PASS' "mismatch -> third helper -> 2-of-3 commit (x2) and no-majority disputed (x1); $($disputed[0]) tasks with 3 results; 8 TARIFF_WINDOW releases did not burn attempts" 'G3' }
+    } catch { Add-Result 'S6 dispute-tariff' 'FAIL' $_.Exception.Message 'G3' }
     $appSubmit = @(Select-String -Path 'app/lib/**/*.dart', 'app/lib/*.dart' -Pattern 'submitJob|submit_job' -ErrorAction SilentlyContinue).Count
     if ($appSubmit -eq 0) {
         Add-Result 'X3 app-requester' 'EXPECTED-FAIL' 'the Flutter app has no job submit flow (CLI only)' 'G6'

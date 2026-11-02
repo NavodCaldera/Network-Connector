@@ -45,6 +45,8 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.P10 | HttpCoordinator whoami/deregister, budget ledger path option, bridge uses them | core-agent (Claude) | `feat/1.P10-coord-client` | `core/crates/{nc-agent,nc-bridge}` | done |
 | 1.L1 | PC gap audit (`docs/laptop-gap.md`) + fleet e2e script; requester wait retries, `nc submit --replicas` | core-agent (Claude) | `feat/1.L1-fleet-e2e` | `docs/laptop-gap.md`, `infra/fleet-e2e.ps1`, `infra/README.md`, `core/crates/{nc-agent,nc-cli}` | done |
 | 1.L3 | Park finished results across a closed upload window (encrypted, owner limits) | core-agent (Claude) | `feat/1.L3-deferred-upload` | `core/crates/nc-agent` | done |
+| 1.L2 | Tariff-window failures do not use up attempts (capped at 24) | net-agent (Claude) | `feat/1.L2-attempts-disputes` | `server/` | done |
+| 1.L4 | Dispute resolution: third helper, 2-of-3 majority, distinct owners | net-agent (Claude) | `feat/1.L2-attempts-disputes` | `server/`, `infra/` | done |
 
 ## Rules for Codex work
 

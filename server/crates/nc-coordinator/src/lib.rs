@@ -46,6 +46,11 @@ pub const LEASE_TTL_SECS: i64 = 60;
 pub const LEASE_TRANSFER_GRACE_SECS: i64 = 600;
 /// Server-side maximum total lease lifetime, whatever the manifest says.
 pub const LEASE_MAX_TOTAL_SECS: i64 = 6 * 3600;
+/// Attempts that count toward a task's cap before it ends `failed`.
+pub const MAX_ATTEMPTS: i32 = 6;
+/// 1.L2: `TARIFF_WINDOW` failures that are released without counting as an attempt. Bounded so a
+/// helper that always refuses cannot keep a task queued forever (the job deadline also bounds it).
+pub const MAX_TARIFF_RELEASES: i32 = 24;
 /// Relay token lifetime.
 pub const RELAY_TOKEN_TTL_SECS: u64 = 600;
 /// Phase 0 account for every enrolled device (OIDC accounts come later).
