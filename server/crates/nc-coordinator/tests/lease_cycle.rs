@@ -207,6 +207,13 @@ impl Dev {
         let hash = self.upload(b).await;
         self.post("/v1/leases/complete",json!({"lease_id":l["lease_id"],"attempt_id":l["attempt_id"],"version":2,"output_sha256":hash,"output_size":b.len()})).await
     }
+    async fn renew(&self, l: &Value) -> (u16, Value) {
+        self.post(
+            "/v1/leases/renew",
+            json!({"lease_id":l["lease_id"],"attempt_id":l["attempt_id"]}),
+        )
+        .await
+    }
     async fn status(&self, id: &str) -> Value {
         let r = self
             .request("GET", &format!("/v1/jobs/{id}"), vec![], None)
@@ -442,4 +449,122 @@ async fn real_job_cycle_over_http() {
     }
     assert_eq!(owner.status(&id).await["tasks"][0]["state"], "failed");
     println!("six-attempt limit: passed");
+
+    // Lease renewal (1.N1).
+    let idle = json!({"status":"idle"});
+    assert_eq!(
+        helper.post("/v1/devices/heartbeat", idle.clone()).await.0,
+        200
+    );
+    let id = owner.submit(owner.manifest(1)).await;
+    let l = helper.lease().await;
+    let (s, v) = helper.renew(&l).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["lease_id"], l["lease_id"]);
+    assert!(v["expires_at"].as_u64().unwrap() >= l["expires_at"].as_u64().unwrap());
+    assert_eq!(v["capped"], false);
+    let (s, v) = other.renew(&l).await;
+    assert_eq!(s, 404, "another device cannot renew: {v}");
+    let stale = json!({"lease_id":l["lease_id"],"attempt_id":uuid::Uuid::new_v4().to_string()});
+    let (s, v) = helper.post("/v1/leases/renew", stale).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (409, Some("attempt_mismatch"))
+    );
+    let extra = json!({"lease_id":l["lease_id"],"attempt_id":l["attempt_id"],"x":1});
+    assert_eq!(
+        helper.post("/v1/leases/renew", extra).await.0,
+        400,
+        "unknown fields rejected"
+    );
+    assert_eq!(helper.complete(&l, b"renewed").await.0, 200);
+    assert_eq!(owner.status(&id).await["tasks"][0]["state"], "committed");
+    let (s, v) = helper.renew(&l).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (409, Some("lease_expired")),
+        "completed lease"
+    );
+    println!("renew ok / other device 404 / stale attempt 409 / completed 409: passed");
+
+    // A renewed lease outlives the original TTL and blocks reclaim; a lapsed lease cannot be
+    // renewed; renewals racing an expiry reclaim never leave two live holders.
+    let kept = owner.submit(owner.manifest(1)).await;
+    let keep = helper.lease().await;
+    owner.submit(owner.manifest(1)).await;
+    let lapse = helper.lease().await;
+    let race_id = owner.submit(owner.manifest(1)).await;
+    let race = helper.lease().await;
+    for _ in 0..4 {
+        tokio::time::sleep(std::time::Duration::from_secs(14)).await;
+        let (s, v) = helper.renew(&keep).await;
+        assert_eq!(s, 200, "{v}");
+    }
+    assert_eq!(other.post("/v1/devices/heartbeat", idle).await.0, 200);
+    // Storm from 150 ms before to ~330 ms after the race lease expiry: helper renews it
+    // (never renewed before), other tries to reclaim it. Either side may win; never both.
+    let unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let start_ms = race["expires_at"].as_u64().unwrap() * 1000 - 150;
+    tokio::time::sleep(std::time::Duration::from_millis(
+        start_ms.saturating_sub(unix_ms),
+    ))
+    .await;
+    let mut calls = tokio::task::JoinSet::new();
+    for i in 0..48u64 {
+        let (h, o, race) = (helper.clone(), other.clone(), race.clone());
+        calls.spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20 * (i / 2))).await;
+            if i % 2 == 0 {
+                (0, h.renew(&race).await)
+            } else {
+                (1, o.post("/v1/leases/request", json!({})).await)
+            }
+        });
+    }
+    let mut stolen = vec![];
+    let mut renewed = 0;
+    while let Some(r) = calls.join_next().await {
+        let (who, (s, v)) = r.unwrap();
+        match (who, s) {
+            (0, 200) => renewed += 1,
+            (0, 409) => assert_eq!(v["error"]["code"], "lease_expired"),
+            (1, 200) => stolen.push(v),
+            (1, 404) => {}
+            unexpected => panic!("unexpected {unexpected:?} {v}"),
+        }
+    }
+
+    assert!(
+        stolen.iter().all(|v| v["task_id"] != kept.as_str()),
+        "renewed lease is never reclaimed"
+    );
+    let (s, v) = helper.renew(&lapse).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (409, Some("lease_expired")),
+        "renew after expiry"
+    );
+    let race_stolen = stolen.iter().find(|v| v["task_id"] == race_id.as_str());
+    let (s, _) = helper.renew(&race).await;
+    match race_stolen {
+        Some(new) => {
+            assert_eq!(s, 409, "old holder cannot renew after reclaim");
+            assert_eq!(other.renew(new).await.0, 200);
+        }
+        None => assert_eq!(s, 200, "renewals kept the race lease alive"),
+    }
+    assert_eq!(
+        helper.complete(&keep, b"kept").await.0,
+        200,
+        "renewed lease commits after the original TTL"
+    );
+    assert_eq!(owner.status(&kept).await["tasks"][0]["state"], "committed");
+    println!(
+        "renew past TTL / renew after expiry 409 / renew vs reclaim race ({} renewals, race lease {}): passed",
+        renewed,
+        if race_stolen.is_some() { "reclaimed" } else { "kept" }
+    );
 }

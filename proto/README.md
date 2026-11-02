@@ -181,6 +181,13 @@ committing device, exact size and hash, and empty legacy result. Two differing
 results dispute the task; two identical results from distinct devices commit it.
 Duplicate complete/fail must have identical payload; stale attempts fail.
 LeaseFailRequest uses numeric reason enum 1..9 and optional [A-Z0-9_]{1,32} code.
+POST /v1/leases/renew (LeaseRenewRequest, signed like every lease call) extends a
+live lease held by the calling device to now + lease TTL (60 s), never past the
+cap min(job deadline, issued_at + ceil(limits.wall_ms / 1000) + 600 s grace for
+transfers, issued_at + 6 h). It never shortens a lease; `capped` reports that the
+cap applied. Unknown lease or another device's lease: 404 not_found. Wrong attempt:
+409 attempt_mismatch. Expired, reclaimed, completed or failed lease: 409
+lease_expired. Renew roughly every TTL/3 (20 s) while transferring or running.
 GET /v1/jobs/{uuid} returns per-task state and only committed output refs, no data.
 NC_BLOB_DIR names a private server-owned directory on a persistent volume. Never
 share it with untrusted filesystem writers. Temporary uploads are removed on all

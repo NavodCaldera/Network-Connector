@@ -64,6 +64,16 @@ message LeaseFailRequest {
   optional string code = 4; // <=32 ASCII [A-Z0-9_]; no free text.
 }
 message LeaseFailResponse { string task_id = 1; string state = 2; bool duplicate = 3; }
+// POST /v1/leases/renew: only the device holding the live, unexpired lease may renew it.
+message LeaseRenewRequest {
+  string lease_id = 1;   // UUID.
+  string attempt_id = 2; // UUID; must match the lease.
+}
+message LeaseRenewResponse {
+  string lease_id = 1;   // UUID.
+  uint64 expires_at = 2; // Unix seconds; never earlier than before the renewal.
+  bool capped = 3;       // True when the server-side maximum lease lifetime limited this renewal.
+}
 message TaskStatus {
   string task_id = 1;
   string state = 2;

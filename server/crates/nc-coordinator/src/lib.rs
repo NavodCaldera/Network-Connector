@@ -4,6 +4,7 @@
 //! - `/v1/devices/register`  — enrol a device key (needs the owner's enrolment secret in Phase 0)
 //! - `/v1/devices/heartbeat` — liveness + status
 //! - `/v1/leases/request`    — lease the next uploaded real job
+//! - `/v1/leases/renew`     - extend the caller's live lease (capped by runtime, deadline and a server max)
 //! - `/v1/leases/complete`   — commit a result; idempotent and attempt-checked (AGENT.md §1 rule 8)
 //! - `/v1/relay/token`       — short-lived relay token for this device's peer id
 //!
@@ -38,6 +39,10 @@ pub const MAX_BODY: usize = 16 * 1024;
 pub const MAX_JOB_BODY: usize = 384 * 1024;
 /// Lease lifetime.
 pub const LEASE_TTL_SECS: i64 = 60;
+/// Grace on top of the manifest's `wall_ms` for downloads and the output upload.
+pub const LEASE_TRANSFER_GRACE_SECS: i64 = 600;
+/// Server-side maximum total lease lifetime, whatever the manifest says.
+pub const LEASE_MAX_TOTAL_SECS: i64 = 6 * 3600;
 /// Relay token lifetime.
 pub const RELAY_TOKEN_TTL_SECS: u64 = 600;
 /// Phase 0 account for every enrolled device (OIDC accounts come later).
@@ -86,6 +91,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/jobs", post(jobs::submit))
         .route("/v1/jobs/{id}", get(jobs::status))
         .route("/v1/leases/fail", post(jobs::fail))
+        .route("/v1/leases/renew", post(jobs::renew))
         .route("/v1/blobs/{hash}", get(blobs::download).put(blobs::upload))
         .route("/v1/relay/token", post(relay_token))
         .fallback(|| async { ApiError::not_found("no such endpoint") })

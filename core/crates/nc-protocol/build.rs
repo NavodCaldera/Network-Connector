@@ -36,6 +36,8 @@ fn main() -> io::Result<()> {
         "SubmitJobResponse",
         "LeaseFailRequest",
         "LeaseFailResponse",
+        "LeaseRenewRequest",
+        "LeaseRenewResponse",
         "TaskStatus",
         "JobStatusResponse",
         "RegisterRequest",
@@ -90,6 +92,7 @@ fn main() -> io::Result<()> {
         "Verifier",
         "SubmitJobRequest",
         "LeaseFailRequest",
+        "LeaseRenewRequest",
     ] {
         cfg.type_attribute(format!("nc.v1.{name}"), "#[serde(deny_unknown_fields)]");
     }
