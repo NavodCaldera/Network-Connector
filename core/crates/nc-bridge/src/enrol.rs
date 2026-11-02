@@ -11,19 +11,13 @@
 use crate::api::{EnrolRequest, Enrolment, NetworkKind, NightDataSettings};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use nc_agent::budget::BudgetGate;
-use nc_agent::coord::{CoordError, Coordinator, HttpCoordinator};
-use nc_agent::journal::Journal;
-use nc_agent::probe::{DeclaredNetwork, ProbeConfig, SystemClock, SystemProbe};
-use nc_agent::runner::SandboxRunner;
-use nc_agent::transfer::BlobCache;
-use nc_agent::{Agent, Backend, NetworkBudget, Tuning};
+use nc_agent::config::AgentConfig;
+use nc_agent::coord::{CoordError, Coordinator, HttpCoordinator, SkipRegister};
+use nc_agent::probe::{DeclaredNetwork, ProbeConfig};
+use nc_agent::{Agent, NetworkBudget};
 use nc_identity::{DeviceKeyStore, SoftwareKeyStore};
 use nc_policy::{OwnerPolicy, PeerKey, ThermalLevel};
-use nc_protocol::pb::v1::{
-    CompleteRequest, CompleteResponse, HeartbeatRequest, JobStatusResponse, LeaseFailRequest,
-    LeaseFailResponse, LeaseRenewRequest, LeaseRenewResponse, LeaseResponse, RegisterRequest,
-    SubmitJobRequest, SubmitJobResponse,
-};
+use nc_protocol::pb::v1::RegisterRequest;
 use nc_protocol::PROFILE_CPU_CORE_V1;
 use nc_tariff::{ConnectionBinding, InterfaceClass};
 use serde::{Deserialize, Serialize};
@@ -31,15 +25,17 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
+
+mod device;
 
 pub(crate) const CONFIG_NAME: &str = "coordinator.json";
 const CONFIG_TMP: &str = "coordinator.json.tmp";
 const AGENT_DIR: &str = "agent";
 const FORMAT: u32 = 1;
 const MAX_FILE_BYTES: u64 = 64 * 1024;
-const CACHE_QUOTA_BYTES: u64 = 512 * 1024 * 1024;
+const CACHE_QUOTA_MB: u64 = 512;
 const POLL: Duration = Duration::from_secs(10);
 /// Set to `1` to allow `http://` to a loopback or private-LAN test coordinator. Never set in releases.
 pub(crate) const DEV_HTTP_ENV: &str = "NC_DEV_ALLOW_HTTP";
@@ -331,44 +327,6 @@ pub(crate) fn unenrol(dir: &Path) -> Result<(), String> {
     }
 }
 
-/// The coordinator client used after enrolment. The server only accepts `register` with the enrolment
-/// secret, which is not stored, so `register` is a no-op here: the device is already registered, and the
-/// signed heartbeat that follows fails with 401 if the coordinator no longer knows this key.
-struct Enrolled(HttpCoordinator);
-
-impl Coordinator for Enrolled {
-    fn register(&self, _req: &RegisterRequest) -> Result<(), CoordError> {
-        Ok(())
-    }
-    fn heartbeat(&self, req: &HeartbeatRequest) -> Result<(), CoordError> {
-        self.0.heartbeat(req)
-    }
-    fn lease(&self) -> Result<Option<LeaseResponse>, CoordError> {
-        self.0.lease()
-    }
-    fn fail(&self, req: &LeaseFailRequest) -> Result<LeaseFailResponse, CoordError> {
-        self.0.fail(req)
-    }
-    fn renew(&self, req: &LeaseRenewRequest) -> Result<LeaseRenewResponse, CoordError> {
-        self.0.renew(req)
-    }
-    fn complete(&self, req: &CompleteRequest) -> Result<CompleteResponse, CoordError> {
-        self.0.complete(req)
-    }
-    fn get_blob(&self, path: &str, offset: u64) -> Result<Box<dyn Read + Send>, CoordError> {
-        self.0.get_blob(path, offset)
-    }
-    fn put_blob(&self, sha256_hex: &str, bytes: &[u8]) -> Result<(), CoordError> {
-        self.0.put_blob(sha256_hex, bytes)
-    }
-    fn submit(&self, req: &SubmitJobRequest) -> Result<SubmitJobResponse, CoordError> {
-        self.0.submit(req)
-    }
-    fn job_status(&self, job_id: &str) -> Result<JobStatusResponse, CoordError> {
-        self.0.job_status(job_id)
-    }
-}
-
 fn worker_path() -> PathBuf {
     if let Some(p) = std::env::var_os(WORKER_ENV).filter(|v| !v.is_empty()) {
         return PathBuf::from(p);
@@ -392,52 +350,108 @@ pub(crate) fn budget(file: &EnrolFile, night: &NightDataSettings) -> Result<Netw
     crate::night::to_profile_bound(night, file.binding()).map(NetworkBudget::Metered)
 }
 
-/// Builds `Agent::with_backend` the way `nc_agent::config::AgentConfig::build_agent` does, with the app's
-/// paths and the [`Enrolled`] coordinator client.
+/// What the coordinator says about this device's key (`POST /v1/devices/me`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Registration {
+    /// The coordinator knows this key.
+    Registered,
+    /// Unknown or deregistered key: the saved enrolment no longer works.
+    NotRegistered,
+    /// No answer (offline, error); plain English. The device may still be enrolled.
+    Unknown(String),
+}
+
+/// Asks the coordinator whether it still knows this device. Never creates a key.
+pub(crate) fn check_registration(dir: &Path, file: &EnrolFile, dev: bool) -> Registration {
+    let unknown =
+        || Registration::Unknown("Could not check the enrolment with the coordinator.".into());
+    let Ok(url) = check_url(&file.coordinator_url, dev) else {
+        return unknown();
+    };
+    let p = agent_dir(dir).join("device.key");
+    if !p.exists() {
+        return Registration::NotRegistered;
+    }
+    let Ok(key) = SoftwareKeyStore::open_or_create(p) else {
+        return unknown();
+    };
+    match device::whoami(&url, &key) {
+        Ok(r) if r.registered => Registration::Registered,
+        Ok(_) => Registration::NotRegistered,
+        // The signature check itself refused the key.
+        Err(CoordError::Status { status: 401, .. }) => Registration::NotRegistered,
+        Err(CoordError::Network(_)) => Registration::Unknown(
+            "Cannot reach the coordinator to check this device. It will try again later.".into(),
+        ),
+        Err(_) => unknown(),
+    }
+}
+
+/// Best-effort `POST /v1/devices/deregister` before a reset. `Ok` also when the coordinator already
+/// forgot this key (401) or there is nothing to deregister. `Err` is a plain-English message; the caller
+/// may still reset locally.
+pub(crate) fn deregister(dir: &Path, dev: bool) -> Result<(), String> {
+    let Some(file) = load(dir, dev).ok().flatten() else {
+        return Ok(());
+    };
+    let p = agent_dir(dir).join("device.key");
+    if !p.exists() {
+        return Ok(());
+    }
+    let key = SoftwareKeyStore::open_or_create(p)
+        .map_err(|_| "Could not open this device's key.".to_string())?;
+    match device::deregister(&file.coordinator_url, &key) {
+        Ok(_) | Err(CoordError::Status { status: 401, .. }) => Ok(()),
+        Err(CoordError::Network(_)) => Err(
+            "Cannot reach the coordinator, so it still lists this device. You can reset this device anyway."
+                .into(),
+        ),
+        Err(CoordError::Status { status, .. }) => Err(format!(
+            "The coordinator could not remove this device (error {status}). You can reset this device anyway."
+        )),
+        Err(_) => Err(
+            "The coordinator could not remove this device. You can reset this device anyway.".into(),
+        ),
+    }
+}
+
+/// Builds the agent with nc-agent's shared wiring ([`AgentConfig::backend_with`], as used by
+/// [`AgentConfig::build_agent_with`]) and the app's paths, talking to the coordinator through
+/// [`SkipRegister`] (already enrolled; the secret is not kept). The data budget ledger stays at
+/// `<app dir>/budget.sqlite`, outside the agent folder, so a reset cannot spend the night budget twice.
 pub(crate) fn build_agent(
     dir: &Path,
     file: &EnrolFile,
     budget: &NetworkBudget,
 ) -> Result<Agent, String> {
     let fail = |what: &str| format!("Could not open the {what}.");
-    let key = open_key(dir)?;
     let data = agent_dir(dir);
-    let runner = SandboxRunner::new(worker_path());
-    // Not fatal: without the sandbox every job is refused (SANDBOX_UNAVAILABLE), never run weaker.
-    let _ = runner.prepare();
-    let staging = data.join("staging");
-    fs::create_dir_all(&staging).map_err(|_| fail("staging folder"))?;
-    let journal = Journal::open(&data.join("journal")).map_err(|_| fail("job journal"))?;
-    let cache =
-        BlobCache::open(&data.join("blobs"), CACHE_QUOTA_BYTES).map_err(|_| fail("blob cache"))?;
+    let cfg = AgentConfig {
+        coordinator_url: file.coordinator_url.clone(),
+        data_dir: data.clone(),
+        device_name: file.device_name.clone(),
+        worker_path: worker_path(),
+        policy_file: None,
+        network_budget: budget.clone(),
+        probe: ProbeConfig {
+            network: Some(file.network.clone()),
+            declared_thermal: file.declared_thermal,
+        },
+        control_port: 0,
+        poll_seconds: POLL.as_secs(),
+        cache_quota_mb: CACHE_QUOTA_MB,
+    };
+    let key = open_key(dir)?;
+    let coord = Arc::new(SkipRegister(Arc::new(HttpCoordinator::new(
+        &file.coordinator_url,
+        key,
+        None,
+    ))));
+    let mut backend = cfg.backend_with(coord).map_err(|_| fail("helper"))?;
     let usage =
         nc_store::Store::open(&dir.join("budget.sqlite")).map_err(|_| fail("data budget"))?;
-    let budget = BudgetGate::with_usage_store(budget, chrono::Utc::now(), usage)
+    backend.budget = BudgetGate::with_usage_store(budget, chrono::Utc::now(), usage)
         .map_err(|_| fail("data budget"))?;
-    let probe = ProbeConfig {
-        network: Some(file.network.clone()),
-        declared_thermal: file.declared_thermal,
-    };
-    let backend = Backend {
-        coord: Arc::new(Enrolled(HttpCoordinator::new(
-            &file.coordinator_url,
-            key,
-            None,
-        ))),
-        probe: Arc::new(SystemProbe::new(probe)),
-        clock: Arc::new(SystemClock),
-        runner: Arc::new(runner),
-        journal: Mutex::new(journal),
-        cache: Mutex::new(cache),
-        budget,
-        staging,
-        device_name: file.device_name.clone(),
-        platform: std::env::consts::OS.to_string(),
-        tuning: Tuning {
-            poll: POLL,
-            ..Tuning::default()
-        },
-    };
     Ok(Agent::with_backend(backend))
 }
 

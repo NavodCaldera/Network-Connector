@@ -86,6 +86,29 @@ class _CoordinatorPageState extends State<CoordinatorPage> {
       ),
     );
     if (ok != true) return;
+    // Tell the coordinator first (best effort); if it cannot be told, the owner may still reset here.
+    final failed = await widget.model.deregister();
+    if (!mounted) return;
+    if (failed != null) {
+      final anyway = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          content: Text(failed, key: const Key('deregisterError')),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text(S.cancel),
+            ),
+            FilledButton(
+              key: const Key('resetAnyway'),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text(S.resetAnyway),
+            ),
+          ],
+        ),
+      );
+      if (anyway != true) return;
+    }
     final err = await widget.model.unenrol();
     if (mounted) setState(() => _error = err);
   }
@@ -108,7 +131,24 @@ class _CoordinatorPageState extends State<CoordinatorPage> {
           ),
         if (m.restartNeeded)
           Text(S.restartToApply, key: const Key('restartNeeded')),
-        if (e != null) ...[
+        if (e != null && m.notRegistered) ...[
+          ListTile(
+            key: const Key('notRegistered'),
+            leading: Icon(
+              Icons.cloud_off_outlined,
+              color: theme.colorScheme.error,
+            ),
+            title: const Text(S.notRegistered),
+            subtitle: Text(S.deviceNamed(e.deviceName)),
+          ),
+          OutlinedButton(
+            key: const Key('reset'),
+            onPressed: _reset,
+            child: const Text(S.reset),
+          ),
+        ] else if (e != null) ...[
+          if (m.enrolCheck?.message case final message?)
+            Text(message, key: const Key('checkNotice')),
           ListTile(
             key: const Key('connectedTo'),
             leading: const Icon(Icons.cloud_done_outlined),

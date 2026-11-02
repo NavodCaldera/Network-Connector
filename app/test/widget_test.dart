@@ -28,6 +28,16 @@ void _stopIsEnabled(WidgetTester tester) {
   expect(stop.onPressed, isNotNull);
 }
 
+FakeAgent _enrolledAgent() => FakeAgent()
+  ..enrolled = const Enrolment(
+    coordinatorUrl: 'https://c.example',
+    deviceName: 'pc',
+    unlimitedData: true,
+    trustedPublishers: 1,
+    deviceKey: 'PUBKEY',
+    active: true,
+  );
+
 void main() {
   group('Home', () {
     testWidgets('shows safe defaults, today and the Stop button', (
@@ -314,10 +324,76 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('resetConfirm')));
       await tester.pumpAndSettle();
+      expect(a.deregisters, 1);
       expect(a.unenrols, 1);
-      expect(a.stops, 1);
+      expect(a.stops, greaterThanOrEqualTo(1));
       expect(find.byKey(const Key('coordUrl')), findsOneWidget);
       expect(find.byKey(const Key('restartNeeded')), findsOneWidget);
+    });
+
+    testWidgets('a device the coordinator forgot shows as not enrolled', (
+      tester,
+    ) async {
+      final a = _enrolledAgent()
+        ..check = const EnrolmentCheck(state: EnrolmentState.notRegistered);
+      await _app(tester, a);
+      await tester.pumpAndSettle();
+      await _tab(tester, 'navCoord');
+      expect(find.byKey(const Key('notRegistered')), findsOneWidget);
+      expect(find.text(S.notRegistered), findsOneWidget);
+      expect(find.byKey(const Key('connectedTo')), findsNothing);
+      _stopIsEnabled(tester);
+      await tester.tap(find.byKey(const Key('reset')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('resetConfirm')));
+      await tester.pumpAndSettle();
+      expect(a.unenrols, 1);
+      expect(find.byKey(const Key('coordUrl')), findsOneWidget);
+    });
+
+    testWidgets('no answer from the coordinator keeps the enrolment', (
+      tester,
+    ) async {
+      final a = _enrolledAgent()
+        ..check = const EnrolmentCheck(
+          state: EnrolmentState.unknown,
+          message: 'Cannot reach the coordinator to check this device.',
+        );
+      await _app(tester, a);
+      await tester.pumpAndSettle();
+      await _tab(tester, 'navCoord');
+      expect(find.byKey(const Key('connectedTo')), findsOneWidget);
+      expect(find.byKey(const Key('checkNotice')), findsOneWidget);
+      expect(find.byKey(const Key('notRegistered')), findsNothing);
+    });
+
+    testWidgets('offline reset shows the error, then can reset anyway', (
+      tester,
+    ) async {
+      final a = _enrolledAgent()
+        ..deregisterError = 'Cannot reach the coordinator. Reset anyway?';
+      await _app(tester, a);
+      await _tab(tester, 'navCoord');
+      Future<void> tryReset() async {
+        await tester.tap(find.byKey(const Key('reset')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('resetConfirm')));
+        await tester.pumpAndSettle();
+      }
+
+      await tryReset();
+      expect(find.byKey(const Key('deregisterError')), findsOneWidget);
+      await tester.tap(find.text(S.cancel));
+      await tester.pumpAndSettle();
+      expect(a.unenrols, 0);
+      expect(find.byKey(const Key('connectedTo')), findsOneWidget);
+
+      await tryReset();
+      await tester.tap(find.byKey(const Key('resetAnyway')));
+      await tester.pumpAndSettle();
+      expect(a.deregisters, 2);
+      expect(a.unenrols, 1);
+      expect(find.byKey(const Key('coordUrl')), findsOneWidget);
     });
   });
 }

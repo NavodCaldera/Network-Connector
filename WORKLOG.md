@@ -15,6 +15,43 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Claude (App agent) - `feat/app-lifecycle` - task 1.A4
+
+- **Asked:** 1.A4: nc-bridge uses nc-agent's shared builder with `SkipRegister`; check the enrolment with signed
+  `POST /v1/devices/me` and show a forgotten device as not enrolled; reset calls signed
+  `POST /v1/devices/deregister` first (best effort), then deletes the local enrolment and key.
+- **Done:**
+  - `nc-bridge/src/enrol.rs`: private `Enrolled` coordinator wrapper and hand-copied backend wiring removed;
+    `build_agent` now builds `AgentConfig` and uses `AgentConfig::backend_with(Arc::new(SkipRegister(..)))` +
+    `Agent::with_backend` (what `build_agent_with` does), then swaps in the budget gate on
+    `<app dir>/budget.sqlite` so the ledger stays outside the agent folder and survives a reset (as before).
+    New `check_registration` and `deregister` (401 on deregister = already forgotten = ok; a missing key = not
+    registered; the check never creates a key).
+  - `nc-bridge/src/enrol/device.rs` (new): signed whoami/deregister client using nc-agent's public
+    `signing_string`, rustls + OS trust store, no redirects, 20 s timeout, 64 KiB body cap; only status and error
+    code are surfaced. HTTPS rule unchanged (`check_url`; http only for loopback/private hosts with
+    `NC_DEV_ALLOW_HTTP=1`). Added deps: `ureq`, `rustls-native-certs` (same versions/features as nc-agent),
+    `getrandom`, `hex` (workspace).
+  - `nc-bridge/src/api.rs`: `check_enrolment(dir) -> EnrolmentCheck {state, message}` (async; stops helping when
+    the coordinator no longer knows the device) and `deregister_device(dir)` (stops helping first). `open_agent`
+    stays sync and local-only; the app calls `check_enrolment` right after start. FRB bindings regenerated.
+  - App: `AppModel.checkEnrolment` (after start, never blocks Stop), `deregister`; Connect tab shows
+    "Not enrolled..." with Reset for a forgotten device, a notice when the check got no answer, and on reset a
+    dialog with the coordinator error and "Reset anyway".
+- **Decisions:** whoami is a separate async call, not inside the sync `open_agent` (a network wait on the UI
+  thread at start-up would delay the Stop button). The signed client lives in nc-bridge because
+  `HttpCoordinator` has no whoami/deregister methods (see open).
+- **Verified:** `cargo fmt --check` ok; `cargo clippy -p nc-bridge --all-targets -- -D warnings` ok;
+  `cargo test -p nc-bridge` 32 passed (new: whoami/deregister against a fake coordinator incl. 401-after-deregister,
+  offline coordinator still allows local reset, missing key = not registered); `cargo deny check` ok;
+  `flutter analyze` no issues; `flutter test` 19 passed, 1 skipped (new: forgotten device, no-answer notice,
+  offline reset with cancel then reset anyway). First test run failed once because my fake sent
+  `{"registered":false}` without the other fields (the generated types require them; the real server sends all).
+- **Not done / open:** not run against the real Docker coordinator. Request (Core): add `whoami`/`deregister` to
+  `nc_agent::coord::HttpCoordinator` (or the `Coordinator` trait) so `enrol/device.rs` can go; and an
+  `AgentConfig` option for the budget ledger path so the bridge can call `build_agent_with` directly (today
+  `backend_with` also creates an unused `agent/budget.sqlite`, removed on reset).
+
 ## 2026-11-02 · Claude (coordinator) · main · merge 1.N2
 
 - **Asked:** review and merge 1.N2.
