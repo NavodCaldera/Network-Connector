@@ -47,6 +47,9 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.L3 | Park finished results across a closed upload window (encrypted, owner limits) | core-agent (Claude) | `feat/1.L3-deferred-upload` | `core/crates/nc-agent` | done |
 | 1.L2 | Tariff-window failures do not use up attempts (capped at 24) | net-agent (Claude) | `feat/1.L2-attempts-disputes` | `server/` | done |
 | 1.L4 | Dispute resolution: third helper, 2-of-3 majority, distinct owners | net-agent (Claude) | `feat/1.L2-attempts-disputes` | `server/`, `infra/` | done |
+| 1.L8-1.L10 | Linux sandbox: namespaces, seccomp, cgroup v2 (prompt: `docs/codex/1.L8-linux-sandbox.md`) | **Codex** | `feat/codex-linux-sandbox` | `core/crates/nc-exec`, Linux CI step | in progress |
+| 1.L5 | Resumable chunked upload, server side | net-agent (Claude) | `feat/1.L5-resumable-upload` | `server/`, upload API doc | in progress |
+| 1.L7 | CLI detached submit, `nc job status/wait/fetch` | core-agent (Claude) | `feat/1.L7-cli-jobs` | `core/crates/{nc-cli,nc-agent requester}` | in progress |
 
 ## Rules for Codex work
 

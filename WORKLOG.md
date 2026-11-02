@@ -15,6 +15,13 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-03 - Claude (coordinator) - main - assign 1.L8-1.L10 to Codex
+
+- Asked: owner wants heavy work given to Codex, without clashing with the Claude agents working now (1.L5 server, 1.L7 CLI).
+- Done: wrote the Codex prompt docs/codex/1.L8-linux-sandbox.md (Linux sandbox: user/mount/pid/net namespaces, seccomp allow-list, cgroup v2 limits, teardown and sweep, escape tests, CI step). Reserved its row in TASKS.md, limited to core/crates/nc-exec plus the Linux CI step. Marked 1.L5 and 1.L7 as in progress.
+- Verified: nothing to run yet (planning only).
+- Open: the owner starts Codex with the prompt; the coordinator reviews it and reruns the tests on Linux before merging.
+
 ## 2026-11-03 - Claude (coordinator) - main - merge 1.L2 + 1.L4
 
 - Asked: review and merge 1.L2 and 1.L4 (1ed5a3f).
