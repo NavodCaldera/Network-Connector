@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use crate::frb_generated::StreamSink;
-use crate::{night, settings, today};
+use crate::{night, settings};
 
 /// One weekly time window, local time of `timezone`. Minutes count from midnight (0..1440).
 /// `end_minute` before `start_minute` means the window crosses midnight.
@@ -107,13 +107,72 @@ pub struct NightDataStatus {
     pub budget_total_bytes: u64,
 }
 
-/// Today's helping summary (local date of the device clock in the policy time zone).
+/// Today's counters from `nc_agent::Agent::today()` (reset at local midnight in the policy time zone).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TodaySummary {
     /// Seconds a helper session ran today.
     pub helping_seconds: u64,
-    /// Jobs finished today. Always 0 until nc-agent reports jobs.
+    /// Jobs committed today (each attempt counted once).
     pub jobs_done: u64,
+    /// Seconds spent running jobs today.
+    pub job_seconds: u64,
+}
+
+impl From<nc_agent::Today> for TodaySummary {
+    fn from(t: nc_agent::Today) -> Self {
+        Self {
+            helping_seconds: t.helping_seconds,
+            jobs_done: t.jobs_done,
+            job_seconds: t.job_seconds,
+        }
+    }
+}
+
+/// What the helper is doing now, mirrored from `nc_agent::Activity`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivityKind {
+    /// No session.
+    Off,
+    /// Waiting for work.
+    Idle,
+    /// Not asking for work (see `paused_reason`).
+    Paused,
+    /// Cannot reach the coordinator; retrying.
+    Offline,
+    /// Downloading a job.
+    Downloading,
+    /// Running a job in the sandbox.
+    Running,
+    /// Uploading a result.
+    Uploading,
+}
+
+/// `nc_agent::Activity` as a plain struct. Never carries job data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HelperActivity {
+    /// What the helper is doing.
+    pub kind: ActivityKind,
+    /// Owner-readable reason when `kind` is `Paused`.
+    pub paused_reason: Option<String>,
+}
+
+impl From<nc_agent::Activity> for HelperActivity {
+    fn from(a: nc_agent::Activity) -> Self {
+        use nc_agent::Activity as A;
+        let (kind, paused_reason) = match a {
+            A::Off => (ActivityKind::Off, None),
+            A::Idle => (ActivityKind::Idle, None),
+            A::Paused(r) => (ActivityKind::Paused, Some(r)),
+            A::Offline => (ActivityKind::Offline, None),
+            A::Downloading => (ActivityKind::Downloading, None),
+            A::Running => (ActivityKind::Running, None),
+            A::Uploading => (ActivityKind::Uploading, None),
+        };
+        Self {
+            kind,
+            paused_reason,
+        }
+    }
 }
 
 /// Session state, mirrored from `nc_agent::SessionState`.
@@ -220,15 +279,27 @@ pub fn save_settings(dir: String, settings: AppSettings) -> Result<(), String> {
 /// `Agent::start_helper_session(policy)`. Errors are plain-English sentences for the UI.
 pub fn start_helper_session(policy: PolicySummary) -> Result<(), String> {
     let p = settings::to_policy(&policy)?;
-    agent().start_helper_session(p).map_err(|e| e.to_string())?;
-    today::session_started(&policy.timezone);
-    Ok(())
+    agent().start_helper_session(p).map_err(|e| e.to_string())
+}
+
+/// `Agent::update_policy(policy)`: applies new limits to the running session (and later ones) at once.
+/// A running job the new limits no longer allow is cancelled by nc-agent.
+pub fn update_policy(policy: PolicySummary) -> Result<(), String> {
+    let p = settings::to_policy(&policy)?;
+    agent().update_policy(p).map_err(|e| e.to_string())
+}
+
+/// `Agent::update_network_budget(Metered(profile))` from the night-data settings, applied live.
+pub fn update_night_data(night_data: NightDataSettings) -> Result<(), String> {
+    let profile = night::to_profile(&night_data)?;
+    agent()
+        .update_network_budget(nc_agent::NetworkBudget::Metered(profile))
+        .map_err(|e| e.to_string())
 }
 
 /// `Agent::stop_helper_session()`. Returns when the session is `Stopped`.
 pub fn stop_helper_session() {
     agent().stop_helper_session();
-    today::session_stopped();
 }
 
 /// Version of the Rust core (nc-bridge), for the About page.
@@ -237,10 +308,16 @@ pub fn core_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// Today's helping summary.
+/// `Agent::today()`: today's counters.
 #[frb(sync)]
 pub fn today_summary() -> TodaySummary {
-    today::summary()
+    agent().today().into()
+}
+
+/// `Agent::activity()`: what the helper is doing now (low frequency; the UI polls it with the status).
+#[frb(sync)]
+pub fn helper_activity() -> HelperActivity {
+    agent().activity().into()
 }
 
 /// `Agent::watch_status()` as a Dart `Stream`. Ends when Dart cancels the stream.
@@ -293,6 +370,32 @@ mod tests {
             start_helper_session(s).unwrap_err(),
             "CPU budget must be between 1 and 100 percent."
         );
+    }
+
+    #[test]
+    fn invalid_update_is_refused_and_valid_one_applies() {
+        let mut s = default_policy();
+        s.cpu_budget_percent = 0;
+        assert!(update_policy(s).is_err());
+        let mut ok = default_policy();
+        ok.cpu_budget_percent = 40;
+        update_policy(ok).unwrap();
+        assert_eq!(agent().policy().cpu_budget_percent, 40);
+    }
+
+    #[test]
+    fn night_data_update_validates() {
+        let mut n = default_settings().night_data;
+        update_night_data(n.clone()).unwrap();
+        n.nightly_budget_mb = 0;
+        assert!(update_night_data(n).is_err());
+    }
+
+    #[test]
+    fn today_comes_from_the_agent() {
+        let t = today_summary();
+        assert_eq!(t.jobs_done, 0);
+        assert_eq!(helper_activity().kind, ActivityKind::Off);
     }
 
     #[test]

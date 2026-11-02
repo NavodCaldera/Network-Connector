@@ -51,6 +51,16 @@ jobs:
           else
             cargo test --all-targets --locked
           fi
+      # Real sandbox (AppContainer + Job Object) under the whole helper session: Stop < 1 s, memory and
+      # output caps. Ignored by default because it needs the built worker binary.
+      - name: nc-agent sandbox_jobs (real sandbox)
+        if: matrix.os == 'windows-latest' && matrix.workspace == 'core'
+        working-directory: core
+        shell: bash
+        run: |
+          cargo build -p nc-exec --bin nc-exec-worker --locked
+          export NC_EXEC_WORKER="$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)/debug/nc-exec-worker.exe"
+          cargo test -p nc-agent --test sandbox_jobs --locked -- --ignored --nocapture --test-threads 1
 
   flutter:
     name: flutter (analyze, test)

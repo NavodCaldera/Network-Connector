@@ -15,6 +15,32 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Claude (App agent) - `feat/app-agent-wiring` - task 1.A2
+
+- Commits: the 1.A2 commit on `feat/app-agent-wiring` (plus any CI fix noted in the hand-back).
+- Asked: switch nc-bridge and the app to the 1.P6 nc-agent facade (today, activity, policy, update_policy,
+  update_network_budget); regenerate frb 2.13.0 bindings; add a Windows CI step for the ignored `sandbox_jobs` test.
+- Done:
+  - nc-bridge `api.rs`: `today_summary()` now maps `Agent::today()` (adds `job_seconds`); new `update_policy`,
+    `update_night_data` (night settings -> nc-tariff profile -> `update_network_budget(Metered)`) and
+    `helper_activity()` (`HelperActivity { kind, paused_reason }`, plain enum so no freezed dependency).
+    Removed the bridge-local `today.rs` counter.
+  - App: `AppModel.savePolicy` calls `updatePolicy` instead of Stop + Start; night data is applied to the agent at
+    start-up and after every save. `AgentApi`/`FakeAgent` updated; tests for live policy update, live budget update
+    and Home counters from the agent.
+  - Bindings regenerated with flutter_rust_bridge_codegen 2.13.0.
+  - CI: on windows-latest/core, build `nc-exec-worker`, set `NC_EXEC_WORKER`, run
+    `cargo test -p nc-agent --test sandbox_jobs -- --ignored --test-threads 1`.
+- Decisions (App agent): `submit_job` and `with_backend` are not exposed to Flutter: job payloads must not cross
+  the bridge, and the app has no coordinator config/enrolment flow yet, so it keeps `Agent::new()`.
+- Verified (this PC, CARGO_TARGET_DIR=D:
+c-target-app, -j 2, below-normal priority): `cargo fmt --all --check` exit 0;
+  `cargo clippy -p nc-bridge --all-targets --locked -- -D warnings` exit 0; `cargo test -p nc-bridge` 23 passed;
+  `flutter analyze` "No issues found!"; `flutter test` "+13 ~1: All tests passed!" (one test failed on the first run
+  because it looked for Home status text while on Limits; fixed). CI result is in the hand-back.
+- Not done / open: with `Agent::new()` (no backend) `update_network_budget` only validates, and today's counters show
+  only helping time; real jobs need a coordinator config + enrolment in the app. Home refreshes the counters only on
+  status changes (no timer). `helper_activity()` is exposed but not shown in the UI yet.
 ## 2026-11-02 — Coordinator (Claude): start 1.N1 and 1.A2
 
 - Commits: board update on main.
