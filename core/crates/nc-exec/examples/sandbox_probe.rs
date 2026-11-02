@@ -243,6 +243,30 @@ fn linux_isolation() -> bool {
                 .any(|n| n == std::ffi::OsStr::new(&fd.to_string()))
         });
     let cgroup = std::fs::read_to_string("/proc/self/cgroup").is_ok_and(|s| s.trim() == "0::/");
+    // Regression: procfs must belong to this PID namespace after pivot_root, with no
+    // inherited host mounts. Verify kernel state without printing paths or mount data.
+    let private_proc = std::fs::read_dir("/proc").is_ok_and(|entries| {
+        let pids: Vec<_> = entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+            .collect();
+        pids == [1]
+    });
+    let proc_mount = std::fs::read_to_string("/proc/self/mountinfo").is_ok_and(|mounts| {
+        mounts.lines().any(|line| {
+            let Some((entry, filesystem)) = line.split_once(" - ") else {
+                return false;
+            };
+            let fields: Vec<_> = entry.split_whitespace().collect();
+            fields.get(4) == Some(&"/proc")
+                && filesystem.starts_with("proc ")
+                && fields.get(5).is_some_and(|flags| {
+                    ["ro", "nosuid", "nodev", "noexec"]
+                        .iter()
+                        .all(|required| flags.split(',').any(|flag| flag == *required))
+                })
+        })
+    });
     let minimal_root = std::fs::read_dir("/").is_ok_and(|entries| {
         entries.filter_map(Result::ok).all(|entry| {
             ["worker", "lib", "proc"]
@@ -250,7 +274,9 @@ fn linux_isolation() -> bool {
                 .any(|name| entry.file_name() == std::ffi::OsStr::new(name))
         })
     });
-    minimal_root
+    private_proc
+        && proc_mount
+        && minimal_root
         && capabilities
         && hardened
         && limits

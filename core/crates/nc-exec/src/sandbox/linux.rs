@@ -288,6 +288,13 @@ impl SandboxedChild {
                 3 => "mount",
                 4 => "capabilities",
                 5 => "seccomp",
+                10 => "mount:root-private",
+                11 => "mount:tmpfs",
+                12 => "mount:bind",
+                13 => "mount:remount",
+                14 => "mount:pivot",
+                15 => "mount:umount",
+                16 => "mount:proc",
                 _ => "bootstrap",
             };
             return Err(error(
@@ -481,6 +488,7 @@ fn cstring(path: &Path) -> Result<std::ffi::CString, SandboxError> {
     std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| invalid("mount"))
 }
 fn mount(
+    step: &'static str,
     source: Option<&Path>,
     target: &Path,
     kind: Option<&std::ffi::CStr>,
@@ -489,7 +497,7 @@ fn mount(
     let source = source.map(cstring).transpose()?;
     let target = cstring(target)?;
     // SAFETY: all optional C strings outlive this syscall; null data means no filesystem options.
-    check("mount", unsafe {
+    check(step, unsafe {
         libc::mount(
             source.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
             target.as_ptr(),
@@ -509,8 +517,20 @@ fn filesystem(root: &Path) -> Result<(), SandboxError> {
             files.insert(PathBuf::from(path));
         }
     }
-    mount(None, Path::new("/"), None, libc::MS_REC | libc::MS_PRIVATE)?;
-    mount(None, root, Some(c"tmpfs"), libc::MS_NOSUID | libc::MS_NODEV)?;
+    mount(
+        "mount:root-private",
+        None,
+        Path::new("/"),
+        None,
+        libc::MS_REC | libc::MS_PRIVATE,
+    )?;
+    mount(
+        "mount:tmpfs",
+        None,
+        root,
+        Some(c"tmpfs"),
+        libc::MS_NOSUID | libc::MS_NODEV,
+    )?;
     for source in files {
         // Loaded libraries need no second dynamic-loader pass. Normalize their paths so an installed
         // worker under a home directory cannot recreate even an empty host directory hierarchy.
@@ -523,8 +543,9 @@ fn filesystem(root: &Path) -> Result<(), SandboxError> {
         fs::create_dir_all(target.parent().ok_or_else(|| invalid("mount"))?)
             .map_err(|e| error("mount", e))?;
         File::create(&target).map_err(|e| error("mount", e))?;
-        mount(Some(&source), &target, None, libc::MS_BIND)?;
+        mount("mount:bind", Some(&source), &target, None, libc::MS_BIND)?;
         mount(
+            "mount:remount",
             None,
             &target,
             None,
@@ -532,24 +553,29 @@ fn filesystem(root: &Path) -> Result<(), SandboxError> {
         )?;
     }
     fs::create_dir(root.join("proc")).map_err(|e| error("mount", e))?;
+    // Mount proc while the inherited procfs is still visible. Newer kernels refuse a new
+    // unprivileged procfs mount after the old root (and its procfs) has been detached.
+    // We are already PID 1 in the new PID namespace: this is a fresh procfs, never a bind
+    // of the host's procfs. pivot_root carries it with the tmpfs and detaches the host tree.
+    mount(
+        "mount:proc",
+        None,
+        &root.join("proc"),
+        Some(c"proc"),
+        libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+    )?;
     fs::create_dir(root.join("old")).map_err(|e| error("mount", e))?;
     std::env::set_current_dir(root).map_err(|e| error("mount", e))?;
     // SAFETY: both paths are valid C strings relative to our private tmpfs mount.
-    check("mount", unsafe {
+    check("mount:pivot", unsafe {
         libc::syscall(libc::SYS_pivot_root, c".".as_ptr(), c"old".as_ptr()) as i32
     })?;
     std::env::set_current_dir("/").map_err(|e| error("mount", e))?;
     // SAFETY: old root is a private mount and is detached before any untrusted code runs.
-    check("mount", unsafe {
+    check("mount:umount", unsafe {
         libc::umount2(c"/old".as_ptr(), libc::MNT_DETACH)
     })?;
     fs::remove_dir("/old").map_err(|e| error("mount", e))?;
-    mount(
-        None,
-        Path::new("/proc"),
-        Some(c"proc"),
-        libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
-    )?;
     Ok(())
 }
 fn restrictions() -> Result<(), SandboxError> {
@@ -825,6 +851,13 @@ pub fn bootstrap() {
             "mount" => 3,
             "capabilities" => 4,
             "seccomp" => 5,
+            "mount:root-private" => 10,
+            "mount:tmpfs" => 11,
+            "mount:bind" => 12,
+            "mount:remount" => 13,
+            "mount:pivot" => 14,
+            "mount:umount" => 15,
+            "mount:proc" => 16,
             _ => 6,
         };
         // Keep the wire diagnostic to a fixed OS errno; no paths or job data cross this channel.
