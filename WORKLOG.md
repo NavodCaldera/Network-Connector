@@ -15,6 +15,35 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Claude (Net agent) - `feat/net-lease-renew` - task 1.N1
+
+- **Commits:** the single commit on `feat/net-lease-renew` that adds this entry.
+- **Asked:** 1.N1: lease renewal so jobs longer than the 60 s lease TTL can finish.
+- **Done:**
+  - `proto/nc/v1/coordinator.proto`: `LeaseRenewRequest { lease_id, attempt_id }`,
+    `LeaseRenewResponse { lease_id, expires_at, capped }`; `proto/README.md` documents the endpoint;
+    `core/crates/nc-protocol/build.rs` adds serde derive + `deny_unknown_fields` for them.
+  - `server/crates/nc-coordinator`: `POST /v1/leases/renew` (`jobs::renew`): signed request + nonce like the other
+    lease calls, 16 KiB cap, strict JSON. Uses the same `lock_attempt` (task row `FOR UPDATE`, then lease row) and
+    `active()` check as complete/fail, so it serializes with the expiry reclaim in `jobs::lease`. New expiry =
+    `now + 60 s`, capped at min(job deadline, issued_at + ceil(wall_ms/1000) + 600 s, issued_at + 6 h); never
+    shortens. Errors: other device / unknown lease 404 `not_found`; wrong attempt 409 `attempt_mismatch`;
+    expired, reclaimed, completed or failed 409 `lease_expired`. No migration needed.
+  - Tests: 3 unit tests for `renewed_expiry` (TTL, caps, never shortens); `tests/lease_cycle.rs` gains renew ok,
+    other device 404, stale attempt 409, unknown field 400, renew after complete 409, a lease kept alive past the
+    TTL by renewals then committed, renew after expiry 409, and a renew vs reclaim storm straddling one lease's
+    expiry second (no 500s; if reclaimed, old holder gets 409 and the new holder can renew; otherwise renew works).
+- **Decisions (Net agent):** proto is Core-owned, edited here because the coordinator assigned it. Cap constants
+  (`LEASE_TRANSFER_GRACE_SECS` 600, `LEASE_MAX_TOTAL_SECS` 6 h) are my choice. Renewal does not need a heartbeat.
+- **Verified:** server `cargo fmt --check`, `clippy --all-targets -D warnings` clean, `cargo test` all pass (7 unit
+  incl. 3 new); core `cargo fmt --check`, nc-protocol clippy clean and tests pass (12+11+22); `cargo deny check`
+  ok for server and core. `infra/verify.ps1` (Docker stack): run 1 FAILED in the pre-existing expiry section
+  (lease after the 61 s sleep returned 404 "no queued task"; before any renew code runs; Docker Desktop had just
+  started, cause not proven); runs 2 and 3 passed (122.5 s, 124.1 s). Race outcome per run not captured (test
+  output is hidden on success).
+- **Not done / open:** nc-agent does not call renew yet (Core: renew every ~20 s while transferring/running; on
+  409 stop the job and drop the result). The first-run 404 flake is unexplained. Only the Windows verify script
+  was run, not `verify.sh`.
 ## 2026-11-02 - Claude (App agent) - `feat/app-agent-wiring` - task 1.A2
 
 - Commits: the 1.A2 commit on `feat/app-agent-wiring` (plus any CI fix noted in the hand-back).

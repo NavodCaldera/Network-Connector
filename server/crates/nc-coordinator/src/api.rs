@@ -2,8 +2,8 @@
 use crate::error::ApiError;
 pub use nc_protocol::pb::v1::{
     CompleteRequest, CompleteResponse, HealthResponse, HeartbeatRequest, HeartbeatResponse,
-    LeaseRequest, LeaseResponse, RegisterRequest, RegisterResponse, RelayTokenRequest,
-    RelayTokenResponse,
+    LeaseRenewRequest, LeaseRenewResponse, LeaseRequest, LeaseResponse, RegisterRequest,
+    RegisterResponse, RelayTokenRequest, RelayTokenResponse,
 };
 
 /// Validate an HTTP request after strict JSON deserialization.

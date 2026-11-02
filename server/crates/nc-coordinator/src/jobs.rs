@@ -221,6 +221,78 @@ fn active(r: &sqlx::postgres::PgRow) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Expiry after a renewal at `now`: `now + LEASE_TTL_SECS`, capped by the job deadline, the
+/// manifest wall-clock limit plus transfer grace, and [`LEASE_MAX_TOTAL_SECS`]. Never shortens.
+pub fn renewed_expiry(
+    now: i64,
+    issued_at: i64,
+    current: i64,
+    deadline_ms: i64,
+    wall_ms: u64,
+) -> (i64, bool) {
+    let wall = i64::try_from(wall_ms.div_ceil(1000)).unwrap_or(i64::MAX);
+    let cap = (deadline_ms / 1000)
+        .min(issued_at.saturating_add(LEASE_MAX_TOTAL_SECS))
+        .min(
+            issued_at
+                .saturating_add(wall)
+                .saturating_add(LEASE_TRANSFER_GRACE_SECS),
+        );
+    let want = now.saturating_add(LEASE_TTL_SECS);
+    let next = want.min(cap).max(current);
+    (next, want > cap)
+}
+
+pub async fn renew(
+    State(s): State<AppState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Json<LeaseRenewResponse>, ApiError> {
+    let (c, b) = read_signed(&s, &method, &uri, &headers, body).await?;
+    let d = device(&s, &c).await?;
+    let req: LeaseRenewRequest = parse(&b)?;
+    let mut tx = s.pool.begin().await?;
+    // Same lock order as lease/complete/fail: task row first, then the lease row, with
+    // fresh reads, so a renewal and an expiry reclaim of the same task are serialized.
+    let (id, r) = lock_attempt(&mut tx, &req.lease_id, &req.attempt_id, d.id).await?;
+    active(&r)?;
+    let lease: Uuid = r.try_get("id")?;
+    let manifest: Vec<u8> = sqlx::query_scalar(
+        "SELECT manifest FROM jobs WHERE id=(SELECT job_id FROM tasks WHERE id=$1)",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let j: JobManifest =
+        decode_strict(&signed(&manifest)?.manifest).map_err(|_| ApiError::internal())?;
+    let wall_ms = job_task(&j)
+        .map_err(|_| ApiError::internal())?
+        .limits
+        .as_ref()
+        .ok_or_else(ApiError::internal)?
+        .wall_ms;
+    let (expiry, capped) = renewed_expiry(
+        now(),
+        r.try_get("issued_at")?,
+        r.try_get("expires_at")?,
+        r.try_get("deadline")?,
+        wall_ms,
+    );
+    sqlx::query("UPDATE leases SET expires_at=$2 WHERE id=$1 AND state='active'")
+        .bind(lease)
+        .bind(expiry)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Json(LeaseRenewResponse {
+        lease_id: lease.to_string(),
+        expires_at: expiry as u64,
+        capped,
+    }))
+}
+
 pub async fn complete(
     State(s): State<AppState>,
     method: Method,
@@ -420,4 +492,52 @@ pub async fn status(
             output,
         }],
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renewal_extends_by_ttl() {
+        let far = 10_000_000 * 1000;
+        assert_eq!(
+            renewed_expiry(1000, 1000, 1060, far, 3_600_000),
+            (1060, false)
+        );
+        assert_eq!(
+            renewed_expiry(1050, 1000, 1060, far, 3_600_000),
+            (1110, false)
+        );
+    }
+
+    #[test]
+    fn renewal_is_capped_by_runtime_deadline_and_max_total() {
+        let far = 10_000_000 * 1000;
+        // wall 1.5 s rounds up to 2 s, plus transfer grace.
+        let cap = 1000 + 2 + LEASE_TRANSFER_GRACE_SECS;
+        assert_eq!(
+            renewed_expiry(cap - 10, 1000, cap - 20, far, 1500),
+            (cap, true)
+        );
+        // Deadline wins.
+        assert_eq!(
+            renewed_expiry(1030, 1000, 1060, 1070 * 1000, u64::MAX),
+            (1070, true)
+        );
+        // Server max total wins over a huge manifest limit.
+        let max = 1000 + LEASE_MAX_TOTAL_SECS;
+        assert_eq!(
+            renewed_expiry(max - 1, 1000, max - 2, far, u64::MAX),
+            (max, true)
+        );
+    }
+
+    #[test]
+    fn renewal_never_shortens() {
+        assert_eq!(
+            renewed_expiry(5000, 1000, 1700, 10_000_000, 1000),
+            (1700, true)
+        );
+    }
 }
