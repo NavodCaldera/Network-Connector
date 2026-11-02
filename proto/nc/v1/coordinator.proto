@@ -102,3 +102,18 @@ message ErrorResponse {
 message HealthResponse {
   bool ok = 1; // Open /healthz response.
 }
+
+// POST /v1/devices/me (signed, body `{}`): does the server know the signing key?
+message WhoAmIRequest {}
+message WhoAmIResponse {
+  bool registered = 1;  // False for an unknown or deregistered key.
+  string device_id = 2; // UUID when registered, empty otherwise.
+  string name = 3;      // As registered; empty when not registered.
+  string platform = 4;  // As registered; empty when not registered.
+}
+// POST /v1/devices/deregister (signed, body `{}`): remove this device (app reset).
+message DeregisterRequest {}
+message DeregisterResponse {
+  string device_id = 1;       // UUID of the removed device.
+  uint32 released_leases = 2; // Active leases released back to the queue (or failed at the attempt cap).
+}

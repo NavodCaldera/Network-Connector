@@ -15,6 +15,38 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 - Claude (Net agent) - `feat/net-device-lifecycle` - task 1.N2
+
+- **Commits:** the single commit on `feat/net-device-lifecycle` that adds this entry.
+- **Asked:** 1.N2: device-signed "who am I", secret-free idempotent re-register for known keys, device-signed
+  deregister that releases leases; tests incl. replay protection.
+- **Done:**
+  - `proto/nc/v1/coordinator.proto`: `WhoAmIRequest/Response`, `DeregisterRequest/Response` (new tags only);
+    `core/crates/nc-protocol/build.rs`: serde derives + `deny_unknown_fields` for them (6 lines, Core-owned file,
+    needed so the generated types serialise); `proto/README.md`: lifecycle contract.
+  - `nc-coordinator/src/lib.rs`: `POST /v1/devices/me`; `POST /v1/devices/deregister`; `register` now verifies
+    the signature and nonce first, returns the existing device (`created:false`, nothing changed) for a known key
+    without the secret, and still requires the secret for an unknown key.
+  - Migration `0004_device_lifecycle.sql`: `public_key` nullable, `deregistered_at`. Deregister (one transaction,
+    device row locked) expires the device's active leases, puts their `leased` tasks back to `queued` (`failed`
+    at the six-attempt cap, same rule as lease fail) and detaches the key, so the row stays for job/blob history.
+  - Tests: `lease_cycle.rs` `device_lifecycle` section (run at the end of the Docker test so it cannot disturb the
+    exact-count lease race); `validation.rs` unsigned `/me`, `/deregister`, `/register` get 401.
+- **Decisions (Net agent):** soft delete (key detached) instead of row delete, because jobs, leases, attempts and
+  blobs reference the device. A deregistered key is unknown afterwards: `/me` says `registered:false`, other calls
+  401, and re-enrolling it needs the secret and gives a new device id. Jobs it submitted are left in place.
+  Released attempts still count toward the six-attempt cap.
+- **Verified (this PC, CARGO_TARGET_DIR=D:
+c-target-net, -j 2, nice):** server `cargo fmt --all --check` ok;
+  `cargo clippy --all-targets --locked -- -D warnings` ok; `cargo test`: coordinator 7 unit + 9 validation, relay
+  7 + 1, Docker test ignored as designed. core nc-protocol fmt/clippy ok, tests 12+11+22 passed. `cargo deny check`
+  server and core: `advisories ok, bans ok, licenses ok, sources ok`. `infra/verify.ps1` (Docker already running,
+  fresh images): `Coordinator /healthz: ok`, uids 999, `test real_job_cycle_over_http ... ok`,
+  `1 passed; 0 failed; finished in 125.30s`, stack and volumes removed. `verify.sh` not used (no jq on this PC).
+- **Not done / open:** the app (`nc-bridge` enrol/unenrol) and agent do not call `/me` or `/deregister` yet (App
+  agent). No rate limit on `/me` for unknown keys beyond the body cap and nonce table (same as other endpoints).
+  Branch CI result is in the hand-back.
+
 ## 2026-11-02 — Coordinator (Claude): pause 1.P9 and 1.N2
 
 - Commits: board update; WIP ac2440b on feat/core-builder; net branch at 36b87e4.

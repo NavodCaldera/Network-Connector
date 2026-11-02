@@ -1,9 +1,10 @@
 //! Generated coordinator JSON bodies plus endpoint validation.
 use crate::error::ApiError;
 pub use nc_protocol::pb::v1::{
-    CompleteRequest, CompleteResponse, HealthResponse, HeartbeatRequest, HeartbeatResponse,
-    LeaseRenewRequest, LeaseRenewResponse, LeaseRequest, LeaseResponse, RegisterRequest,
-    RegisterResponse, RelayTokenRequest, RelayTokenResponse,
+    CompleteRequest, CompleteResponse, DeregisterRequest, DeregisterResponse, HealthResponse,
+    HeartbeatRequest, HeartbeatResponse, LeaseRenewRequest, LeaseRenewResponse, LeaseRequest,
+    LeaseResponse, RegisterRequest, RegisterResponse, RelayTokenRequest, RelayTokenResponse,
+    WhoAmIRequest, WhoAmIResponse,
 };
 
 /// Validate an HTTP request after strict JSON deserialization.

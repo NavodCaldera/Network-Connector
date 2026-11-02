@@ -30,13 +30,23 @@ impl Dev {
         extra: Option<(&str, &str)>,
     ) -> reqwest::Response {
         let nonce = uuid::Uuid::new_v4().simple().to_string();
+        self.request_nonce(method, path, body, extra, &nonce).await
+    }
+    async fn request_nonce(
+        &self,
+        method: &str,
+        path: &str,
+        body: Vec<u8>,
+        extra: Option<(&str, &str)>,
+        nonce: &str,
+    ) -> reqwest::Response {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
         let sig = self
             .sk
-            .sign(signing_string(method, path, ts, &nonce, &body).as_bytes());
+            .sign(signing_string(method, path, ts, nonce, &body).as_bytes());
         let mut r = self
             .http
             .request(method.parse().unwrap(), format!("{}{path}", self.base))
@@ -567,4 +577,175 @@ async fn real_job_cycle_over_http() {
         renewed,
         if race_stolen.is_some() { "reclaimed" } else { "kept" }
     );
+
+    device_lifecycle(&base, &enroll, &owner, &helper).await;
+}
+
+/// 1.N2: who-am-I, secret-free re-register for known keys, deregister releasing leases, replay kept.
+async fn device_lifecycle(base: &str, enroll: &str, owner: &Dev, helper: &Dev) {
+    let reg = |name: &str, platform: &str| {
+        serde_json::to_vec(&json!({"name": name, "platform": platform})).unwrap()
+    };
+    async fn json_of(r: reqwest::Response) -> (u16, Value) {
+        let s = r.status().as_u16();
+        (s, r.json().await.unwrap())
+    }
+    let unknown = Dev::new(base);
+    let (s, v) = unknown.post("/v1/devices/me", json!({})).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["registered"], false);
+    assert_eq!(v["device_id"], "");
+    let r = unknown
+        .request("POST", "/v1/devices/register", reg("x", "linux"), None)
+        .await;
+    assert_eq!(r.status(), 401, "unknown key without the secret");
+    let r = unknown
+        .request(
+            "POST",
+            "/v1/devices/register",
+            reg("x", "linux"),
+            Some(("x-nc-enroll", "wrong-secret-value")),
+        )
+        .await;
+    assert_eq!(r.status(), 401, "unknown key with a wrong secret");
+    assert_eq!(
+        unknown.post("/v1/devices/me", json!({})).await.1["registered"],
+        false
+    );
+    assert_eq!(
+        unknown.post("/v1/devices/deregister", json!({})).await.0,
+        401
+    );
+    let (s, _) = unknown.post("/v1/devices/me", json!({"x": 1})).await;
+    assert_eq!(s, 400, "unknown fields rejected");
+    println!("whoami unknown / register without secret 401: passed");
+
+    let d = Dev::new(base);
+    d.register(enroll).await;
+    let (s, me) = d.post("/v1/devices/me", json!({})).await;
+    assert_eq!(s, 200, "{me}");
+    assert_eq!(me["registered"], true);
+    assert_eq!(me["name"], "job-test");
+    assert_eq!(me["platform"], "linux");
+    let id = me["device_id"].as_str().unwrap().to_owned();
+    let (s, v) = json_of(
+        d.request(
+            "POST",
+            "/v1/devices/register",
+            reg("renamed", "windows"),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(s, 200, "known key re-registers without the secret: {v}");
+    assert_eq!(v["device_id"], id.as_str());
+    assert_eq!(v["created"], false);
+    let (_, again) = d.post("/v1/devices/me", json!({})).await;
+    assert_eq!(again, me, "re-register changes nothing");
+    println!("whoami known / idempotent re-register without secret: passed");
+
+    // Replay protection still applies to the new endpoints and to secret-free register.
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    for (path, body) in [
+        ("/v1/devices/me", b"{}".to_vec()),
+        ("/v1/devices/register", reg("job-test", "linux")),
+    ] {
+        let nonce = format!("{nonce}{}", path.len());
+        let r = d
+            .request_nonce("POST", path, body.clone(), None, &nonce)
+            .await;
+        assert_eq!(r.status(), 200, "{path}");
+        let r = d.request_nonce("POST", path, body, None, &nonce).await;
+        assert_eq!(r.status(), 401, "replayed {path}");
+    }
+    println!("replay of whoami / register rejected: passed");
+
+    // Deregister while holding a lease puts the task back in the queue.
+    let job = owner.submit(owner.manifest(1)).await;
+    let mut held = None;
+    for _ in 0..8 {
+        let l = d.lease().await;
+        if l["task_id"] == job.as_str() {
+            held = Some(l);
+            break;
+        }
+        // Leftover reclaimable task from the earlier section: finish it so the queue drains.
+        assert_eq!(d.complete(&l, b"drain").await.0, 200);
+    }
+    let held = held.expect("lease on the new job");
+    assert_eq!(owner.status(&job).await["tasks"][0]["state"], "leased");
+    let deregister_nonce = uuid::Uuid::new_v4().simple().to_string();
+    let (s, v) = json_of(
+        d.request_nonce(
+            "POST",
+            "/v1/devices/deregister",
+            b"{}".to_vec(),
+            None,
+            &deregister_nonce,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["device_id"], id.as_str());
+    assert_eq!(v["released_leases"], 1);
+    assert_eq!(owner.status(&job).await["tasks"][0]["state"], "queued");
+    let r = d
+        .request_nonce(
+            "POST",
+            "/v1/devices/deregister",
+            b"{}".to_vec(),
+            None,
+            &deregister_nonce,
+        )
+        .await;
+    assert_eq!(r.status(), 401, "replayed deregister");
+    for (path, body) in [
+        ("/v1/devices/heartbeat", json!({"status": "idle"})),
+        ("/v1/leases/request", json!({})),
+        (
+            "/v1/leases/renew",
+            json!({"lease_id": held["lease_id"], "attempt_id": held["attempt_id"]}),
+        ),
+        ("/v1/devices/deregister", json!({})),
+    ] {
+        let (s, v) = d.post(path, body).await;
+        assert_eq!(s, 401, "{path} after deregister: {v}");
+    }
+    let r = d
+        .request(
+            "POST",
+            "/v1/devices/register",
+            reg("job-test", "linux"),
+            None,
+        )
+        .await;
+    assert_eq!(r.status(), 401, "deregistered key needs the secret again");
+    assert_eq!(
+        d.post("/v1/devices/me", json!({})).await.1["registered"],
+        false
+    );
+    let fail = json!({"lease_id": held["lease_id"], "attempt_id": held["attempt_id"], "reason": 9});
+    assert_eq!(d.post("/v1/leases/fail", fail).await.0, 401);
+    // Another device picks the released task up and commits it.
+    assert_eq!(
+        helper
+            .post("/v1/devices/heartbeat", json!({"status": "idle"}))
+            .await
+            .0,
+        200
+    );
+    let mut done = false;
+    for _ in 0..8 {
+        let l = helper.lease().await;
+        assert_eq!(helper.complete(&l, b"after-reset").await.0, 200);
+        if l["task_id"] == job.as_str() {
+            done = true;
+            break;
+        }
+    }
+    assert!(done, "released task leased again");
+    assert_eq!(owner.status(&job).await["tasks"][0]["state"], "committed");
+    println!("deregister releases lease -> queued -> other device commits; key then 401: passed");
 }

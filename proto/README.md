@@ -192,3 +192,20 @@ GET /v1/jobs/{uuid} returns per-task state and only committed output refs, no da
 NC_BLOB_DIR names a private server-owned directory on a persistent volume. Never
 share it with untrusted filesystem writers. Temporary uploads are removed on all
 normal errors; process-kill leftovers need operator cleanup while stopped.
+
+Device lifecycle (1.N2). All three are signed NC-REQ-V1 POSTs with a JSON body.
+POST /v1/devices/register: a key that is already registered may call it again
+without `x-nc-enroll`; it returns 200 with the existing `device_id` and
+`created: false` and changes nothing (not the id, account, name or platform).
+An unknown key still needs the enrolment secret (401 otherwise).
+POST /v1/devices/me (WhoAmIRequest, body `{}`) returns 200 WhoAmIResponse for any
+valid signature: `registered: false` and empty strings for an unknown or
+deregistered key, otherwise the device id, name and platform.
+POST /v1/devices/deregister (DeregisterRequest, body `{}`) removes the calling
+device: its active leases end (state expired; attempt counted) and their tasks go
+back to `queued`, or `failed` at the six-attempt cap; the key is detached from the
+device row. Every later signed call with that key gets 401 except /me (which
+reports `registered: false`); registering it again needs the secret and creates a
+new device id. Jobs the device submitted stay on the server but it can no longer
+read them. Response: `device_id` and `released_leases`. Replay protection applies
+to all three (a reused nonce is 401).

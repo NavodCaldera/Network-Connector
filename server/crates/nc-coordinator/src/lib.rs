@@ -2,6 +2,9 @@
 //!
 //! Control requests use signed JSON; blob uploads stream signed opaque bytes (see [`auth`]).
 //! - `/v1/devices/register`  — enrol a device key (needs the owner's enrolment secret in Phase 0)
+//!   (a key the server already knows may re-register without the secret: idempotent, no new device)
+//! - `/v1/devices/me`        — "who am I": does the server know the signing key, and its device id
+//! - `/v1/devices/deregister` — remove the calling device (app reset); releases its active leases
 //! - `/v1/devices/heartbeat` — liveness + status
 //! - `/v1/leases/request`    — lease the next uploaded real job
 //! - `/v1/leases/renew`     - extend the caller's live lease (capped by runtime, deadline and a server max)
@@ -85,6 +88,8 @@ pub fn app(state: AppState) -> Router {
             get(|| async { Json(HealthResponse { ok: true }) }),
         )
         .route("/v1/devices/register", post(register))
+        .route("/v1/devices/me", post(whoami))
+        .route("/v1/devices/deregister", post(deregister))
         .route("/v1/devices/heartbeat", post(heartbeat))
         .route("/v1/leases/request", post(lease_request))
         .route("/v1/leases/complete", post(jobs::complete))
@@ -158,15 +163,9 @@ struct Device {
 }
 
 async fn device(s: &AppState, c: &Caller) -> Result<Device, ApiError> {
-    let row = sqlx::query("SELECT id, account_id FROM devices WHERE public_key = $1")
-        .bind(c.public_key.as_slice())
-        .fetch_optional(&s.pool)
+    known_device(s, c)
         .await?
-        .ok_or_else(|| ApiError::unauthorized("device not registered"))?;
-    Ok(Device {
-        id: row.try_get("id")?,
-        account: row.try_get("account_id")?,
-    })
+        .ok_or_else(|| ApiError::unauthorized("device not registered"))
 }
 
 async fn register(
@@ -176,6 +175,23 @@ async fn register(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Json<RegisterResponse>, ApiError> {
+    let (c, b) = read_signed(&s, &method, &uri, &headers, body).await?;
+    let req: RegisterRequest = parse(&b)?;
+    req.validate()?;
+    let t = now();
+    // A key that is already registered proves possession by its signature: idempotent, no secret needed,
+    // nothing about the device (id, account, name, platform) changes.
+    if let Some(d) = known_device(&s, &c).await? {
+        sqlx::query("UPDATE devices SET last_seen = $1 WHERE id = $2")
+            .bind(t)
+            .bind(d.id)
+            .execute(&s.pool)
+            .await?;
+        return Ok(Json(RegisterResponse {
+            device_id: d.id.to_string(),
+            created: false,
+        }));
+    }
     let enroll = headers
         .get("x-nc-enroll")
         .and_then(|v| v.to_str().ok())
@@ -183,10 +199,6 @@ async fn register(
     if s.enroll_secret.is_empty() || !ct_eq(enroll.as_bytes(), s.enroll_secret.as_bytes()) {
         return Err(ApiError::unauthorized("enrolment secret required"));
     }
-    let (c, b) = read_signed(&s, &method, &uri, &headers, body).await?;
-    let req: RegisterRequest = parse(&b)?;
-    req.validate()?;
-    let t = now();
     let id = Uuid::new_v4();
     let row = sqlx::query(
         "INSERT INTO devices (id, public_key, account_id, name, platform, created_at, last_seen)
@@ -207,6 +219,91 @@ async fn register(
     Ok(Json(RegisterResponse {
         device_id: device_id.to_string(),
         created: device_id == id,
+    }))
+}
+
+async fn known_device(s: &AppState, c: &Caller) -> Result<Option<Device>, ApiError> {
+    let row = sqlx::query("SELECT id, account_id FROM devices WHERE public_key = $1")
+        .bind(c.public_key.as_slice())
+        .fetch_optional(&s.pool)
+        .await?;
+    row.map(|r| -> Result<Device, ApiError> {
+        Ok(Device {
+            id: r.try_get("id")?,
+            account: r.try_get("account_id")?,
+        })
+    })
+    .transpose()
+}
+
+async fn whoami(
+    State(s): State<AppState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Json<WhoAmIResponse>, ApiError> {
+    let (c, b) = read_signed(&s, &method, &uri, &headers, body).await?;
+    let _req: WhoAmIRequest = parse(&b)?;
+    let row = sqlx::query("SELECT id, name, platform FROM devices WHERE public_key = $1")
+        .bind(c.public_key.as_slice())
+        .fetch_optional(&s.pool)
+        .await?;
+    Ok(Json(match row {
+        Some(r) => WhoAmIResponse {
+            registered: true,
+            device_id: r.try_get::<Uuid, _>("id")?.to_string(),
+            name: r.try_get("name")?,
+            platform: r.try_get("platform")?,
+        },
+        None => WhoAmIResponse::default(),
+    }))
+}
+
+async fn deregister(
+    State(s): State<AppState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Json<DeregisterResponse>, ApiError> {
+    let (c, b) = read_signed(&s, &method, &uri, &headers, body).await?;
+    let _req: DeregisterRequest = parse(&b)?;
+    let d = device(&s, &c).await?;
+    let t = now();
+    let mut tx = s.pool.begin().await?;
+    // Lock the device row first so a concurrent lease request for it cannot interleave.
+    sqlx::query("SELECT id FROM devices WHERE id = $1 FOR UPDATE")
+        .bind(d.id)
+        .execute(&mut *tx)
+        .await?;
+    let released: Vec<Uuid> = sqlx::query_scalar(
+        "UPDATE leases SET state = 'expired' WHERE device_id = $1 AND state = 'active' RETURNING task_id",
+    )
+    .bind(d.id)
+    .fetch_all(&mut *tx)
+    .await?;
+    // Same retry bound as lease failure: at the attempt cap the task fails, otherwise it is queued again.
+    sqlx::query(
+        "UPDATE tasks SET state = CASE WHEN attempts >= 6 THEN 'failed' ELSE 'queued' END
+         WHERE id = ANY($1) AND state = 'leased'",
+    )
+    .bind(&released)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE devices SET public_key = NULL, deregistered_at = $1, status = 'idle', heartbeat_at = NULL
+         WHERE id = $2",
+    )
+    .bind(t)
+    .bind(d.id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    tracing::info!(device_id = %d.id, released = released.len(), "device deregistered");
+    Ok(Json(DeregisterResponse {
+        device_id: d.id.to_string(),
+        released_leases: released.len() as u32,
     }))
 }
 
