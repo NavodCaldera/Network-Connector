@@ -88,6 +88,44 @@ pub trait Coordinator: Send + Sync {
     fn job_status(&self, job_id: &str) -> Result<JobStatusResponse, CoordError>;
 }
 
+/// Wrapper for a device that is already enrolled: `register` is a no-op (the server needs the one-shot
+/// enrolment secret on every register, and it is not kept); every other call goes to the inner coordinator,
+/// so a forgotten device still fails closed on its first signed heartbeat (401).
+pub struct SkipRegister(pub Arc<dyn Coordinator>);
+
+impl Coordinator for SkipRegister {
+    fn register(&self, _req: &RegisterRequest) -> Result<(), CoordError> {
+        Ok(())
+    }
+    fn heartbeat(&self, req: &HeartbeatRequest) -> Result<(), CoordError> {
+        self.0.heartbeat(req)
+    }
+    fn lease(&self) -> Result<Option<LeaseResponse>, CoordError> {
+        self.0.lease()
+    }
+    fn fail(&self, req: &LeaseFailRequest) -> Result<LeaseFailResponse, CoordError> {
+        self.0.fail(req)
+    }
+    fn renew(&self, req: &LeaseRenewRequest) -> Result<LeaseRenewResponse, CoordError> {
+        self.0.renew(req)
+    }
+    fn complete(&self, req: &CompleteRequest) -> Result<CompleteResponse, CoordError> {
+        self.0.complete(req)
+    }
+    fn get_blob(&self, path: &str, offset: u64) -> Result<Box<dyn Read + Send>, CoordError> {
+        self.0.get_blob(path, offset)
+    }
+    fn put_blob(&self, sha256_hex: &str, bytes: &[u8]) -> Result<(), CoordError> {
+        self.0.put_blob(sha256_hex, bytes)
+    }
+    fn submit(&self, req: &SubmitJobRequest) -> Result<SubmitJobResponse, CoordError> {
+        self.0.submit(req)
+    }
+    fn job_status(&self, job_id: &str) -> Result<JobStatusResponse, CoordError> {
+        self.0.job_status(job_id)
+    }
+}
+
 /// Exact request-signing bytes (proto/README.md "Exact HTTP request-signing bytes").
 pub fn signing_string(method: &str, path: &str, ts: i64, nonce: &str, body: &[u8]) -> String {
     let digest = hex::encode(Sha256::digest(body));

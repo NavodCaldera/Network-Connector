@@ -15,6 +15,26 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 · Claude (coordinator) · main · merge 1.P9
+
+- **Asked:** resume paused work; review and merge 1.P9.
+- **Done:** reviewed `feat/core-builder` (ac2440b, 8e48e9f) and merged into main. TASKS.md 1.P9 set to done.
+- **Verified:** agent report: fmt clean, clippy -D warnings clean, cargo test nc-tariff/nc-agent/nc-cli 79 passed, 0 failed, 5 ignored. Full workspace and CI not run before merge; CI on main will run.
+- **Open:** nc-bridge `enrol.rs` still has its own builder; should switch to `build_agent_with(SkipRegister(..))` (app task). Not run against real coordinator.
+
+## 2026-11-02 - Claude (Core agent) - `feat/core-builder` - task 1.P9
+
+- **Commits:** ac2440b (WIP saved at pause) and the commit that adds this entry.
+- **Asked:** finish 1.P9: shared `AgentConfig::build_agent_with` builder (can skip register), `nc key`, nc-tariff seed API so per-window caps persist via the nc-store `budget_usage` ledger.
+- **Done:**
+  - nc-agent `config.rs`: `build_agent` now goes through `build_agent_with(coord)` / `backend_with(coord)` (same runner, journal, blob cache, budget ledger, probe, tuning). `public_key_b64()` returns the public key only. `coord.rs`: `SkipRegister` wrapper for devices that are already enrolled.
+  - nc-cli: `nc key` prints the base64url public key; it never prints the private key.
+  - nc-tariff: `WindowOccurrence`, `active_window`, `BudgetState::window_used_bytes`, `BudgetLedger::seed_usage` (only adds usage; a bad window index is refused and windows that have already ended are ignored).
+  - nc-agent `budget.rs`: bytes are also recorded under a per-occurrence key (hashed profile id, window index, start), and the active window is seeded at start-up, so window caps survive a restart.
+- **Decisions:** seeding can only make the ledger stricter (the device has the final say).
+- **Verified (CARGO_TARGET_DIR=C:
+c-target, -j 2, nice 19):** `cargo fmt --check` clean; `cargo clippy -p nc-tariff -p nc-agent -p nc-cli --all-targets -- -D warnings` clean; `cargo test` for the same crates: 79 passed, 0 failed, 5 ignored. Tests include a window cap across midnight with restarts, restart outside a window and on cellular, the builder with a counting coordinator and SkipRegister, and a stable public-key format.
+- **Not done / open:** the whole workspace was not tested (only the affected crates). nc-bridge still has its own copy of `build_agent`; it should switch to `build_agent_with` (App-owned, so this is a request). Not run against the real coordinator.
 ## 2026-11-02 — Coordinator (Claude): pause 1.P9 and 1.N2
 
 - Commits: board update; WIP ac2440b on feat/core-builder; net branch at 36b87e4.

@@ -3,7 +3,7 @@
 //! The enrolment secret is never in the file: it comes from the `NC_ENROLL_SECRET` environment variable.
 
 use crate::budget::{BudgetGate, NetworkBudget};
-use crate::coord::HttpCoordinator;
+use crate::coord::{Coordinator, HttpCoordinator};
 use crate::journal::Journal;
 use crate::probe::{ProbeConfig, SystemClock, SystemProbe};
 use crate::runner::SandboxRunner;
@@ -156,14 +156,35 @@ impl AgentConfig {
         Ok(Arc::new(k))
     }
 
+    /// This device's public key as base64url without padding (the trusted-publisher key format). Creates the
+    /// key on first use. The private key is never returned.
+    pub fn public_key_b64(&self) -> Result<String, ConfigError> {
+        use base64::Engine;
+        let key = self.device_key()?;
+        Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key()))
+    }
+
     /// Coordinator client signing with `key`.
     pub fn coordinator(&self, key: Arc<dyn DeviceKeyStore>) -> HttpCoordinator {
         HttpCoordinator::new(&self.coordinator_url, key, std::env::var(ENROLL_ENV).ok())
     }
 
-    /// Build the real agent.
+    /// Build the real agent (HTTPS coordinator signing with the device key; registers on start).
     pub fn build_agent(&self) -> Result<Agent, ConfigError> {
         let key = self.device_key()?;
+        self.build_agent_with(Arc::new(self.coordinator(key)))
+    }
+
+    /// Build the real agent with the same wiring as [`Self::build_agent`] (sandbox runner, journal, blob
+    /// cache, persisted budget ledger, system probe, tuning) but talking to `coord`. Wrap `coord` in
+    /// [`crate::coord::SkipRegister`] on a device that is already enrolled.
+    pub fn build_agent_with(&self, coord: Arc<dyn Coordinator>) -> Result<Agent, ConfigError> {
+        Ok(Agent::with_backend(self.backend_with(coord)?))
+    }
+
+    /// The [`Backend`] [`Self::build_agent_with`] uses, for callers that need to adjust it first.
+    pub fn backend_with(&self, coord: Arc<dyn Coordinator>) -> Result<Backend, ConfigError> {
+        std::fs::create_dir_all(&self.data_dir).map_err(|_| ConfigError::Open("data_dir"))?;
         let runner = SandboxRunner::new(&self.worker_path);
         if let Err(e) = runner.prepare() {
             // Not fatal here: every job will be refused with SANDBOX_UNAVAILABLE instead of running weaker.
@@ -183,7 +204,7 @@ impl AgentConfig {
         let budget = BudgetGate::with_usage_store(&self.network_budget, chrono::Utc::now(), usage)
             .map_err(|_| ConfigError::Invalid("network_budget"))?;
         let backend = Backend {
-            coord: Arc::new(self.coordinator(key)),
+            coord,
             probe: Arc::new(SystemProbe::new(self.probe.clone())),
             clock: Arc::new(SystemClock),
             runner: Arc::new(runner),
@@ -198,7 +219,7 @@ impl AgentConfig {
                 ..Tuning::default()
             },
         };
-        Ok(Agent::with_backend(backend))
+        Ok(backend)
     }
 }
 
@@ -230,5 +251,123 @@ mod tests {
         v["surprise"] = 1.into();
         std::fs::write(&path, v.to_string()).unwrap();
         assert!(AgentConfig::load(&path).is_err(), "unknown fields refused");
+    }
+
+    #[test]
+    fn public_key_is_stable_base64url_of_32_bytes() {
+        use base64::Engine;
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        let a = c.public_key_b64().unwrap();
+        assert_eq!(a, c.public_key_b64().unwrap(), "same key on reopen");
+        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&a)
+            .unwrap();
+        assert_eq!(raw.len(), 32);
+        assert!(!a.contains('=') && !a.contains('+') && !a.contains('/'));
+        let file = std::fs::read(c.key_path()).unwrap();
+        assert!(!file.windows(a.len()).any(|w| w == a.as_bytes()));
+    }
+
+    fn cfg(dir: &Path) -> AgentConfig {
+        serde_json::from_value(serde_json::json!({
+            "coordinator_url": "https://coordinator.example",
+            "data_dir": dir,
+            "device_name": "pc",
+            "worker_path": "nc-exec-worker-missing.exe",
+            "network_budget": "unmetered",
+            "probe": {"network": {"interface": "ethernet", "connection_id": "home", "bytes_per_second": 1000000}, "declared_thermal": "nominal"}
+        }))
+        .unwrap()
+    }
+
+    struct Counting(std::sync::atomic::AtomicUsize);
+    impl Coordinator for Counting {
+        fn register(
+            &self,
+            _: &nc_protocol::pb::v1::RegisterRequest,
+        ) -> Result<(), crate::coord::CoordError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        fn heartbeat(
+            &self,
+            _: &nc_protocol::pb::v1::HeartbeatRequest,
+        ) -> Result<(), crate::coord::CoordError> {
+            self.0.fetch_add(100, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        fn lease(
+            &self,
+        ) -> Result<Option<nc_protocol::pb::v1::LeaseResponse>, crate::coord::CoordError> {
+            unimplemented!()
+        }
+        fn fail(
+            &self,
+            _: &nc_protocol::pb::v1::LeaseFailRequest,
+        ) -> Result<nc_protocol::pb::v1::LeaseFailResponse, crate::coord::CoordError> {
+            unimplemented!()
+        }
+        fn renew(
+            &self,
+            _: &nc_protocol::pb::v1::LeaseRenewRequest,
+        ) -> Result<nc_protocol::pb::v1::LeaseRenewResponse, crate::coord::CoordError> {
+            unimplemented!()
+        }
+        fn complete(
+            &self,
+            _: &nc_protocol::pb::v1::CompleteRequest,
+        ) -> Result<nc_protocol::pb::v1::CompleteResponse, crate::coord::CoordError> {
+            unimplemented!()
+        }
+        fn get_blob(
+            &self,
+            _: &str,
+            _: u64,
+        ) -> Result<Box<dyn std::io::Read + Send>, crate::coord::CoordError> {
+            unimplemented!()
+        }
+        fn put_blob(&self, _: &str, _: &[u8]) -> Result<(), crate::coord::CoordError> {
+            unimplemented!()
+        }
+        fn submit(
+            &self,
+            _: &nc_protocol::pb::v1::SubmitJobRequest,
+        ) -> Result<nc_protocol::pb::v1::SubmitJobResponse, crate::coord::CoordError> {
+            unimplemented!()
+        }
+        fn job_status(
+            &self,
+            _: &str,
+        ) -> Result<nc_protocol::pb::v1::JobStatusResponse, crate::coord::CoordError> {
+            unimplemented!()
+        }
+    }
+
+    #[test]
+    fn build_agent_with_uses_given_coordinator_and_skip_register_skips() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        let inner = Arc::new(Counting(std::sync::atomic::AtomicUsize::new(0)));
+        let backend = c.backend_with(inner.clone()).unwrap();
+        assert!(dir.path().join("budget.sqlite").exists());
+        assert!(dir.path().join("staging").is_dir());
+        backend.coord.register(&Default::default()).unwrap();
+        assert_eq!(inner.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let skip = crate::coord::SkipRegister(inner.clone());
+        skip.register(&Default::default()).unwrap();
+        assert_eq!(
+            inner.0.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "register skipped"
+        );
+        skip.heartbeat(&Default::default()).unwrap();
+        assert_eq!(
+            inner.0.load(std::sync::atomic::Ordering::SeqCst),
+            101,
+            "heartbeat forwarded"
+        );
+        drop(backend);
+        let _agent = c.build_agent_with(Arc::new(skip)).unwrap();
     }
 }

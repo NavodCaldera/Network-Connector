@@ -683,3 +683,105 @@ fn slower_observation_defers_remaining_transfer_and_empty_windows_never_open() {
         Decision::Defer { next_open: None }
     );
 }
+
+// Per-window usage seeding (restart). Colombo is UTC+05:30: the 22:00-06:00 window is 16:30Z-00:29:30Z.
+fn window_used(l: &BudgetLedger, at: &str) -> u64 {
+    let p = profile();
+    let occ = active_window(&p, utc(at)).unwrap().unwrap();
+    l.snapshot().unwrap().window_used_bytes(&occ)
+}
+
+#[test]
+fn seeded_window_usage_limits_same_occurrence_across_midnight() {
+    let p = profile();
+    // Earlier run used 30 MB at 23:00 local; restart at 02:00 local the next day (same occurrence).
+    let first = utc("2026-01-05T17:30:00Z");
+    let restart = utc("2026-01-05T20:30:00Z");
+    let occ = active_window(&p, first).unwrap().unwrap();
+    assert_eq!(active_window(&p, restart).unwrap().unwrap(), occ);
+    assert_eq!(occ.index(), 0);
+    assert_eq!(occ.start(), utc("2026-01-05T16:30:00Z"));
+    assert_eq!(occ.end(), utc("2026-01-06T00:29:30Z"));
+    let l = BudgetLedger::new(&p, restart).unwrap();
+    l.seed_usage(30_000_000, &[(occ, 30_000_000)]).unwrap();
+    assert_eq!(window_used(&l, "2026-01-05T20:30:00Z"), 30_000_000);
+    assert_eq!(l.snapshot().unwrap().committed_bytes(), 30_000_000);
+    // Budget edge: exactly the 20 MB left in the window fits, one byte more does not.
+    assert!(l
+        .reserve_transfer(restart, &network(&p), request(20_000_001))
+        .is_err());
+    let id = l
+        .reserve_transfer(restart, &network(&p), request(20_000_000))
+        .unwrap();
+    l.commit(id, 20_000_000).unwrap();
+    assert!(l
+        .reserve_transfer(restart, &network(&p), request(1))
+        .is_err());
+    // The next night is a new occurrence and starts fresh.
+    let next = utc("2026-01-06T17:00:00Z");
+    assert!(l
+        .reserve_transfer(next, &network(&p), request(40_000_000))
+        .is_ok());
+}
+
+#[test]
+fn seed_refuses_foreign_index_and_ignores_ended_occurrence() {
+    let p = profile();
+    let mut two = p.clone();
+    let mut w = two.windows[0].clone();
+    w.start = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+    w.end = NaiveTime::from_hms_opt(13, 0, 0).unwrap();
+    two.windows.push(w);
+    two.validate().unwrap();
+    let foreign = active_window(&two, utc("2026-01-05T06:45:00Z"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(foreign.index(), 1);
+    let l = BudgetLedger::new(&p, utc("2026-01-06T10:00:00Z")).unwrap();
+    assert!(matches!(
+        l.seed_usage(0, &[(foreign, 1)]),
+        Err(TariffError::Range)
+    ));
+    // The previous occurrence ended before now: ignored, only the period total counts.
+    let ended = active_window(&p, utc("2026-01-05T17:00:00Z"))
+        .unwrap()
+        .unwrap();
+    l.seed_usage(5, &[(ended.clone(), 49_000_000)]).unwrap();
+    assert_eq!(l.snapshot().unwrap().window_used_bytes(&ended), 0);
+    assert_eq!(l.snapshot().unwrap().committed_bytes(), 5);
+}
+
+#[test]
+fn seeding_never_loosens_clock_or_network_rules() {
+    let p = profile();
+    let now = utc("2026-01-05T18:00:00Z");
+    let occ = active_window(&p, now).unwrap().unwrap();
+    let l = BudgetLedger::new(&p, now).unwrap();
+    l.seed_usage(u64::MAX, &[(occ.clone(), u64::MAX)]).unwrap();
+    assert_eq!(l.snapshot().unwrap().committed_bytes(), u64::MAX);
+    assert_eq!(l.snapshot().unwrap().window_used_bytes(&occ), u64::MAX);
+    assert!(l.reserve_transfer(now, &network(&p), request(1)).is_err());
+    // Fresh ledger, small seed: a backwards clock jump and Wi-Fi to cellular still refuse.
+    let l = BudgetLedger::new(&p, now).unwrap();
+    l.seed_usage(1, &[(occ, 1)]).unwrap();
+    assert!(l
+        .reserve_transfer(now - Duration::hours(1), &network(&p), request(1))
+        .is_err());
+    let mut cell = network(&p);
+    cell.interface = InterfaceClass::Cellular;
+    assert!(l.reserve_transfer(now, &cell, request(1)).is_err());
+    assert!(l.reserve_transfer(now, &network(&p), request(1)).is_ok());
+}
+
+proptest! {
+    #[test]
+    fn seeded_window_available_is_cap_minus_seed(seed in 0u64..60_000_000, ask in 0u64..60_000_000) {
+        let p = profile();
+        let now = utc("2026-01-05T18:00:00Z");
+        let occ = active_window(&p, now).unwrap().unwrap();
+        let l = BudgetLedger::new(&p, now).unwrap();
+        l.seed_usage(0, &[(occ, seed)]).unwrap();
+        let ok = l.reserve_transfer(now, &network(&p), request(ask)).is_ok();
+        prop_assert_eq!(ok, ask <= 50_000_000u64.saturating_sub(seed));
+    }
+}

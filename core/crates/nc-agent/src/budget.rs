@@ -3,14 +3,15 @@
 //!
 //! With a usage store ([`BudgetGate::with_usage_store`]) every settled transfer is also written to nc-store,
 //! keyed by tariff profile and local day, and a new gate starts with the bytes already used in the current
-//! billing period, so a restart does not hand out the budget again. Per-window caps are still counted in
-//! memory only (nc-tariff has no way to seed them yet).
+//! billing period, so a restart does not hand out the budget again. Bytes moved inside a tariff window are also
+//! written under a per-occurrence key, and the window active at start-up is seeded from it
+//! ([`nc_tariff::BudgetLedger::seed_usage`]), so per-window caps survive a restart too.
 
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use nc_store::Store;
 use nc_tariff::{
-    decide, BudgetLedger, Decision, DenyReason, NetworkObservation, ReservationId, TariffError,
-    TariffProfile, TrafficClass, TransferRequest,
+    active_window, decide, BudgetLedger, Decision, DenyReason, NetworkObservation, ReservationId,
+    TariffError, TariffProfile, TrafficClass, TransferRequest, WindowOccurrence,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -40,6 +41,8 @@ pub struct Grant {
     id: Option<ReservationId>,
     /// Usage-ledger key and local day the bytes are charged to.
     usage_key: Option<(String, String)>,
+    /// Usage key of the window occurrence the bytes are also charged to.
+    window_key: Option<String>,
     /// Exclusive deadline; the transfer must stop at it. `None` for unmetered.
     pub until: Option<DateTime<Utc>>,
     /// Bytes reserved (the transfer must not exceed it).
@@ -68,6 +71,19 @@ impl std::fmt::Debug for Grant {
 /// Usage-ledger key for a profile (the profile id: a new version of the same tariff keeps its usage).
 fn ledger_key(p: &TariffProfile) -> String {
     format!("tariff:{}", p.profile_id)
+}
+
+/// Usage-ledger key for one window occurrence: hashed profile id (keeps the key short), window index and
+/// occurrence start.
+fn window_key(p: &TariffProfile, occ: &WindowOccurrence) -> String {
+    use sha2::Digest;
+    let h = hex::encode(sha2::Sha256::digest(p.profile_id.as_bytes()));
+    format!(
+        "tariff-window:{}:{}:{}",
+        &h[..32],
+        occ.index(),
+        occ.start().timestamp()
+    )
 }
 
 fn day_string(d: NaiveDate) -> String {
@@ -139,6 +155,34 @@ impl BudgetGate {
             .map_err(|_| TariffError::LedgerUnavailable)
     }
 
+    /// Bytes recorded for the window occurrence active at `now` (empty outside windows or without a store).
+    fn stored_window_usage(
+        &self,
+        p: &TariffProfile,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<(WindowOccurrence, u64)>, TariffError> {
+        let mut usage = self.usage.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(store) = usage.as_mut() else {
+            return Ok(Vec::new());
+        };
+        let Some(occ) = active_window(p, now)? else {
+            return Ok(Vec::new());
+        };
+        let from = local_day(p, occ.start());
+        let bytes = store
+            .budget_usage(
+                &window_key(p, &occ),
+                &day_string(from),
+                &day_string(local_day(p, now)),
+            )
+            .map_err(|_| TariffError::LedgerUnavailable)?;
+        Ok(if bytes > 0 {
+            vec![(occ, bytes)]
+        } else {
+            Vec::new()
+        })
+    }
+
     /// Replace the budget. Outstanding grants settle against the ledger that issued them.
     pub fn update(&self, budget: &NetworkBudget, now: DateTime<Utc>) -> Result<(), TariffError> {
         let (ledger, profile) = match budget {
@@ -146,11 +190,9 @@ impl BudgetGate {
             NetworkBudget::Metered(p) => {
                 let ledger = BudgetLedger::new(p, now)?;
                 let used = self.stored_usage(p, now)?;
-                if used > 0 {
-                    // Seed the period total with what earlier runs already used.
-                    let id = ledger.reserve(0)?;
-                    ledger.commit(id, used)?;
-                }
+                let windows = self.stored_window_usage(p, now)?;
+                // Seed the period total and the active window with what earlier runs already used.
+                ledger.seed_usage(used, &windows)?;
                 (Some(Arc::new(ledger)), Some(p.clone()))
             }
         };
@@ -216,7 +258,16 @@ impl BudgetGate {
     ) -> Result<Grant, Refusal> {
         let until = self.check(class, bytes, now, net)?;
         let (ledger, profile) = self.current();
-        let usage_key = profile.map(|p| (ledger_key(&p), day_string(local_day(&p, now))));
+        let usage_key = profile
+            .as_ref()
+            .map(|p| (ledger_key(p), day_string(local_day(p, now))));
+        // The same occurrence reserve_transfer charges (same profile, same `now`).
+        let window_key = match &profile {
+            Some(p) => active_window(p, now)
+                .map_err(|_| Refusal::Window)?
+                .map(|o| window_key(p, &o)),
+            None => None,
+        };
         let id = match &ledger {
             None => None,
             Some(l) => Some(
@@ -231,6 +282,7 @@ impl BudgetGate {
             ledger,
             id,
             usage_key,
+            window_key,
             until,
             bytes,
             network: net.clone(),
@@ -254,7 +306,94 @@ impl BudgetGate {
                     // The in-memory ledger still counts it; only a restart could forget these bytes.
                     tracing::warn!("network usage not persisted");
                 }
+                if let Some(wk) = &grant.window_key {
+                    if store.add_budget_usage(wk, &day, actual).is_err() {
+                        tracing::warn!("window usage not persisted");
+                    }
+                }
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn at(s: &str) -> DateTime<Utc> {
+        s.parse().unwrap()
+    }
+
+    fn setup() -> (NetworkBudget, NetworkObservation) {
+        let p = nc_tariff::sim::example_profile().unwrap();
+        let net = NetworkObservation {
+            interface: p.binding.interface,
+            connection_id: Some(p.binding.connection_id.clone()),
+            bytes_per_second: 1_000_000,
+        };
+        (NetworkBudget::Metered(p), net)
+    }
+
+    fn gate(budget: &NetworkBudget, now: DateTime<Utc>, db: &std::path::Path) -> BudgetGate {
+        BudgetGate::with_usage_store(budget, now, Store::open(db).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn window_cap_survives_restart_across_midnight() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("budget.sqlite");
+        let (budget, net) = setup();
+        // 23:00 local (Colombo): use 30 MB of the 50 MB window cap.
+        let t1 = at("2026-01-05T17:30:00Z");
+        let g = gate(&budget, t1, &db);
+        let grant = g
+            .authorize(TrafficClass::Bulk, 30_000_000, t1, &net)
+            .unwrap();
+        g.settle(grant, 30_000_000);
+        drop(g);
+        // Restart at 02:00 local the next day: same window occurrence, 20 MB left.
+        let t2 = at("2026-01-05T20:30:00Z");
+        let g = gate(&budget, t2, &db);
+        assert!(g
+            .authorize(TrafficClass::Bulk, 20_000_001, t2, &net)
+            .is_err());
+        let grant = g
+            .authorize(TrafficClass::Bulk, 15_000_000, t2, &net)
+            .unwrap();
+        g.settle(grant, 15_000_000);
+        drop(g);
+        // Second restart in the same occurrence sees both runs (45 MB used).
+        let g = gate(&budget, t2, &db);
+        assert!(g
+            .authorize(TrafficClass::Bulk, 5_000_001, t2, &net)
+            .is_err());
+        assert!(g.check(TrafficClass::Bulk, 5_000_000, t2, &net).is_ok());
+        // Period total also kept: 450 MB spendable - 45 MB.
+        assert_eq!(g.available_bytes(), Some(405_000_000));
+        // A memory-only gate would hand the window out again (the old behaviour).
+        let mem = BudgetGate::new(&budget, t2).unwrap();
+        assert!(mem.check(TrafficClass::Bulk, 40_000_000, t2, &net).is_ok());
+        drop(g);
+        // The next night is a new occurrence with the full cap.
+        let t3 = at("2026-01-06T17:00:00Z");
+        let g = gate(&budget, t3, &db);
+        assert!(g.check(TrafficClass::Bulk, 50_000_000, t3, &net).is_ok());
+        assert!(g.check(TrafficClass::Bulk, 50_000_001, t3, &net).is_err());
+    }
+
+    #[test]
+    fn restart_outside_window_and_on_cellular_still_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("budget.sqlite");
+        let (budget, net) = setup();
+        let noon = at("2026-01-06T06:30:00Z");
+        let g = gate(&budget, noon, &db);
+        assert!(g.check(TrafficClass::Bulk, 1, noon, &net).is_err());
+        let night = at("2026-01-06T17:00:00Z");
+        let mut cell = net.clone();
+        cell.interface = nc_tariff::InterfaceClass::Cellular;
+        assert!(g.check(TrafficClass::Bulk, 1, night, &cell).is_err());
+        assert!(g.check(TrafficClass::Bulk, 1, night, &net).is_ok());
     }
 }

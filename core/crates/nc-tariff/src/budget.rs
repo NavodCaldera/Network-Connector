@@ -75,6 +75,43 @@ impl BudgetState {
     }
 }
 
+/// One occurrence of a profile window (local start to guarded end), used to persist and restore per-window
+/// usage across restarts. Obtain it with [`active_window`]; it cannot be built by hand.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WindowOccurrence {
+    slot: Slot,
+}
+
+impl WindowOccurrence {
+    /// Index of the window in `TariffProfile::windows`.
+    pub fn index(&self) -> usize {
+        self.slot.index
+    }
+    /// Occurrence start (UTC).
+    pub fn start(&self) -> DateTime<Utc> {
+        self.slot.start
+    }
+    /// Exclusive end, already shortened by the boundary guard (UTC).
+    pub fn end(&self) -> DateTime<Utc> {
+        self.slot.end
+    }
+}
+
+/// The window occurrence active at `now`, if any (the same one `reserve_transfer` charges).
+pub fn active_window(
+    profile: &TariffProfile,
+    now: DateTime<Utc>,
+) -> Result<Option<WindowOccurrence>, TariffError> {
+    Ok(crate::decision::active_slot(profile, now)?.map(|slot| WindowOccurrence { slot }))
+}
+
+impl BudgetState {
+    /// Bytes already accounted to `occ` (committed only, not reservations).
+    pub fn window_used_bytes(&self, occ: &WindowOccurrence) -> u64 {
+        *self.windows.get(&occ.slot).unwrap_or(&0)
+    }
+}
+
 /// Outcome of reconciliation; overages are recorded rather than silently discarded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitReport {
@@ -212,6 +249,35 @@ impl BudgetLedger {
             window_overage_bytes,
             saturated,
         })
+    }
+    /// Start-up seeding: add bytes already used in this period (by earlier runs) to the period total and to
+    /// window occurrences. Seeding only ever adds usage, so it can make the ledger stricter, never looser.
+    /// Occurrences that are not for this profile (bad index) or already ended are refused / ignored.
+    pub fn seed_usage(
+        &self,
+        period_bytes: u64,
+        windows: &[(WindowOccurrence, u64)],
+    ) -> Result<(), TariffError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| TariffError::LedgerUnavailable)?;
+        if windows
+            .iter()
+            .any(|(o, _)| o.slot.index >= state.profile.windows.len())
+        {
+            return Err(TariffError::Range);
+        }
+        state.committed = state.committed.saturating_add(period_bytes);
+        let observed = state.observed;
+        for (occ, bytes) in windows {
+            if occ.slot.end <= observed {
+                continue;
+            }
+            let used = state.windows.entry(occ.slot.clone()).or_default();
+            *used = used.saturating_add(*bytes);
+        }
+        Ok(())
     }
     /// Releases an unused reservation exactly once.
     pub fn release(&self, id: ReservationId) -> Result<(), TariffError> {
