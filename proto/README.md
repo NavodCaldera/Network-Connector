@@ -140,7 +140,7 @@ The same fixture is checked with Rust ed25519-dalek and the nc-exec-compatible
 module verifier. Deadline is exclusive, Unix milliseconds; lease expiry is seconds.
 `min_helpers` and verifier.replicas default from zero to 1, may be 1 or 2, and
 min_helpers cannot exceed replicas. Replicas are sequential distinct devices.
-After six attempts a task fails. Deadline expiry is reported as failed.
+After six counted attempts a task fails. A `TARIFF_WINDOW` failure does not count, for up to 24 releases per task. With validation, two matching results commit; on a mismatch a third device runs the task and a 2-of-3 majority commits, otherwise the task is `disputed`. Deadline expiry is reported as failed.
 
 `task.inputs` describes plaintext chunks (up to 8 MiB, matching nc-blob);
 `total_input_size` is their checked sum (at most 1 GiB, at most 1024 chunks).
