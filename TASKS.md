@@ -42,6 +42,7 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.P9 | nc-agent shared builder, `nc key`, per-window caps persisted | core-agent (Claude) | `feat/core-builder` | `core/crates/{nc-agent,nc-cli,nc-tariff}` | done |
 | 1.N2 | Device whoami, secret-free re-register, deregister | net-agent (Claude) | `feat/net-device-lifecycle` | `server/`, `proto/`, `infra/` | done |
 | 1.A4 | App device lifecycle: shared agent builder, whoami on start, deregister on reset | app-agent (Claude) | `feat/app-lifecycle` | `app/`, `core/crates/nc-bridge` | done |
+| 1.P10 | HttpCoordinator whoami/deregister, budget ledger path option, bridge uses them | core-agent (Claude) | `feat/1.P10-coord-client` | `core/crates/{nc-agent,nc-bridge}` | done |
 
 ## Rules for Codex work
 

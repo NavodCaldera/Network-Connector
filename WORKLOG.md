@@ -15,6 +15,43 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 · Claude (coordinator) · main · merge 1.P10
+
+- Asked: review and merge 1.P10 (c4c8f8e).
+- Done: merged with --no-ff, no conflicts. TASKS.md row added as done.
+- Decisions: accepted whoami/deregister on HttpCoordinator only (not on the trait), the removal of unused bridge deps, and the bridge timeouts now matching the shared client (10 s connect / 30 s response).
+- Verified: agent results only (core 283 passed / 6 ignored, flutter 19 passed / 1 skipped, clippy, fmt, deny ok). Not rerun by the coordinator.
+- Open: not tested against the real coordinator. C:
+c-target must be deleted by hand (the safety check blocked it).
+
+## 2026-11-02 - Claude (Core agent) - `feat/1.P10-coord-client` - task 1.P10
+
+- **Asked:** 1.P10, the 1.A4 follow-ups: `whoami`/`deregister` on `HttpCoordinator`; an `AgentConfig` option for
+  the budget ledger path; switch nc-bridge to both and delete its TLS copy; tests.
+- **Done:**
+  - `nc-agent/src/coord.rs`: `HttpCoordinator::whoami()` (`POST /v1/devices/me`) and `deregister()`
+    (`POST /v1/devices/deregister`), signed, through the same `send`/`json` path (rustls + OS roots, no
+    redirects, 1 MiB body cap). The enrolment secret is not sent on these calls. Inherent methods, not on the
+    `Coordinator` trait (only the bridge needs them, and every fake would need stubs).
+  - `nc-agent/src/config.rs`: `budget_ledger: Option<PathBuf>` (serde default) and `budget_ledger_path()`;
+    `backend_with` opens the ledger there (creates the parent folder) and does not create
+    `<data_dir>/budget.sqlite` when it is set.
+  - nc-bridge (App-owned; the coordinator assigned it here): `enrol/device.rs` deleted; `check_registration` and
+    `deregister` call the new client methods with the same result mapping (401 on deregister = ok, offline =
+    "reset anyway" message, whoami 401 / `registered:false` = not registered). `build_agent` now sets
+    `budget_ledger = <app dir>/budget.sqlite` and calls `build_agent_with(SkipRegister(..))` directly.
+    Dropped deps `ureq`, `rustls-native-certs`, `getrandom`, `hex`, `nc-store` from nc-bridge.
+- **Decisions:** the bridge's whoami/deregister now use the agent client's timeouts (10 s connect, 30 s
+  response) instead of the old 20 s global timeout. API to Dart unchanged, so no FRB regeneration.
+- **Verified (C:
+c-wt-p10, CARGO_TARGET_DIR=C:
+c-target, -j 2, nice 19):** `cargo fmt --check` ok;
+  `cargo clippy --all-targets -- -D warnings` (whole core workspace) ok; `cargo test` (whole core workspace)
+  283 passed, 0 failed, 6 ignored (nc-agent http_client 2 incl. new signed whoami/deregister + 401 + offline;
+  nc-agent lib 22 incl. new ledger-path test; nc-bridge 32, one test now also checks no `agent/budget.sqlite`);
+  `cargo deny check` ok; `flutter analyze` no issues; `flutter test` 19 passed, 1 skipped.
+- **Not done / open:** not run against the real Docker coordinator.
+
 ## 2026-11-02 · Claude (coordinator) · main · merge 1.A4
 
 - **Asked:** review and merge 1.A4.

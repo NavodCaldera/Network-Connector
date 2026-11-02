@@ -10,7 +10,6 @@
 
 use crate::api::{EnrolRequest, Enrolment, NetworkKind, NightDataSettings};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use nc_agent::budget::BudgetGate;
 use nc_agent::config::AgentConfig;
 use nc_agent::coord::{CoordError, Coordinator, HttpCoordinator, SkipRegister};
 use nc_agent::probe::{DeclaredNetwork, ProbeConfig};
@@ -28,11 +27,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-mod device;
-
 pub(crate) const CONFIG_NAME: &str = "coordinator.json";
 const CONFIG_TMP: &str = "coordinator.json.tmp";
 const AGENT_DIR: &str = "agent";
+/// Data budget ledger, kept in the app folder (not the agent folder) so it survives a reset.
+const BUDGET_LEDGER: &str = "budget.sqlite";
 const FORMAT: u32 = 1;
 const MAX_FILE_BYTES: u64 = 64 * 1024;
 const CACHE_QUOTA_MB: u64 = 512;
@@ -375,7 +374,7 @@ pub(crate) fn check_registration(dir: &Path, file: &EnrolFile, dev: bool) -> Reg
     let Ok(key) = SoftwareKeyStore::open_or_create(p) else {
         return unknown();
     };
-    match device::whoami(&url, &key) {
+    match HttpCoordinator::new(&url, Arc::new(key), None).whoami() {
         Ok(r) if r.registered => Registration::Registered,
         Ok(_) => Registration::NotRegistered,
         // The signature check itself refused the key.
@@ -400,7 +399,7 @@ pub(crate) fn deregister(dir: &Path, dev: bool) -> Result<(), String> {
     }
     let key = SoftwareKeyStore::open_or_create(p)
         .map_err(|_| "Could not open this device's key.".to_string())?;
-    match device::deregister(&file.coordinator_url, &key) {
+    match HttpCoordinator::new(&file.coordinator_url, Arc::new(key), None).deregister() {
         Ok(_) | Err(CoordError::Status { status: 401, .. }) => Ok(()),
         Err(CoordError::Network(_)) => Err(
             "Cannot reach the coordinator, so it still lists this device. You can reset this device anyway."
@@ -415,20 +414,18 @@ pub(crate) fn deregister(dir: &Path, dev: bool) -> Result<(), String> {
     }
 }
 
-/// Builds the agent with nc-agent's shared wiring ([`AgentConfig::backend_with`], as used by
-/// [`AgentConfig::build_agent_with`]) and the app's paths, talking to the coordinator through
-/// [`SkipRegister`] (already enrolled; the secret is not kept). The data budget ledger stays at
-/// `<app dir>/budget.sqlite`, outside the agent folder, so a reset cannot spend the night budget twice.
+/// Builds the agent with nc-agent's shared builder ([`AgentConfig::build_agent_with`]) and the app's paths,
+/// talking to the coordinator through [`SkipRegister`] (already enrolled; the secret is not kept). The data
+/// budget ledger is `<app dir>/budget.sqlite` ([`AgentConfig::budget_ledger`]), outside the agent folder, so
+/// a reset cannot spend the night budget twice.
 pub(crate) fn build_agent(
     dir: &Path,
     file: &EnrolFile,
     budget: &NetworkBudget,
 ) -> Result<Agent, String> {
-    let fail = |what: &str| format!("Could not open the {what}.");
-    let data = agent_dir(dir);
     let cfg = AgentConfig {
         coordinator_url: file.coordinator_url.clone(),
-        data_dir: data.clone(),
+        data_dir: agent_dir(dir),
         device_name: file.device_name.clone(),
         worker_path: worker_path(),
         policy_file: None,
@@ -440,6 +437,7 @@ pub(crate) fn build_agent(
         control_port: 0,
         poll_seconds: POLL.as_secs(),
         cache_quota_mb: CACHE_QUOTA_MB,
+        budget_ledger: Some(dir.join(BUDGET_LEDGER)),
     };
     let key = open_key(dir)?;
     let coord = Arc::new(SkipRegister(Arc::new(HttpCoordinator::new(
@@ -447,12 +445,8 @@ pub(crate) fn build_agent(
         key,
         None,
     ))));
-    let mut backend = cfg.backend_with(coord).map_err(|_| fail("helper"))?;
-    let usage =
-        nc_store::Store::open(&dir.join("budget.sqlite")).map_err(|_| fail("data budget"))?;
-    backend.budget = BudgetGate::with_usage_store(budget, chrono::Utc::now(), usage)
-        .map_err(|_| fail("data budget"))?;
-    Ok(Agent::with_backend(backend))
+    cfg.build_agent_with(coord)
+        .map_err(|_| "Could not open the helper.".to_string())
 }
 
 #[cfg(test)]

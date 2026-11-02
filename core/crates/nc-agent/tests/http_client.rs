@@ -159,3 +159,71 @@ fn signed_requests_range_and_errors() {
     );
     assert_eq!(seen[2].body, b"", "GET signs an empty body");
 }
+
+#[test]
+fn whoami_and_deregister_are_signed_and_map_errors() {
+    let (base, seen) = server(2, |r| {
+        match r.path.as_str() {
+        "/v1/devices/me" if r.body == b"{}" => (
+            "200 OK".into(),
+            vec![],
+            br#"{"registered":true,"device_id":"00000000-0000-0000-0000-000000000001","name":"t","platform":"windows"}"#.to_vec(),
+        ),
+        "/v1/devices/deregister" if r.headers.contains_key("x-nc-enroll") => {
+            ("500 Internal Server Error".into(), vec![], b"{}".to_vec())
+        }
+        "/v1/devices/deregister" if r.body == b"{}" => (
+            "200 OK".into(),
+            vec![],
+            br#"{"device_id":"00000000-0000-0000-0000-000000000001","released_leases":2}"#.to_vec(),
+        ),
+        _ => (
+            "401 Unauthorized".into(),
+            vec![],
+            br#"{"error":{"code":"unauthorized","message":"no"}}"#.to_vec(),
+        ),
+    }
+    });
+    // The enrolment secret, if the client has one, is never sent on these calls.
+    let c = HttpCoordinator::new(&base, Arc::new(key(2)), Some("enroll".into()));
+    let me = c.whoami().unwrap();
+    assert!(me.registered);
+    assert_eq!(me.name, "t");
+    let d = c.deregister().unwrap();
+    assert_eq!(d.released_leases, 2);
+    // A key the server already forgot: 401 with the error code, for the caller to interpret.
+    let (base2, _seen2) = server(1, |_| {
+        (
+            "401 Unauthorized".into(),
+            vec![],
+            br#"{"error":{"code":"unauthorized","message":"no"}}"#.to_vec(),
+        )
+    });
+    let c2 = HttpCoordinator::new(&base2, Arc::new(key(2)), None);
+    assert_eq!(
+        c2.deregister().unwrap_err(),
+        CoordError::Status {
+            status: 401,
+            code: "unauthorized".into()
+        }
+    );
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0].path, "/v1/devices/me");
+    assert_eq!(seen[1].path, "/v1/devices/deregister");
+    for s in seen.iter() {
+        assert_eq!(s.method, "POST");
+        verify(s);
+        assert!(
+            !s.headers.contains_key("x-nc-enroll"),
+            "secret only on register"
+        );
+    }
+    // Nobody listening: a network error, not a status.
+    let dead = {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", l.local_addr().unwrap())
+    };
+    let c3 = HttpCoordinator::new(&dead, Arc::new(key(2)), None);
+    assert!(matches!(c3.whoami(), Err(CoordError::Network(_))));
+}

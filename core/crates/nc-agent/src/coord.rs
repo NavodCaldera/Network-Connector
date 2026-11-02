@@ -6,9 +6,10 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use nc_identity::DeviceKeyStore;
 use nc_protocol::pb::v1::{
-    CompleteRequest, CompleteResponse, ErrorResponse, HeartbeatRequest, JobStatusResponse,
-    LeaseFailRequest, LeaseFailResponse, LeaseRenewRequest, LeaseRenewResponse, LeaseResponse,
-    RegisterRequest, SubmitJobRequest, SubmitJobResponse,
+    CompleteRequest, CompleteResponse, DeregisterRequest, DeregisterResponse, ErrorResponse,
+    HeartbeatRequest, JobStatusResponse, LeaseFailRequest, LeaseFailResponse, LeaseRenewRequest,
+    LeaseRenewResponse, LeaseResponse, RegisterRequest, SubmitJobRequest, SubmitJobResponse,
+    WhoAmIRequest, WhoAmIResponse,
 };
 use sha2::{Digest, Sha256};
 use std::io::Read;
@@ -302,6 +303,18 @@ impl HttpCoordinator {
     ) -> Result<Resp, CoordError> {
         let body = serde_json::to_vec(req).map_err(|_| CoordError::Decode)?;
         Self::json(self.send("POST", path, &body, extra)?)
+    }
+
+    /// Signed `POST /v1/devices/me`: does the coordinator still know this key? An unknown or deregistered
+    /// key answers `registered: false` (or 401 if the server refuses the signature itself).
+    pub fn whoami(&self) -> Result<WhoAmIResponse, CoordError> {
+        self.post_json("/v1/devices/me", &WhoAmIRequest {}, &[])
+    }
+
+    /// Signed `POST /v1/devices/deregister`: remove this device (app reset). The server releases its active
+    /// leases. A key the server already forgot gets 401; the caller decides whether that counts as done.
+    pub fn deregister(&self) -> Result<DeregisterResponse, CoordError> {
+        self.post_json("/v1/devices/deregister", &DeregisterRequest {}, &[])
     }
 }
 
