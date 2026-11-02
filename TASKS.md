@@ -52,6 +52,7 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.L6 | Resumable chunked upload, agent side (budget-gated per chunk) | core-agent (Claude) | `feat/1.L6-resumable-upload-agent` | `core/crates/nc-agent` | done |
 | 1.L7 | CLI detached submit, `nc job status/wait/fetch` | core-agent (Claude) | `feat/1.L7-cli-jobs` | `core/crates/{nc-cli,nc-agent requester}` | done |
 | 1.L12 | nc-agent Windows service (virtual account, ProgramData ACL, restart policy) | core-agent (Claude) | `feat/1.L12-win-service` | `core/crates/nc-agent` | review (elevated install test pending: owner runs `infra/service-test.ps1`, 1.L12b) |
+| 1.L14 | Peer hints + lease-scoped relay token in the lease; /v1/devices/peer | net-agent (Claude) | `feat/1.L14-peer-hints` | `proto/`, `server/`, nc-protocol | done (fleet-e2e rerun pending) |
 
 ## Rules for Codex work
 

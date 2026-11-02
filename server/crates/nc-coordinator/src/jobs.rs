@@ -174,6 +174,8 @@ pub async fn lease(s: &AppState, d: &Device) -> Result<Option<LeaseResponse>, Ap
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        // 1.L14: after commit, so a hint lookup can never undo a granted lease.
+        let peer = crate::peer::hints_for_lease(s, d, id, lease).await?;
         #[allow(deprecated)]
         let response = LeaseResponse {
             lease_id: lease.to_string(),
@@ -189,6 +191,7 @@ pub async fn lease(s: &AppState, d: &Device) -> Result<Option<LeaseResponse>, Ap
                 .map(|r| transfer(hex::encode(&r.sha256), r.size))
                 .collect(),
             version: 2,
+            peer,
         };
         return Ok(Some(response));
     }

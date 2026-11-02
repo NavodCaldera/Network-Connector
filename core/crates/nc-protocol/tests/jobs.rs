@@ -239,6 +239,7 @@ fn v2_complete_and_lease_roundtrip() {
             path: "/x".into(),
         }],
         version: 2,
+        peer: None,
     };
     let expected = format!(
         "0a24{}1224{}1a24{}200732060a01011201023a090a016810021a022f784002",

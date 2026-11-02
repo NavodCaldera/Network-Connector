@@ -240,3 +240,41 @@ reports `registered: false`); registering it again needs the secret and creates 
 new device id. Jobs the device submitted stay on the server but it can no longer
 read them. Response: `device_id` and `released_leases`. Replay protection applies
 to all three (a reused nonce is 401).
+
+## Peer hints and lease-scoped relay tokens (1.L14)
+
+Backward compatible: `LeaseResponse.peer` (tag 9) and `RelayTokenClaims.lease`/`counterpart` (tags 6, 7)
+are new; nothing was renumbered. `LeaseResponse` JSON is not `deny_unknown_fields`, so older agents ignore
+`peer`, and the key is omitted entirely when there are no hints. Unscoped relay tokens keep their exact bytes.
+Relays must be upgraded together with coordinators that issue scoped tokens (strict decode rejects unknown
+claim tags).
+
+POST /v1/devices/peer (PeerRegisterRequest, NC-REQ-V1 signed by the registered device key, 16 KiB cap,
+unknown fields rejected) registers or refreshes the device's libp2p PeerId:
+- `libp2p_public_key`: unpadded base64url of the 32-byte Ed25519 libp2p public key (only Ed25519).
+- `binding_signature`: unpadded base64url of a strict Ed25519 signature by that libp2p key over ASCII
+  `nc.v1.PeerBinding`, one NUL byte, then the 32 raw bytes of the device public key (no length prefix,
+  no newline). So both keys consent: the device key signs the request, the libp2p key signs the binding.
+- `peer_id` must equal the PeerId the server derives from `libp2p_public_key` (identity multihash of the
+  libp2p protobuf public key, base58btc text); otherwise 400. Bad binding signature: 401.
+- `addrs`: at most 16 distinct multiaddrs, each at most 256 characters, made only of ip4/ip6/dns/dns4/dns6
+  plus tcp/udp/quic-v1 and with a host part. `/p2p`, `/p2p-circuit` and other protocols are rejected (400).
+  Devices report both listen and observed (identify/AutoNAT) addresses; the server does not add any.
+- A PeerId belongs to one live device: binding it from another device is 409 `peer_id_taken`.
+  Deregistration clears the binding. Response: `peer_id` and `expires_at` = now + 600 s; refresh before.
+
+Lease hints: when the requester's registration is fresh, `LeaseResponse.peer` carries its `peer_id` and
+`addrs`, plus `relay_addr` (coordinator `NC_RELAY_ADDR`, a transport multiaddr ending in `/p2p/<relay id>`,
+empty when unset). When relay tokens are enabled and the helper's own registration is fresh, `relay_token`
+is a token for the helper's PeerId with `lease` = lease UUID and `counterpart` = requester PeerId, account
+and device of the helper, TTL `RELAY_TOKEN_TTL_SECS` (600, never above the 900 s cap); otherwise empty and
+`relay_token_expires_at` 0. The token is a secret (redacted Debug, never logged).
+
+Hints are not authorisation. The helper must check that the Noise/TLS-authenticated remote PeerId equals
+`peer.peer_id` before sending or accepting job bytes, and still verifies every chunk hash as on the HTTP
+path. Addresses may be stale or hostile; they are only dial candidates.
+
+Relay check: `lease` and `counterpart` come as a pair (one alone is malformed). A peer that presented a
+scoped token may open circuits only to `counterpart`; libp2p's circuit limiter cannot see the destination,
+so the relay drops the grant and disconnects the source on an out-of-scope `CircuitReqAccepted`. The
+requester reserves its relay slot with an ordinary `/v1/relay/token` token for its own PeerId.

@@ -63,6 +63,7 @@ redacted_debug!(
     RelayAuthFrame,
     RelayToken,
     RelayTokenResponse,
+    crate::pb::v1::PeerHints,
     crate::pb::v1::JobManifest,
     crate::pb::v1::SignedJobManifest,
     crate::pb::v1::TaskManifest,

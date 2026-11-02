@@ -123,8 +123,13 @@ async fn handle_auth(peer: PeerId, mut s: libp2p::Stream, key: TokenKey, quotas:
         if claims.peer.as_deref() != Some(peer.to_string().as_str()) {
             return None;
         }
+        // 1.L14: a lease-scoped token names the only peer this one may open circuits to.
+        let counterpart = match claims.counterpart.as_deref() {
+            Some(c) => Some(c.parse::<PeerId>().ok()?),
+            None => None,
+        };
         let ttl = Duration::from_secs(claims.exp?.saturating_sub(now));
-        quotas.grant(peer, claims.account?, ttl, Instant::now());
+        quotas.grant_scoped(peer, claims.account?, counterpart, ttl, Instant::now());
         Some(())
     }
     .await;
@@ -175,6 +180,20 @@ pub async fn run(
                 tracing::info!("relay listening on {address}/p2p/{}", swarm.local_peer_id());
             }
             SwarmEvent::Behaviour(BehaviourEvent::Relay(e)) => {
+                // libp2p's circuit limiter sees only the source, so the destination scope of a
+                // lease-scoped token is enforced here: an out-of-scope circuit loses its grant and
+                // the source is disconnected, which tears the circuit down.
+                if let relay::Event::CircuitReqAccepted {
+                    src_peer_id,
+                    dst_peer_id,
+                } = &e
+                {
+                    if !quotas.circuit_allowed(src_peer_id, dst_peer_id, Instant::now()) {
+                        tracing::warn!(%src_peer_id, "relay circuit outside token scope; dropping peer");
+                        quotas.revoke(src_peer_id);
+                        let _ = swarm.disconnect_peer_id(*src_peer_id);
+                    }
+                }
                 tracing::info!(event = ?e, "relay");
             }
             _ => {}

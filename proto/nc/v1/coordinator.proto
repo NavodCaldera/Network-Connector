@@ -28,6 +28,31 @@ message LeaseResponse {
   SignedJobManifest manifest = 6;
   repeated TransferRef transfers = 7; // Module first, followed by input chunks in order.
   uint32 version = 8; // 2 for real jobs.
+  // 1.L14: how to reach the requester over nc-net. Absent when the requester has no fresh peer
+  // registration. Old clients ignore it. Hints are not authorisation: the helper must still
+  // authenticate the Noise/TLS peer key equals peer.peer_id.
+  PeerHints peer = 9;
+}
+// 1.L14: requester connection details for one lease.
+message PeerHints {
+  string peer_id = 1;         // Requester's libp2p PeerId (base58), bound to its device key.
+  repeated string addrs = 2;  // Requester's registered multiaddrs (listen and observed), <= 16.
+  string relay_addr = 3;      // Relay multiaddr incl. /p2p/<relay id>; empty when no relay is configured.
+  string relay_token = 4;     // Secret: lease-scoped relay token for the helper's own PeerId; empty if unavailable.
+  uint64 relay_token_expires_at = 5; // Unix seconds; 0 when relay_token is empty.
+}
+// POST /v1/devices/peer (signed by the device key): register or refresh this device's libp2p PeerId.
+message PeerRegisterRequest {
+  string peer_id = 1;    // Must equal the PeerId derived from libp2p_public_key.
+  string libp2p_public_key = 2; // Unpadded base64url of the 32-byte Ed25519 libp2p public key.
+  // Unpadded base64url of the 64-byte Ed25519 signature by the libp2p key over
+  // ASCII "nc.v1.PeerBinding", one NUL byte, then the 32-byte device public key.
+  string binding_signature = 3;
+  repeated string addrs = 4; // <= 16 multiaddrs, each <= 256 chars, no /p2p or /p2p-circuit parts.
+}
+message PeerRegisterResponse {
+  string peer_id = 1;
+  uint64 expires_at = 2; // Unix seconds; refresh before this or leases carry no hints.
 }
 message CompleteRequest {
   string lease_id = 1;   // UUID.

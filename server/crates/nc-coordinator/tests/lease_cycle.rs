@@ -993,3 +993,143 @@ async fn resumable_upload_over_http() {
     assert_eq!(&r.bytes().await.unwrap()[..], b"module");
     let _ = id;
 }
+
+/// 1.L14 peer binding (signed by both keys, PeerId derived server-side) and lease peer hints with a
+/// lease-scoped relay token. Leaves no schedulable task behind.
+#[tokio::test]
+#[ignore = "needs a fresh infra Docker stack with PostgreSQL; run infra/verify.ps1 or verify.sh"]
+async fn peer_hints_in_lease_over_http() {
+    use libp2p::{identity, PeerId};
+    fn bind(dev: &Dev, lp: &SigningKey, addrs: &[&str]) -> Value {
+        let pk =
+            identity::ed25519::PublicKey::try_from_bytes(lp.verifying_key().as_bytes()).unwrap();
+        let msg = nc_coordinator::peer::binding_message(&dev.sk.verifying_key().to_bytes());
+        json!({
+            "peer_id": PeerId::from_public_key(&identity::PublicKey::from(pk)).to_string(),
+            "libp2p_public_key": URL_SAFE_NO_PAD.encode(lp.verifying_key().as_bytes()),
+            "binding_signature": URL_SAFE_NO_PAD.encode(lp.sign(&msg).to_bytes()),
+            "addrs": addrs,
+        })
+    }
+    let base = std::env::var("NC_TEST_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".into());
+    let enroll = std::env::var("NC_TEST_ENROLL").expect("NC_TEST_ENROLL");
+    let owner = Dev::new(&base);
+    owner.register(&enroll).await;
+    let helper = Dev::new(&base);
+    helper.register(&enroll).await;
+    let owner_lp = SigningKey::generate(&mut rand::rngs::OsRng);
+    let helper_lp = SigningKey::generate(&mut rand::rngs::OsRng);
+    let addrs = [
+        "/ip4/192.168.1.20/udp/4001/quic-v1",
+        "/ip4/203.0.113.7/udp/4001/quic-v1",
+    ];
+
+    // Unregistered keys cannot bind a peer.
+    let stranger = Dev::new(&base);
+    let (s, _) = stranger
+        .post("/v1/devices/peer", bind(&stranger, &owner_lp, &[]))
+        .await;
+    assert_eq!(s, 401);
+    // A binding made for the owner's device key does not work for the helper's.
+    let (s, v) = helper
+        .post("/v1/devices/peer", bind(&owner, &owner_lp, &[]))
+        .await;
+    assert_eq!(s, 401, "{v}");
+    // Claiming a PeerId that is not derived from the presented libp2p key.
+    let mut spoof = bind(&helper, &helper_lp, &[]);
+    spoof["peer_id"] = bind(&owner, &owner_lp, &[])["peer_id"].clone();
+    assert_eq!(helper.post("/v1/devices/peer", spoof).await.0, 400);
+    // Unknown fields, /p2p parts and too many addresses are schema errors.
+    let mut extra = bind(&helper, &helper_lp, &[]);
+    extra["x"] = json!(1);
+    assert_eq!(helper.post("/v1/devices/peer", extra).await.0, 400);
+    let p2p = format!(
+        "/ip4/1.2.3.4/tcp/1/p2p/{}",
+        bind(&owner, &owner_lp, &[])["peer_id"].as_str().unwrap()
+    );
+    assert_eq!(
+        helper
+            .post("/v1/devices/peer", bind(&helper, &helper_lp, &[&p2p]))
+            .await
+            .0,
+        400
+    );
+    let many: Vec<String> = (0..17).map(|i| format!("/ip4/10.0.0.{i}/tcp/1")).collect();
+    let many: Vec<&str> = many.iter().map(String::as_str).collect();
+    assert_eq!(
+        helper
+            .post("/v1/devices/peer", bind(&helper, &helper_lp, &many))
+            .await
+            .0,
+        400
+    );
+
+    let owner_bind = bind(&owner, &owner_lp, &addrs);
+    let owner_peer = owner_bind["peer_id"].as_str().unwrap().to_owned();
+    let (s, v) = owner.post("/v1/devices/peer", owner_bind.clone()).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["peer_id"], owner_peer.as_str());
+    assert!(v["expires_at"].as_u64().unwrap() > 0);
+    // Refresh is idempotent.
+    assert_eq!(owner.post("/v1/devices/peer", owner_bind).await.0, 200);
+    // The same libp2p key bound by a second device: 409, the PeerId stays with its first device.
+    let thief = Dev::new(&base);
+    thief.register(&enroll).await;
+    let (s, v) = thief
+        .post("/v1/devices/peer", bind(&thief, &owner_lp, &[]))
+        .await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (409, Some("peer_id_taken")),
+        "{v}"
+    );
+    let helper_bind = bind(&helper, &helper_lp, &[]);
+    let helper_peer = helper_bind["peer_id"].as_str().unwrap().to_owned();
+    assert_eq!(helper.post("/v1/devices/peer", helper_bind).await.0, 200);
+
+    // Lease carries the requester's hints and a relay token scoped to lease + pair.
+    let id = owner.submit(owner.manifest(1)).await;
+    owner.upload(b"module").await;
+    owner.upload(b"input").await;
+    let l = helper.lease().await;
+    let task = owner.status(&id).await["tasks"][0]["task_id"].clone();
+    assert_eq!(l["task_id"], task, "only this test's task is schedulable");
+    let p = &l["peer"];
+    assert_eq!(p["peer_id"], owner_peer.as_str(), "{l}");
+    assert_eq!(p["addrs"], json!(addrs));
+    let token = p["relay_token"].as_str().unwrap();
+    assert!(token.starts_with("v1."));
+    let key = nc_relay::TokenKey::from_hex(
+        &std::env::var("NC_RELAY_TOKEN_KEY").expect("NC_RELAY_TOKEN_KEY"),
+    )
+    .unwrap();
+    let c = key.verify(token, nc_relay::unix_now()).unwrap();
+    assert_eq!(c.peer.as_deref(), Some(helper_peer.as_str()));
+    assert_eq!(c.counterpart.as_deref(), Some(owner_peer.as_str()));
+    assert_eq!(c.lease.as_deref(), l["lease_id"].as_str());
+    assert_eq!(c.exp, p["relay_token_expires_at"].as_u64());
+    assert!(c.exp.unwrap() <= nc_relay::unix_now() + nc_relay::token::MAX_TTL_SECS);
+    let (s, v) = helper.complete(&l, b"peer-out").await;
+    assert_eq!(s, 200, "{v}");
+
+    // A requester without a peer registration gets a lease with no `peer` key at all (what old
+    // clients see).
+    let plain = Dev::new(&base);
+    plain.register(&enroll).await;
+    let id = plain.submit(plain.manifest(1)).await;
+    plain.upload(b"module").await;
+    plain.upload(b"input").await;
+    let l = helper.lease().await;
+    assert_eq!(l["task_id"], plain.status(&id).await["tasks"][0]["task_id"]);
+    assert!(l.get("peer").is_none(), "{l}");
+    assert_eq!(helper.complete(&l, b"plain-out").await.0, 200);
+    assert_eq!(owner.post("/v1/devices/deregister", json!({})).await.0, 200);
+    // The deregistered device's PeerId can now be bound by another device.
+    assert_eq!(
+        thief
+            .post("/v1/devices/peer", bind(&thief, &owner_lp, &[]))
+            .await
+            .0,
+        200
+    );
+}

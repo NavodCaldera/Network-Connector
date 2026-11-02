@@ -5,6 +5,7 @@
 //! - `NC_BIND`: listen address, default `127.0.0.1:8080` (loopback only).
 //! - `NC_TLS_CERT` + `NC_TLS_KEY`: PEM files; when both are set the server speaks HTTPS only.
 //! - `NC_RELAY_TOKEN_KEY`: 64 hex chars shared with `nc-relay`; enables `/v1/relay/token`.
+//! - `NC_RELAY_ADDR`: relay multiaddr ending in `/p2p/<relay peer id>`; put into lease peer hints (1.L14).
 
 use std::net::SocketAddr;
 
@@ -29,6 +30,13 @@ async fn main() -> Result<()> {
             nc_relay::TokenKey::from_hex(&s).context("NC_RELAY_TOKEN_KEY must be 64 hex chars")?,
         ),
         Err(_) => None,
+    };
+    let relay_addr = match std::env::var("NC_RELAY_ADDR") {
+        Ok(s) if !s.trim().is_empty() => Some(
+            nc_coordinator::peer::validate_relay_addr(&s)
+                .context("NC_RELAY_ADDR must be a transport multiaddr ending in /p2p/<relay id>")?,
+        ),
+        _ => None,
     };
     let bind: SocketAddr = std::env::var("NC_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8080".into())
@@ -77,6 +85,7 @@ async fn main() -> Result<()> {
         pool,
         enroll_secret,
         relay_key,
+        relay_addr,
         uploads,
     });
     match (std::env::var("NC_TLS_CERT"), std::env::var("NC_TLS_KEY")) {

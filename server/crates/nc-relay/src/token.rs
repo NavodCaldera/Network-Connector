@@ -79,7 +79,38 @@ impl TokenKey {
             device: Some(device.to_owned()),
             iat: Some(now),
             exp: Some(now + ttl_secs.min(MAX_TTL_SECS)),
+            lease: None,
+            counterpart: None,
         };
+        self.sign(claims)
+    }
+
+    /// 1.L14: issues a token scoped to one lease and one counterpart peer. The holder `peer` may use
+    /// the relay only to open circuits to `counterpart` (enforced by the relay, see `server`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn issue_scoped(
+        &self,
+        peer: &str,
+        account: &str,
+        device: &str,
+        lease: &str,
+        counterpart: &str,
+        now: u64,
+        ttl_secs: u64,
+    ) -> (String, Claims) {
+        let claims = Claims {
+            peer: Some(peer.to_owned()),
+            account: Some(account.to_owned()),
+            device: Some(device.to_owned()),
+            iat: Some(now),
+            exp: Some(now + ttl_secs.min(MAX_TTL_SECS)),
+            lease: Some(lease.to_owned()),
+            counterpart: Some(counterpart.to_owned()),
+        };
+        self.sign(claims)
+    }
+
+    fn sign(&self, claims: Claims) -> (String, Claims) {
         let bytes = claims.encode_to_vec();
         let signature = self.mac(&bytes);
         let token = RelayToken {
@@ -115,6 +146,10 @@ impl TokenKey {
         else {
             return Err(TokenError::Malformed);
         };
+        // Scope fields come as a pair: a token with only one of them is not something we issue.
+        if c.lease.is_some() != c.counterpart.is_some() {
+            return Err(TokenError::Malformed);
+        }
         if exp <= now || iat > now + 60 || exp.saturating_sub(iat) > MAX_TTL_SECS {
             return Err(TokenError::Expired);
         }
@@ -152,6 +187,49 @@ mod tests {
         let (_, c) = k.issue("p", "a", "d", 0, 99_999);
         assert_eq!(c.exp, Some(MAX_TTL_SECS));
         assert!(!format!("{k:?}").contains('9'));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod scoped_tests {
+    use super::*;
+    #[test]
+    fn scoped_token_roundtrips_and_half_scope_is_rejected() {
+        let key = TokenKey::new([9; 32]);
+        let (text, claims) =
+            key.issue_scoped("peerA", "acct", "dev", "lease-1", "peerB", 1000, 600);
+        let got = key.verify(&text, 1001).unwrap();
+        assert_eq!(got, claims);
+        assert_eq!(got.lease.as_deref(), Some("lease-1"));
+        assert_eq!(got.counterpart.as_deref(), Some("peerB"));
+        let (plain, _) = key.issue("peerA", "acct", "dev", 1000, 600);
+        assert_eq!(key.verify(&plain, 1001).unwrap().counterpart, None);
+        for half in [
+            Claims {
+                counterpart: None,
+                ..claims.clone()
+            },
+            Claims {
+                lease: None,
+                ..claims.clone()
+            },
+        ] {
+            let bytes = half.encode_to_vec();
+            let token = RelayToken {
+                version: 1,
+                signature: key.mac(&bytes),
+                claims: bytes,
+            };
+            assert_eq!(key.verify_binary(&token, 1001), Err(TokenError::Malformed));
+        }
+        let mut t = relay_token_from_text(&text).unwrap();
+        t.claims = Claims {
+            counterpart: Some("peerC".into()),
+            ..claims
+        }
+        .encode_to_vec();
+        assert_eq!(key.verify_binary(&t, 1001), Err(TokenError::BadSignature));
     }
 }
 

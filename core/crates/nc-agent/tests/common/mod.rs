@@ -597,6 +597,7 @@ impl Kit {
             manifest: Some(built.signed),
             transfers,
             version: 2,
+            peer: None,
         };
         s.expiry.insert(lease.lease_id.clone(), expires_at);
         s.leases.push_back(lease.clone());
