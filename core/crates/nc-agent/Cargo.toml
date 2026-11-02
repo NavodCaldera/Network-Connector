@@ -22,6 +22,10 @@ nc-blob = { path = "../nc-blob" }
 nc-exec = { path = "../nc-exec" }
 nc-identity = { path = "../nc-identity" }
 nc-protocol = { path = "../nc-protocol" }
+# 1.L15: direct job-byte transfer between devices over libp2p (Noise/TLS).
+nc-net = { path = "../nc-net" }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
+futures = "0.3"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 sha2 = { workspace = true }

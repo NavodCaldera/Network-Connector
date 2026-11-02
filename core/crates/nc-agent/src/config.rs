@@ -75,6 +75,18 @@ pub struct AgentConfig {
 /// Message the device key signs to derive the parked-result key (never sent anywhere).
 const PARKED_KEY_LABEL: &[u8] = b"nc-agent/parked-results/v1";
 
+/// nc-net node for direct transfers (1.L15). Outbound only: the helper dials the requester the lease names,
+/// so nothing listens and no firewall rule is needed. Not fatal: without it every byte uses HTTP.
+fn start_peer(device_public: [u8; 32]) -> Option<crate::peer::AgentPeer> {
+    match crate::peer::PeerNet::start(Vec::new()) {
+        Ok(net) => Some(crate::peer::AgentPeer { net, device_public }),
+        Err(e) => {
+            tracing::warn!(error = %e, "direct transfers off");
+            None
+        }
+    }
+}
+
 fn default_port() -> u16 {
     47_611
 }
@@ -266,6 +278,7 @@ impl AgentConfig {
                 poll: Duration::from_secs(self.poll_seconds),
                 ..Tuning::default()
             },
+            peer: start_peer(device_key.public_key()),
         };
         Ok(backend)
     }

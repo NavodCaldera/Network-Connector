@@ -8,8 +8,8 @@ use nc_identity::DeviceKeyStore;
 use nc_protocol::pb::v1::{
     CompleteRequest, CompleteResponse, DeregisterRequest, DeregisterResponse, ErrorResponse,
     HeartbeatRequest, JobStatusResponse, LeaseFailRequest, LeaseFailResponse, LeaseRenewRequest,
-    LeaseRenewResponse, LeaseResponse, RegisterRequest, SubmitJobRequest, SubmitJobResponse,
-    WhoAmIRequest, WhoAmIResponse,
+    LeaseRenewResponse, LeaseResponse, PeerRegisterRequest, PeerRegisterResponse, RegisterRequest,
+    SubmitJobRequest, SubmitJobResponse, WhoAmIRequest, WhoAmIResponse,
 };
 use sha2::{Digest, Sha256};
 use std::io::Read;
@@ -120,6 +120,12 @@ pub trait Coordinator: Send + Sync {
         let _ = (sha256_hex, size, offset, chunk);
         Err(unsupported())
     }
+    /// `POST /v1/devices/peer` (1.L15): register or refresh this device's libp2p PeerId and addresses.
+    /// Coordinators without the endpoint answer 404; the agent then keeps using the HTTP blob path.
+    fn register_peer(&self, req: &PeerRegisterRequest) -> Result<PeerRegisterResponse, CoordError> {
+        let _ = req;
+        Err(unsupported())
+    }
     /// `POST /v1/jobs`.
     fn submit(&self, req: &SubmitJobRequest) -> Result<SubmitJobResponse, CoordError>;
     /// `GET /v1/jobs/{id}`.
@@ -167,6 +173,9 @@ impl Coordinator for SkipRegister {
         chunk: &[u8],
     ) -> Result<ChunkReply, CoordError> {
         self.0.put_chunk(sha256_hex, size, offset, chunk)
+    }
+    fn register_peer(&self, req: &PeerRegisterRequest) -> Result<PeerRegisterResponse, CoordError> {
+        self.0.register_peer(req)
     }
     fn submit(&self, req: &SubmitJobRequest) -> Result<SubmitJobResponse, CoordError> {
         self.0.submit(req)
@@ -518,6 +527,9 @@ impl Coordinator for HttpCoordinator {
             }
             _ => Err(err),
         }
+    }
+    fn register_peer(&self, req: &PeerRegisterRequest) -> Result<PeerRegisterResponse, CoordError> {
+        self.post_json("/v1/devices/peer", req, &[])
     }
     fn submit(&self, req: &SubmitJobRequest) -> Result<SubmitJobResponse, CoordError> {
         self.post_json("/v1/jobs", req, &[])
