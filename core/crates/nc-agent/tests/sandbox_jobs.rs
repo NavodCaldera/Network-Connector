@@ -68,6 +68,7 @@ fn agent(kit: &Kit) -> Agent {
         staging,
         device_name: "sandbox-test".into(),
         platform: "windows".into(),
+        peer: None,
         tuning: Tuning {
             poll: Duration::from_millis(20),
             max_backoff: Duration::from_millis(100),

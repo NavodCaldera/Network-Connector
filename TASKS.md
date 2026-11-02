@@ -54,6 +54,7 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.L7 | CLI detached submit, `nc job status/wait/fetch` | core-agent (Claude) | `feat/1.L7-cli-jobs` | `core/crates/{nc-cli,nc-agent requester}` | done |
 | 1.L12 | nc-agent Windows service (virtual account, ProgramData ACL, restart policy) | core-agent (Claude) | `feat/1.L12-win-service` | `core/crates/nc-agent` | review (elevated install test pending: owner runs `infra/service-test.ps1`, 1.L12b) |
 | 1.L14 | Peer hints + lease-scoped relay token in the lease; /v1/devices/peer | net-agent (Claude) | `feat/1.L14-peer-hints` | `proto/`, `server/`, nc-protocol | done (fleet-e2e rerun pending) |
+| 1.L15 | nc-agent runs an nc-net node: peer registration, direct blob fetch with PeerId check and HTTP fallback | core-agent (Claude) | `feat/1.L15-agent-node` | `core/crates/nc-agent` | review (requester grant needs helper PeerId from proto) |
 | 1.L18 | App requester flow: Ask tab, submit/track/fetch via nc_agent::jobs | app-agent (Claude) | `feat/1.L18-app-requester` | `app/`, `core/crates/nc-bridge` | done |
 
 ## Rules for Codex work

@@ -22,6 +22,7 @@ pub mod coord;
 pub mod jobs;
 pub mod journal;
 pub mod parked;
+pub mod peer;
 pub mod probe;
 pub mod requester;
 pub mod runner;

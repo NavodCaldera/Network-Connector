@@ -78,6 +78,7 @@ fn submit_lease_run_complete_download() {
         staging,
         device_name: "e2e-helper".into(),
         platform: std::env::consts::OS.into(),
+        peer: None,
         tuning: Tuning {
             poll: Duration::from_secs(1),
             ..Tuning::default()

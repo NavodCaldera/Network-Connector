@@ -56,7 +56,7 @@ pub struct Ctx<'a> {
     pub staging: &'a Path,
 }
 
-fn refusal(r: Refusal) -> TransferError {
+pub(crate) fn refusal(r: Refusal) -> TransferError {
     match r {
         Refusal::Window => TransferError::Window("TARIFF_WINDOW"),
         Refusal::Budget => TransferError::Budget,
@@ -67,7 +67,7 @@ fn part_path(staging: &Path, sha_hex: &str) -> PathBuf {
     staging.join(format!("{sha_hex}.part"))
 }
 
-fn same_network(g: &Grant, ctx: &Ctx<'_>) -> bool {
+pub(crate) fn same_network(g: &Grant, ctx: &Ctx<'_>) -> bool {
     let now = ctx.probe.network();
     now.interface == g.network.interface && now.connection_id == g.network.connection_id
 }

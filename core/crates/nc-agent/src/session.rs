@@ -128,6 +128,8 @@ pub struct Backend {
     pub platform: String,
     /// Timing knobs.
     pub tuning: Tuning,
+    /// nc-net node for direct job-byte transfers (1.L15); `None` keeps every byte on the HTTP path.
+    pub peer: Option<crate::peer::AgentPeer>,
 }
 
 impl std::fmt::Debug for Backend {
@@ -460,6 +462,14 @@ fn control_allowed(b: &Backend) -> bool {
     }
 }
 
+/// Refresh the peer registration when due, charged to the tariff as control traffic.
+fn refresh_peer(b: &Backend) {
+    if let Some(p) = &b.peer {
+        p.net
+            .refresh_if_due(b.coord.as_ref(), &p.device_public, || control_allowed(b));
+    }
+}
+
 /// Renewal thread body: keeps the lease alive until `watch.done`, or marks it lost.
 fn keep_lease(b: &Backend, l: &LeaseResponse, watch: &LeaseWatch) {
     let t = b.tuning;
@@ -487,6 +497,7 @@ fn keep_lease(b: &Backend, l: &LeaseResponse, watch: &LeaseWatch) {
         let due = !capped_stuck
             && Instant::now() >= next_try
             && (last_ok.elapsed() >= t.renew_every || expires_ms.saturating_sub(now) < margin_ms);
+        refresh_peer(b);
         if due {
             if control_allowed(b) {
                 match b.coord.renew(&req) {
@@ -592,6 +603,7 @@ impl Session<'_> {
                 }
                 continue;
             }
+            refresh_peer(self.b);
             let hb = HeartbeatRequest {
                 status: "idle".into(),
             };
@@ -1098,7 +1110,13 @@ impl Session<'_> {
             stopped: &stopped,
             staging: &self.b.staging,
         };
-        let module = transfer::download(&ctx, module_ref, TrafficClass::ModuleDownload)
+        // Direct from the requester when the lease names it and it answers as that key; else HTTP.
+        let lease_peer = crate::peer::LeasePeer::open(
+            self.b.peer.as_ref().map(|p| p.net.as_ref()),
+            l.peer.as_ref(),
+        );
+        let direct = lease_peer.as_ref().map(crate::peer::LeasePeer::source);
+        let module = crate::peer::fetch(&ctx, direct, module_ref, TrafficClass::ModuleDownload)
             .map_err(|e| transfer_fail(&e))?;
         let mut input = Vec::new();
         for (r, signed_ref) in l.transfers[1..].iter().zip(task.inputs.iter()) {
@@ -1111,7 +1129,7 @@ impl Session<'_> {
             let bytes = match cached {
                 Some(b) => b,
                 None => {
-                    let b = transfer::download(&ctx, r, TrafficClass::Bulk)
+                    let b = crate::peer::fetch(&ctx, direct, r, TrafficClass::Bulk)
                         .map_err(|e| transfer_fail(&e))?;
                     lock(&self.b.cache)
                         .put(sha, &b)
@@ -1121,6 +1139,7 @@ impl Session<'_> {
             };
             input.extend_from_slice(&bytes);
         }
+        drop(lease_peer);
         if watch.lost() {
             return Err(lease_lost_fail());
         }
