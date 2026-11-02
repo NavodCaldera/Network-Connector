@@ -165,6 +165,10 @@ pub fn submit(coord: &dyn Coordinator, job: &BuiltJob) -> Result<String, Request
 }
 
 /// Poll `GET /v1/jobs/{id}` until the task is committed (returns its status) or ends otherwise.
+///
+/// Transient coordinator failures (unreachable, 5xx, 429) are retried until `timeout`: the job keeps running
+/// on the helpers while the requester's link is down, so a disconnect must not lose the result. Permanent
+/// errors (4xx, bad response) end the wait at once.
 pub fn wait(
     coord: &dyn Coordinator,
     job_id: &str,
@@ -173,13 +177,22 @@ pub fn wait(
 ) -> Result<TaskStatus, RequesterError> {
     let t0 = Instant::now();
     loop {
-        let s = coord.job_status(job_id)?;
-        if let Some(t) = s.tasks.into_iter().next() {
-            match t.state.as_str() {
-                "committed" => return Ok(t),
-                "failed" | "disputed" | "expired" => return Err(RequesterError::Ended(t.state)),
-                _ => {}
+        match coord.job_status(job_id) {
+            Ok(s) => {
+                if let Some(t) = s.tasks.into_iter().next() {
+                    match t.state.as_str() {
+                        "committed" => return Ok(t),
+                        "failed" | "disputed" | "expired" => {
+                            return Err(RequesterError::Ended(t.state))
+                        }
+                        _ => {}
+                    }
+                }
             }
+            Err(e) if e.is_transient() => {
+                tracing::warn!(error = %e, "job status unavailable; retrying");
+            }
+            Err(e) => return Err(e.into()),
         }
         if t0.elapsed() >= timeout {
             return Err(RequesterError::Timeout);
@@ -199,4 +212,114 @@ pub fn fetch_output(coord: &dyn Coordinator, out: &TransferRef) -> Result<Vec<u8
         return Err(RequesterError::Output);
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use nc_protocol::pb::v1::{
+        CompleteRequest, CompleteResponse, HeartbeatRequest, JobStatusResponse, LeaseFailRequest,
+        LeaseFailResponse, LeaseRenewRequest, LeaseRenewResponse, LeaseResponse, RegisterRequest,
+        SubmitJobResponse,
+    };
+    use std::sync::Mutex;
+
+    /// Answers `job_status` from a script; everything else is unused.
+    struct Script(Mutex<Vec<Result<JobStatusResponse, CoordError>>>);
+
+    fn status(state: &str) -> Result<JobStatusResponse, CoordError> {
+        Ok(JobStatusResponse {
+            tasks: vec![TaskStatus {
+                state: state.into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+    }
+
+    impl Coordinator for Script {
+        fn register(&self, _: &RegisterRequest) -> Result<(), CoordError> {
+            unimplemented!()
+        }
+        fn heartbeat(&self, _: &HeartbeatRequest) -> Result<(), CoordError> {
+            unimplemented!()
+        }
+        fn lease(&self) -> Result<Option<LeaseResponse>, CoordError> {
+            unimplemented!()
+        }
+        fn fail(&self, _: &LeaseFailRequest) -> Result<LeaseFailResponse, CoordError> {
+            unimplemented!()
+        }
+        fn renew(&self, _: &LeaseRenewRequest) -> Result<LeaseRenewResponse, CoordError> {
+            unimplemented!()
+        }
+        fn complete(&self, _: &CompleteRequest) -> Result<CompleteResponse, CoordError> {
+            unimplemented!()
+        }
+        fn get_blob(&self, _: &str, _: u64) -> Result<Box<dyn std::io::Read + Send>, CoordError> {
+            unimplemented!()
+        }
+        fn put_blob(&self, _: &str, _: &[u8]) -> Result<(), CoordError> {
+            unimplemented!()
+        }
+        fn submit(&self, _: &SubmitJobRequest) -> Result<SubmitJobResponse, CoordError> {
+            unimplemented!()
+        }
+        fn job_status(&self, _: &str) -> Result<JobStatusResponse, CoordError> {
+            let mut s = self.0.lock().unwrap();
+            if s.is_empty() {
+                status("leased")
+            } else {
+                s.remove(0)
+            }
+        }
+    }
+
+    const MS: Duration = Duration::from_millis(1);
+
+    #[test]
+    fn wait_rides_out_a_coordinator_outage() {
+        let c = Script(Mutex::new(vec![
+            status("leased"),
+            Err(CoordError::Network("refused".into())),
+            Err(CoordError::Status {
+                status: 503,
+                code: String::new(),
+            }),
+            status("committed"),
+        ]));
+        let t = wait(&c, "j", Duration::from_secs(5), MS).unwrap();
+        assert_eq!(t.state, "committed");
+    }
+
+    #[test]
+    fn wait_stops_on_permanent_error_and_terminal_state() {
+        let c = Script(Mutex::new(vec![Err(CoordError::Status {
+            status: 403,
+            code: "forbidden".into(),
+        })]));
+        assert!(matches!(
+            wait(&c, "j", Duration::from_secs(5), MS),
+            Err(RequesterError::Coord(_))
+        ));
+        let c = Script(Mutex::new(vec![status("disputed")]));
+        assert!(matches!(
+            wait(&c, "j", Duration::from_secs(5), MS),
+            Err(RequesterError::Ended(s)) if s == "disputed"
+        ));
+    }
+
+    #[test]
+    fn wait_times_out_while_the_coordinator_stays_down() {
+        let c = Script(Mutex::new(
+            (0..10_000)
+                .map(|_| Err(CoordError::Network("down".into())))
+                .collect(),
+        ));
+        assert!(matches!(
+            wait(&c, "j", Duration::from_millis(30), MS),
+            Err(RequesterError::Timeout)
+        ));
+    }
 }

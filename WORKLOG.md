@@ -15,6 +15,60 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 · Claude (coordinator) · main · merge 1.L1
+
+- Asked: owner moved priority to finishing laptop sharing before mobile; review and merge 1.L1 (0c5124a).
+- Done: merged with --no-ff. TASKS.md 1.L1 set to done. docs/laptop-gap.md (1.L2 to 1.L19) is now the laptop roadmap.
+- Verified: agent results only (fleet-e2e S1 to S5 pass, X1 to X4 expected-fail; core 286 passed / 6 ignored). Not rerun by the coordinator.
+- Open: the gap list; C:
+c-target must be deleted by hand.
+
+## 2026-11-02 - Claude (Core agent) - `feat/1.L1-fleet-e2e` - task 1.L1
+
+- **Asked:** owner reprioritised PC (Windows/Linux) sharing before mobile. Part A: gap audit of the Phase 1 PC scope
+  into `docs/laptop-gap.md` with owners and small 1.L2+ tasks. Part B: `infra/fleet-e2e.ps1`, a real fleet test
+  (Docker coordinator + Postgres, two nc-agent helpers, `nc` requester, helper kill/restart, coordinator cut),
+  gaps reported as expected failures, run for real.
+- **Done:**
+  - `docs/laptop-gap.md`: 10 gaps (G1-G10) with files and owners, ordered as tasks 1.L2-1.L19. Highest: tariff
+    window refusals burn the 6-attempt cap and drop finished results (G4); `disputed` is terminal (G3); no
+    resumable upload (G5); Linux nc-exec refuses every job, so no Linux/Pi helper can run anything (G8);
+    nc-net is not linked into nc-agent at all, so there is no direct/relay transfer or LAN-only mode (G1/G2).
+  - `infra/fleet-e2e.ps1` (+ `infra/README.md` section): scenarios S1 baseline, S2 helper killed mid-job +
+    restart, S3 coordinator `docker pause` 20 s then restart, S4 `--replicas 2`, S5 metered window on helper B
+    closing mid-run; global check (no task with more results than its validation count, no sandbox worker
+    left); X1-X4 expected failures each with a real check (cargo tree for nc-net, coordinator source, app
+    source, packaging) so a closed gap shows as UNEXPECTED-PASS. Unique Compose project and image tag per run;
+    teardown always runs `down --volumes`, removes the image and the run folder. The job module is a
+    hand-assembled cpu-core-v1 module (byte-identical to the `wat` crate's output for the WAT in the comment);
+    output = input ++ loop count, compared byte for byte.
+  - `nc-agent/src/requester.rs`: `wait` retried nothing, so one transient error (coordinator restart,
+    unreachable, 5xx/429) ended `nc submit` and lost the result. It now retries transient errors until its
+    timeout; permanent errors and terminal states still end it at once. 3 new unit tests.
+  - `nc-cli`: `nc submit --replicas <1|2>` (clap range check), so the CLI can ask for two-helper validation.
+- **Decisions:** the two code fixes were made here because the exit-test scenarios cannot be judged without them;
+  both are small and Core-owned. infra/ is Net-owned; the coordinator assigned `infra/fleet-e2e.ps1` to this task.
+  Relay container is not started (the agent does not use it yet, G2).
+- **Verified (C:\nc-wt-l1, CARGO_TARGET_DIR=C:\nc-target, -j 2, nice 19):** `cargo fmt --check` ok;
+  `cargo clippy --all-targets -- -D warnings` ok (whole core workspace); `cargo test` (whole core workspace) 286 passed, 0 failed, 6 ignored (283 before + 3 new requester tests;
+  nc-cli parse test extended).
+  Fleet e2e, final run with default flags (Windows 11, Docker 29.3.1, debug binaries, real AppContainer sandbox):
+  S1 baseline PASS (4 jobs, both helpers, exact outputs, one commit each, 15 s); S2 helper-crash PASS (helper A
+  killed while its worker ran; worker gone with the agent; A's attempt recorded failed, task re-run on B, all 4
+  committed once); S3 coord-disconnect PASS (20 s `docker pause` + `docker restart`, all 4 committed once);
+  S4 two-helper PASS (each task has results from A and B with one hash before commit); S5 tariff-boundary PASS
+  (window closed 16:51:00 UTC; B got 0 leases and 0 uploads after it; 8 jobs committed); G invariants PASS;
+  X1 p2p-direct-relay, X2 dispute-resolution, X3 app-requester, X4 service-install EXPECTED-FAIL (G1/G2, G3, G6,
+  G7/G8). Script exit 0; afterwards no nc-fleet containers, volumes, images or run folders were left.
+  Earlier runs failed because of script bugs, fixed before the final run: PS 5.1 native stderr under `Stop` (the
+  teardown skipped `compose down` once; I removed those containers, volumes and image by hand),
+  `Start-Process` ExitCode not captured, jobs too short to kill mid-run, a module size byte off by one (helpers
+  correctly refused it with MODULE_REFUSED, and the 6 attempts burned in about 2 s), and single-row SQL results
+  unrolled to strings.
+- **Not done / open:** S5 does not close the window during a running job (G4 path untested at fleet level); S3's
+  pause is shorter than the lease TTL; one PC over loopback only, no LAN/internet; X1-X4 are gaps, not tests.
+  Linux was not run (nc-exec refuses jobs there by design until G8).
+
 ## 2026-11-02 · Claude (coordinator) · main · merge 1.P10
 
 - Asked: review and merge 1.P10 (c4c8f8e).

@@ -43,6 +43,7 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.N2 | Device whoami, secret-free re-register, deregister | net-agent (Claude) | `feat/net-device-lifecycle` | `server/`, `proto/`, `infra/` | done |
 | 1.A4 | App device lifecycle: shared agent builder, whoami on start, deregister on reset | app-agent (Claude) | `feat/app-lifecycle` | `app/`, `core/crates/nc-bridge` | done |
 | 1.P10 | HttpCoordinator whoami/deregister, budget ledger path option, bridge uses them | core-agent (Claude) | `feat/1.P10-coord-client` | `core/crates/{nc-agent,nc-bridge}` | done |
+| 1.L1 | PC gap audit (`docs/laptop-gap.md`) + fleet e2e script; requester wait retries, `nc submit --replicas` | core-agent (Claude) | `feat/1.L1-fleet-e2e` | `docs/laptop-gap.md`, `infra/fleet-e2e.ps1`, `infra/README.md`, `core/crates/{nc-agent,nc-cli}` | done |
 
 ## Rules for Codex work
 

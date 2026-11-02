@@ -6,7 +6,8 @@
 //!
 //! Requester side (talks to the coordinator directly, signing as this device):
 //! `nc submit <module.wasm> <input> [--out <file>]` signs the job manifest (this device is the publisher),
-//! uploads the module and input, submits, polls `GET /v1/jobs/{id}` and downloads the verified output.
+//! uploads the module and input, submits, polls `GET /v1/jobs/{id}` (riding out transient coordinator
+//! outages) and downloads the verified output. `--replicas 2` asks for two-helper validation.
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -71,6 +72,9 @@ enum Cmd {
         /// Output limit, bytes.
         #[arg(long)]
         output_limit: Option<u64>,
+        /// Independent helpers that must return the same output before the task commits (1 or 2).
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=2))]
+        replicas: u32,
     },
 }
 
@@ -119,6 +123,7 @@ fn submit(cfg: &AgentConfig, args: SubmitArgs) -> Result<()> {
     if let Some(o) = args.output_limit {
         spec.limits.output_bytes = o;
     }
+    spec.replicas = args.replicas;
     let key = cfg.device_key()?;
     let signer = nc_identity::RootSigner(key.as_ref());
     let job = requester::build(&spec, &signer, chrono::Utc::now().timestamp_millis())
@@ -158,6 +163,7 @@ struct SubmitArgs {
     wall_ms: Option<u64>,
     memory: Option<u64>,
     output_limit: Option<u64>,
+    replicas: u32,
 }
 
 fn main() -> Result<()> {
@@ -216,6 +222,7 @@ fn main() -> Result<()> {
             wall_ms,
             memory,
             output_limit,
+            replicas,
         } => submit(
             &cfg,
             SubmitArgs {
@@ -227,6 +234,7 @@ fn main() -> Result<()> {
                 wall_ms,
                 memory,
                 output_limit,
+                replicas,
             },
         )?,
     }
@@ -245,6 +253,12 @@ mod tests {
         assert!(c.is_ok());
         let c = Cli::try_parse_from(["nc", "submit", "m.wasm", "in.bin", "--out", "o"]);
         assert!(c.is_ok());
+        let c = Cli::try_parse_from(["nc", "submit", "m.wasm", "i", "--replicas", "2"]);
+        assert!(matches!(
+            c.map(|c| c.cmd),
+            Ok(Cmd::Submit { replicas: 2, .. })
+        ));
+        assert!(Cli::try_parse_from(["nc", "submit", "m.wasm", "i", "--replicas", "3"]).is_err());
         let c = Cli::try_parse_from(["nc", "key"]);
         assert!(matches!(c.map(|c| c.cmd), Ok(Cmd::Key)));
     }

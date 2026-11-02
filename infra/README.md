@@ -57,3 +57,18 @@ No compiler, Cargo cache or source tree is copied into the minimal Debian runtim
 The coordinator serves HTTPS when `NC_TLS_CERT`/`NC_TLS_KEY` are configured; this
 local verification stack uses HTTP on loopback. Cloud deployment still needs the
 owner's approval. No cloud resources are created by this workflow.
+
+## Fleet end-to-end test (Windows)
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File infra/fleet-e2e.ps1
+```
+
+Builds `nc-agent`, `nc` and `nc-exec-worker` (in `CARGO_TARGET_DIR`, default `C:\nc-target`), starts Postgres +
+coordinator under a unique Compose project with its own image tag, runs two helper daemons (own data dir, key and
+loopback control port each) and the `nc` CLI as requester, and drives real cpu-core-v1 jobs through: baseline,
+helper killed mid-job and restarted, coordinator paused then restarted, two-helper validation (`--replicas 2`),
+and a tariff window closing on one helper. Every job's output is compared byte for byte and the database is
+checked for exactly one commit per task. Gaps from `docs/laptop-gap.md` are reported as `EXPECTED-FAIL`.
+Teardown always stops the helpers, runs `down --volumes`, removes the per-run image (unless `-KeepImage`) and
+deletes the run folder (unless `-KeepRunDir`). The sandbox is the real one; nothing is weakened for the test.
