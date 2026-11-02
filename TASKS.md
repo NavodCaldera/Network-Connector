@@ -51,7 +51,7 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.L5 | Resumable chunked upload, server side | net-agent (Claude) | `feat/1.L5-resumable-upload` | `server/`, upload API doc | done |
 | 1.L6 | Resumable chunked upload, agent side (budget-gated per chunk) | core-agent (Claude) | `feat/1.L6-resumable-upload-agent` | `core/crates/nc-agent` | done |
 | 1.L7 | CLI detached submit, `nc job status/wait/fetch` | core-agent (Claude) | `feat/1.L7-cli-jobs` | `core/crates/{nc-cli,nc-agent requester}` | done |
-| 1.L12 | nc-agent Windows service (virtual account, ProgramData ACL, restart policy) | core-agent (Claude) | `feat/1.L12-win-service` | `core/crates/nc-agent` | review (elevated install test pending) |
+| 1.L12 | nc-agent Windows service (virtual account, ProgramData ACL, restart policy) | core-agent (Claude) | `feat/1.L12-win-service` | `core/crates/nc-agent` | review (elevated install test pending: owner runs `infra/service-test.ps1`, 1.L12b) |
 
 ## Rules for Codex work
 

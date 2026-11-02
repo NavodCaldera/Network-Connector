@@ -72,3 +72,19 @@ and a tariff window closing on one helper. Every job's output is compared byte f
 checked for exactly one commit per task. Gaps from `docs/laptop-gap.md` are reported as `EXPECTED-FAIL`.
 Teardown always stops the helpers, runs `down --volumes`, removes the per-run image (unless `-KeepImage`) and
 deletes the run folder (unless `-KeepRunDir`). The sandbox is the real one; nothing is weakened for the test.
+
+## Windows service test (elevated, owner-run)
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File infra\service-test.ps1 -BinDir C:\nc-target-svc\release
+```
+
+Run from an **elevated** PowerShell (it refuses otherwise, exit 2). Uses existing release `nc-agent.exe`, `nc.exe`
+and `nc-exec-worker.exe` from `-BinDir` (no build). Brings up Postgres + coordinator under a unique Compose project,
+installs `nc-agent` as a service (`NT SERVICE\nc-agent`) with its data dir and binaries in
+`C:\ProgramData\NetworkConnector`, sets the owner policy with `nc`, and checks: C1 install/start, C2 registration,
+C3 exact cpu-core-v1 output under the service's AppContainer, C4 `service stop` mid-job (< 1 s, lease failed `STOP`,
+no worker left), C5 data dir ACL, C6 `sc qfailure` restart policy, C7 SCM restart after the process is killed.
+It refuses to run if a `nc-agent` service or that ProgramData folder already exists. Teardown always uninstalls
+the service, deletes the ProgramData folder (device key, `enroll.secret`, logs), runs `down --volumes` and removes
+only the per-run image.
