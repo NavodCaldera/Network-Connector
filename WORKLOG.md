@@ -15,6 +15,17 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 — Coordinator (Claude): merge 1.A2 and 1.N1
+
+- Commits: 48eb4c8 (merge 1.A2, 9a966c3), 5e2f719 (merge 1.N1, 8510d5c).
+- Asked: keep working toward finishing the project.
+- Done: merged app wiring to nc-agent today/policy/budget plus the Windows sandbox_jobs CI step, and the POST /v1/leases/renew endpoint. Started 1.P8 (agent renew loop, persistent ledger).
+- Decisions: accepted net-agent's proto/build.rs change (assigned to it); 404 for foreign leases hides their existence.
+- Verified: 1.A2 CI run 41391601640 green, 8/8 jobs (sandbox stop in 26.3 ms). 1.N1 server and core fmt, clippy, tests and deny clean; Docker verify.ps1 failed once (the old expiry check got 404 just after Docker started), then passed twice.
+- Not done / open: D:
+c-target-app and D:
+c-target-net need deleting by hand (the safety check blocked it); cause of the first verify failure is unknown; app still runs without a backend (needs enrolment); verify.sh not run for 1.N1.
+
 ## 2026-11-02 - Claude (Net agent) - `feat/net-lease-renew` - task 1.N1
 
 - **Commits:** the single commit on `feat/net-lease-renew` that adds this entry.
