@@ -15,7 +15,6 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 nc-agent = { path = "../nc-agent", version = "0.1.0" }
 nc-identity = { path = "../nc-identity", version = "0.1.0" }
 nc-protocol = { path = "../nc-protocol", version = "0.1.0" }
-nc-store = { path = "../nc-store", version = "0.1.0" }
 nc-policy = { path = "../nc-policy", version = "0.1.0" }
 nc-tariff = { path = "../nc-tariff", version = "0.1.0" }
 base64 = "0.22"
@@ -23,12 +22,6 @@ chrono = { version = "0.4.42", default-features = false, features = ["std", "now
 chrono-tz = "0.10.4"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
-getrandom = { workspace = true }
-hex = { workspace = true }
-# Same HTTPS stack as nc-agent's coordinator client (rustls + OS trust store), for the signed whoami and
-# deregister calls (src/enrol/device.rs).
-ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "_ring"] }
-rustls-native-certs = "0.8"
 # Pinned exactly; must match `flutter_rust_bridge` in app/pubspec.yaml and the codegen CLI version.
 flutter_rust_bridge = "=2.13.0"
 

@@ -277,6 +277,9 @@ fn enrol_then_backend_agent_heartbeats_without_the_secret_and_stops_fast() {
     assert!(later.iter().all(|s| !s.headers.contains_key("x-nc-enroll")));
     assert!(later.iter().all(|s| s.headers.contains_key("x-nc-sig")));
     drop(agent);
+    // The ledger is only in the app folder; the agent did not make its default one.
+    assert!(dir.path().join("budget.sqlite").exists());
+    assert!(!dir.path().join("agent").join("budget.sqlite").exists());
 
     // Reset removes the enrolment and identity but keeps the data budget ledger.
     unenrol(dir.path()).unwrap();

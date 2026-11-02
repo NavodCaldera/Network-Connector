@@ -64,6 +64,11 @@ pub struct AgentConfig {
     /// Blob cache quota, MiB.
     #[serde(default = "default_quota")]
     pub cache_quota_mb: u64,
+    /// Data budget ledger (nc-store `budget_usage`); default `<data_dir>/budget.sqlite`. Set it to keep the
+    /// ledger outside `data_dir`, e.g. so a reset that deletes `data_dir` cannot spend a budget twice. When
+    /// set, no ledger is created in `data_dir`.
+    #[serde(default)]
+    pub budget_ledger: Option<PathBuf>,
 }
 
 fn default_port() -> u16 {
@@ -117,6 +122,13 @@ impl AgentConfig {
     /// Device key path.
     pub fn key_path(&self) -> PathBuf {
         self.data_dir.join("device.key")
+    }
+
+    /// Data budget ledger path.
+    pub fn budget_ledger_path(&self) -> PathBuf {
+        self.budget_ledger
+            .clone()
+            .unwrap_or_else(|| self.data_dir.join("budget.sqlite"))
     }
 
     /// Control token path.
@@ -199,8 +211,12 @@ impl AgentConfig {
             self.cache_quota_mb.saturating_mul(1024 * 1024),
         )
         .map_err(|_| ConfigError::Open("blob cache"))?;
-        let usage = nc_store::Store::open(&self.data_dir.join("budget.sqlite"))
-            .map_err(|_| ConfigError::Open("budget usage"))?;
+        let ledger = self.budget_ledger_path();
+        if let Some(parent) = ledger.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).map_err(|_| ConfigError::Open("budget usage"))?;
+        }
+        let usage =
+            nc_store::Store::open(&ledger).map_err(|_| ConfigError::Open("budget usage"))?;
         let budget = BudgetGate::with_usage_store(&self.network_budget, chrono::Utc::now(), usage)
             .map_err(|_| ConfigError::Invalid("network_budget"))?;
         let backend = Backend {
@@ -369,5 +385,33 @@ mod tests {
         );
         drop(backend);
         let _agent = c.build_agent_with(Arc::new(skip)).unwrap();
+    }
+
+    #[test]
+    fn budget_ledger_option_moves_the_ledger_out_of_data_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("agent");
+        let ledger = root.path().join("kept").join("budget.sqlite");
+        let mut c = cfg(&data);
+        assert_eq!(c.budget_ledger_path(), data.join("budget.sqlite"));
+        c.budget_ledger = Some(ledger.clone());
+        assert_eq!(c.budget_ledger_path(), ledger);
+        let inner = Arc::new(Counting(std::sync::atomic::AtomicUsize::new(0)));
+        let backend = c.backend_with(inner).unwrap();
+        assert!(ledger.exists(), "ledger at the configured path");
+        assert!(
+            !data.join("budget.sqlite").exists(),
+            "no default ledger in data_dir"
+        );
+        drop(backend);
+        // Also accepted from the JSON config file.
+        let path = root.path().join("agent.json");
+        let mut v = serde_json::to_value(&c).unwrap();
+        v["budget_ledger"] = serde_json::json!(ledger);
+        std::fs::write(&path, v.to_string()).unwrap();
+        assert_eq!(
+            AgentConfig::load(&path).unwrap().budget_ledger,
+            Some(ledger)
+        );
     }
 }

@@ -2893,19 +2893,14 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "flutter_rust_bridge",
- "getrandom 0.4.3",
- "hex",
  "nc-agent",
  "nc-identity",
  "nc-policy",
  "nc-protocol",
- "nc-store",
  "nc-tariff",
- "rustls-native-certs",
  "serde",
  "serde_json",
  "tempfile",
- "ureq",
 ]
 
 [[package]]
