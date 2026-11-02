@@ -499,27 +499,6 @@ fn mount(
         )
     })
 }
-/// Flags a user namespace may not clear on remount: the kernel locks the source mount's
-/// noexec and atime settings, and a bind remount that omits them fails with EPERM.
-fn locked_flags(path: &Path) -> Result<libc::c_ulong, SandboxError> {
-    let path = cstring(path)?;
-    // SAFETY: zeroed statvfs is a valid out-buffer; path is a valid C string for the call.
-    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
-    // SAFETY: see above; the kernel writes only into `st`.
-    check("mount", unsafe { libc::statvfs(path.as_ptr(), &mut st) })?;
-    let mut flags = 0;
-    for (st_flag, ms_flag) in [
-        (libc::ST_NOEXEC, libc::MS_NOEXEC),
-        (libc::ST_NOATIME, libc::MS_NOATIME),
-        (libc::ST_NODIRATIME, libc::MS_NODIRATIME),
-        (libc::ST_RELATIME, libc::MS_RELATIME),
-    ] {
-        if st.f_flag & st_flag != 0 {
-            flags |= ms_flag;
-        }
-    }
-    Ok(flags)
-}
 fn filesystem(root: &Path) -> Result<(), SandboxError> {
     // Snapshot only already-loaded executable/library mappings; never execute ldd or mount directories.
     let maps = fs::read_to_string("/proc/self/maps").map_err(|e| error("mount", e))?;
@@ -549,12 +528,7 @@ fn filesystem(root: &Path) -> Result<(), SandboxError> {
             None,
             &target,
             None,
-            libc::MS_BIND
-                | libc::MS_REMOUNT
-                | libc::MS_RDONLY
-                | libc::MS_NOSUID
-                | libc::MS_NODEV
-                | locked_flags(&target)?,
+            libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
         )?;
     }
     fs::create_dir(root.join("proc")).map_err(|e| error("mount", e))?;
