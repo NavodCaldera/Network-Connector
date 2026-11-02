@@ -367,6 +367,13 @@ impl Executor {
                 break code;
             }
         };
+        // The final cgroup/Job Object event may arrive with process exit between watchdog polls.
+        for event in child.events() {
+            forced.get_or_insert(match event {
+                SandboxEvent::MemoryLimit => Termination::JobMemoryKilled,
+                SandboxEvent::ProcessLimit => Termination::EscapeAttempt,
+            });
+        }
         let kill_latency = kill_at.map(|t| t.elapsed()).unwrap_or_default();
         let peak = child.peak_memory_bytes();
         let teardown = child.teardown();

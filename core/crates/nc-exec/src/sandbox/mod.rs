@@ -14,10 +14,15 @@ pub use self::windows::{
     SandboxedChild, PROFILE_PREFIX,
 };
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 mod unsupported;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub use self::unsupported::{sweep_leftovers, SandboxedChild, PROFILE_PREFIX};
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use self::linux::{bootstrap, sweep_leftovers, SandboxedChild, PROFILE_PREFIX};
 
 /// What the sandbox needs to start the worker.
 #[derive(Debug, Clone)]
@@ -25,7 +30,7 @@ pub struct SandboxSpec {
     /// Path of the `nc-exec-worker` binary. Its folder must be readable by AppContainers
     /// (see `grant_appcontainer_read` on Windows).
     pub worker: PathBuf,
-    /// Committed-memory cap for the whole worker process (Job Object).
+    /// Memory cap for the worker tree (Job Object on Windows, cgroup v2 on Linux).
     pub process_memory_bytes: u64,
 }
 
@@ -42,7 +47,7 @@ pub struct SandboxError {
 /// Something the OS reported about the sandboxed process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxEvent {
-    /// The process hit the Job Object memory cap.
+    /// The worker tree hit its OS memory cap.
     MemoryLimit,
     /// The process tried to start another process (escape signal).
     ProcessLimit,
@@ -61,9 +66,9 @@ pub struct ChildPipes {
 /// Time spent in the sandbox setup steps.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SetupTimings {
-    /// Profile / container creation.
+    /// Profile / cgroup creation.
     pub profile: Duration,
-    /// Job Object creation and process launch.
+    /// Process launch and isolation setup.
     pub launch: Duration,
 }
 

@@ -10,6 +10,8 @@ use nc_exec::ipc::WorkerRequest;
 use nc_exec::runtime::execute_on_big_stack;
 
 fn main() -> ExitCode {
+    #[cfg(target_os = "linux")]
+    nc_exec::sandbox::bootstrap();
     let req = match WorkerRequest::read_from(&mut BufReader::new(io::stdin().lock())) {
         Ok(r) => r,
         Err(_) => return ExitCode::from(2),
