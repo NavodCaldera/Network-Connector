@@ -15,6 +15,50 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-03 · Claude (coordinator) · main · merge 1.L3
+
+- Asked: review and merge 1.L3 (83e6840).
+- Done: merged with --no-ff, no conflicts. TASKS.md 1.L3 row added as done.
+- Decisions: accepted Activity::Paused(PARKED_TEXT) in place of a new variant (avoids a bridge change), and no new work being taken while a result is parked.
+- Verified: agent results only (core 298 passed / 6 ignored; fmt and clippy clean). Not rerun by the coordinator, and not run against Docker.
+- Open: releasing a lease without penalty depends on 1.L2 (in progress). C:
+c-target must be deleted by hand.
+
+## 2026-11-03 - Claude (Core agent) - `feat/1.L3-deferred-upload` - task 1.L3
+
+- **Asked:** laptop-gap G4 / 1.L3: when a job finishes but the tariff upload window is closed, keep the result
+  (encrypted, within owner limits) and upload it in the next window instead of dropping it; handle lease expiry,
+  agent restart, owner limits and the night budget; tests with a simulated window boundary.
+- **Done:**
+  - `nc-agent/src/parked.rs` (new): `ParkedResults`, an nc-blob store (XChaCha20-Poly1305 per chunk, hash-checked
+    on read) plus an index of ids/hashes/sizes only. Hard byte quota (owner `cache_quota_mb`), refuses anything
+    over the owner `max_disk_mb`, at most 16 entries, 48 h TTL, unreadable entries dropped on open.
+  - `session.rs`: upload refused for window or budget (or a transient upload error) -> park instead of failing;
+    the lease stays alive with the existing renewal thread and the upload is retried each poll, only through the
+    budget gate. Lease lost while parked: local record closed, no Fail for a gone lease; a capped lease (still
+    valid) is released with `TARIFF_WINDOW` / `PARKED_RELEASE` (does not count once 1.L2 is in). The result is kept
+    and reused, without download or rerun, when a later lease arrives for the same task and the same signed
+    manifest (sha256 of the encoded SignedJobManifest). Stop while parked leaves the journal record and the
+    parked result, and `recover()` resumes after a restart (upload if allowed, else renew; lease gone -> record
+    closed, result kept). Parked bytes count as `disk_in_use_mb` for policy admission. Activity is
+    `Paused(PARKED_TEXT)` so nc-bridge needs no new variant. Upload logic factored into `upload`/`finish_output`.
+  - `config.rs`: parked key = sha256(label || device-key Ed25519 signature of a fixed label), deterministic, so
+    it survives restarts without a second key file. Store at `<data_dir>/parked`.
+  - Tests: `tests/parked.rs` (6, settable clock across a 12:00:30 window end with a reopen at 12:01:30: upload in
+    next window under the same lease; restart resumes; lease lost -> reuse under a new lease, runs once; capped
+    lease released; no room -> old `UPLOAD_WINDOW` fail; budget cut while parked -> nothing uploaded). Unit +
+    proptest in `parked.rs` (reopen, wrong key, no plaintext on disk, cap/quota/count, TTL, rebind, never over cap).
+- **Decisions:** (Core agent) block the session while parked rather than taking more work (one job at a time
+  anyway); reuse a parked result only for an identical signed manifest; no proto change needed.
+- **Verified:** in `core/` (CARGO_TARGET_DIR=C:
+c-target, -j 2): `cargo fmt --check` clean;
+  `cargo clippy --all-targets -- -D warnings` clean; `cargo test` 298 passed, 0 failed, 6 ignored (42 test
+  binaries). The first full test run was killed by a rustc STATUS_DLL_INIT_FAILED while compiling (load); the rerun
+  passed.
+- **Not done / open:** the coordinator may give a released task to another helper, then the parked copy only
+  ages out (48 h); the coordinator's 6 h lease cap still bounds same-lease holding. Not tested on real hardware or
+  against the Docker coordinator. A hardware keystore must also sign deterministically for the parked key.
+
 ## 2026-11-02 · Claude (coordinator) · main · merge 1.L1
 
 - Asked: owner moved priority to finishing laptop sharing before mobile; review and merge 1.L1 (0c5124a).

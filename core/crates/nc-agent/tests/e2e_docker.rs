@@ -70,6 +70,10 @@ fn submit_lease_run_complete_download() {
         runner: Arc::new(runner),
         journal: Mutex::new(Journal::open(&dir.path().join("journal")).unwrap()),
         cache: Mutex::new(BlobCache::open(&dir.path().join("blobs"), 64 << 20).unwrap()),
+        parked: Mutex::new(
+            nc_agent::parked::ParkedResults::open(&dir.path().join("parked"), 64 << 20, [7; 32])
+                .unwrap(),
+        ),
         budget: BudgetGate::new(&NetworkBudget::Unmetered, chrono::Utc::now()).unwrap(),
         staging,
         device_name: "e2e-helper".into(),

@@ -16,6 +16,7 @@
 use crate::budget::{BudgetGate, Refusal};
 use crate::coord::{CoordError, Coordinator};
 use crate::journal::{Entry, Journal, Local};
+use crate::parked::ParkedResults;
 use crate::probe::{Clock, PlatformProbe};
 use crate::runner::JobRunner;
 use crate::today::Counters;
@@ -112,6 +113,8 @@ pub struct Backend {
     pub journal: Mutex<Journal>,
     /// Encrypted input cache (nc-blob).
     pub cache: Mutex<BlobCache>,
+    /// Encrypted finished results waiting for an upload window (nc-blob, survives restarts).
+    pub parked: Mutex<ParkedResults>,
     /// Network budget gate (nc-tariff).
     pub budget: BudgetGate,
     /// Private staging folder for partial downloads.
@@ -219,6 +222,33 @@ fn fail(reason: LeaseFailReason, code: &'static str) -> Fail {
     Fail { reason, code }
 }
 
+/// Activity text while a finished result waits for the upload window (an `Activity::Paused` reason, so the
+/// UI bridge needs no new variant).
+pub const PARKED_TEXT: &str = "A finished result is kept until the next upload window.";
+
+/// How `process` ended without a failure.
+enum Done {
+    /// Uploaded and journalled; send Complete.
+    Uploaded(Entry),
+    /// The upload is not allowed now; the result is parked.
+    Parked,
+}
+
+/// Why an upload attempt did not happen.
+enum UploadErr {
+    /// The tariff does not allow it now (window or budget); try again later.
+    NotNow(Refusal),
+    /// The upload itself failed with a network error; try again later.
+    Transient,
+    /// Give up on this attempt.
+    Fail(Fail),
+}
+
+/// Digest that ties a parked result to the exact signed job it was computed for.
+fn job_digest(m: &nc_protocol::pb::v1::SignedJobManifest) -> String {
+    hex::encode(Sha256::digest(prost::Message::encode_to_vec(m)))
+}
+
 fn jitter(max: Duration) -> Duration {
     let mut b = [0u8; 4];
     if getrandom::fill(&mut b).is_err() {
@@ -272,7 +302,8 @@ fn device_state(b: &Backend, running: Vec<RunningTask>) -> DeviceState {
         user_idle_seconds: d.user_idle_seconds,
         running_tasks: running,
         memory_in_use_mb: 0,
-        disk_in_use_mb: 0,
+        // Parked results count against the owner's disk cap.
+        disk_in_use_mb: mib_ceil(lock(&b.parked).bytes()),
         tariff_decision: None,
     }
 }
@@ -643,9 +674,15 @@ impl Session<'_> {
                 return;
             }
         };
+        lock(&self.b.parked).sweep(self.now_ms());
         for (entry, local, state) in pending {
             match state {
                 TaskState::Uploaded | TaskState::Verified => self.complete(&entry, local),
+                TaskState::Queued | TaskState::Leased | TaskState::Running
+                    if lock(&self.b.parked).by_attempt(&entry.attempt_id).is_some() =>
+                {
+                    self.resume_parked(&entry, local);
+                }
                 TaskState::Queued | TaskState::Leased | TaskState::Running => {
                     let f = fail(LeaseFailReason::Crashed, "AGENT_RESTART");
                     match self.send_fail(&entry, &f) {
@@ -658,6 +695,183 @@ impl Session<'_> {
                 TaskState::Committed | TaskState::Failed => {
                     let _ = lock(&self.b.journal).failed(local, self.now_ms());
                 }
+            }
+        }
+    }
+
+    /// A result parked by an earlier run (or before a Stop): upload it if the tariff allows it now, otherwise
+    /// keep its lease alive where control traffic is allowed. A lease the coordinator no longer holds closes
+    /// the local record; the parked result stays for a later lease of the same task.
+    fn resume_parked(&self, entry: &Entry, local: Local) {
+        match self.upload_parked(entry, local, None) {
+            Ok(done) => self.complete(&done, local),
+            Err(UploadErr::NotNow(_) | UploadErr::Transient) => {
+                if !self.control_allowed() {
+                    return;
+                }
+                let req = LeaseRenewRequest {
+                    lease_id: entry.lease_id.clone(),
+                    attempt_id: entry.attempt_id.clone(),
+                };
+                match self.b.coord.renew(&req) {
+                    Err(e) if e.lease_gone() => {
+                        tracing::info!("parked lease ended; result kept for a new lease");
+                        let _ = lock(&self.b.journal).failed(local, self.now_ms());
+                    }
+                    Err(e) => tracing::warn!(error = %e, "parked lease renew failed; retrying"),
+                    Ok(_) => {}
+                }
+            }
+            Err(UploadErr::Fail(f)) => {
+                let _ = self.send_fail(entry, &f);
+                let _ = lock(&self.b.journal).failed(local, self.now_ms());
+            }
+        }
+    }
+
+    /// Upload the parked output bound to `entry`'s attempt.
+    fn upload_parked(
+        &self,
+        entry: &Entry,
+        local: Local,
+        watch: Option<&LeaseWatch>,
+    ) -> Result<Entry, UploadErr> {
+        let output = {
+            let p = lock(&self.b.parked);
+            match p.by_attempt(&entry.attempt_id) {
+                Some(x) => p.read(&x.task_id.clone()),
+                None => None,
+            }
+        };
+        let Some(output) = output else {
+            return Err(UploadErr::Fail(fail(LeaseFailReason::Other, "PARKED_LOST")));
+        };
+        self.upload(local, entry, &output, watch)
+    }
+
+    /// Wait (lease kept alive by the renewal thread) until the tariff allows the parked result's upload, then
+    /// upload it. `Ok(Done::Parked)` means it is still parked: Stop was requested or the lease was lost.
+    fn hold_parked(&self, entry: &Entry, local: Local, watch: &LeaseWatch) -> Result<Done, Fail> {
+        loop {
+            if watch.lost() || self.ctl.stopped() {
+                return Ok(Done::Parked);
+            }
+            self.live.set_activity(Activity::Paused(PARKED_TEXT.into()));
+            match self.upload_parked(entry, local, Some(watch)) {
+                Ok(done) => return Ok(Done::Uploaded(done)),
+                Err(UploadErr::NotNow(_) | UploadErr::Transient) => {}
+                Err(UploadErr::Fail(f)) => return Err(f),
+            }
+            if self.ctl.wait(self.b.tuning.poll) {
+                return Ok(Done::Parked);
+            }
+        }
+    }
+
+    /// Budget-gated upload of `output`, then journal it. Never moves a byte the tariff does not allow.
+    fn upload(
+        &self,
+        local: Local,
+        entry: &Entry,
+        output: &[u8],
+        watch: Option<&LeaseWatch>,
+    ) -> Result<Entry, UploadErr> {
+        let lost = || watch.is_some_and(LeaseWatch::lost);
+        let sha: [u8; 32] = Sha256::digest(output).into();
+        let sha_hex = hex::encode(sha);
+        let size = output.len() as u64;
+        let grant = self
+            .b
+            .budget
+            .authorize(
+                TrafficClass::ResultUpload,
+                size.max(1),
+                self.b.clock.now(),
+                &self.b.probe.network(),
+            )
+            .map_err(UploadErr::NotNow)?;
+        if lost() {
+            self.b.budget.settle(grant, 0);
+            return Err(UploadErr::Fail(lease_lost_fail()));
+        }
+        self.live.set_activity(Activity::Uploading);
+        let mut tries = 0;
+        let put = loop {
+            match self.b.coord.put_blob(&sha_hex, output) {
+                Err(e) if e.is_transient() && tries < 3 && !self.ctl.stopped() => {
+                    tries += 1;
+                    if self.ctl.wait(Duration::from_millis(500 * tries)) {
+                        break Err(e);
+                    }
+                }
+                r => break r,
+            }
+        };
+        self.b.budget.settle(grant, size.saturating_mul(tries + 1));
+        match put {
+            Ok(()) => {}
+            Err(e) if e.is_transient() => return Err(UploadErr::Transient),
+            Err(_) => return Err(UploadErr::Fail(fail(LeaseFailReason::Other, "UPLOAD"))),
+        }
+        lock(&self.b.journal)
+            .uploaded(local, sha, size, self.now_ms())
+            .map_err(|_| UploadErr::Fail(fail(LeaseFailReason::Other, "JOURNAL")))?;
+        Ok(Entry {
+            lease_id: entry.lease_id.clone(),
+            attempt_id: entry.attempt_id.clone(),
+            task_id: entry.task_id.clone(),
+            output_sha256: Some(sha_hex),
+            output_size: Some(size),
+        })
+    }
+
+    /// Upload a finished output now, or park it when the tariff (or a dropped link) does not allow that.
+    fn finish_output(
+        &self,
+        l: &LeaseResponse,
+        local: Local,
+        digest: &str,
+        output: &[u8],
+        policy: &OwnerPolicy,
+        watch: &LeaseWatch,
+    ) -> Result<Done, Fail> {
+        use LeaseFailReason as R;
+        let entry = Entry {
+            lease_id: l.lease_id.clone(),
+            attempt_id: l.attempt_id.clone(),
+            task_id: l.task_id.clone(),
+            output_sha256: None,
+            output_size: None,
+        };
+        let why = match self.upload(local, &entry, output, Some(watch)) {
+            Ok(e) => return Ok(Done::Uploaded(e)),
+            Err(UploadErr::Fail(f)) => return Err(f),
+            Err(UploadErr::NotNow(Refusal::Budget)) => fail(R::Budget, "UPLOAD_BUDGET"),
+            Err(UploadErr::NotNow(Refusal::Window)) => fail(R::TariffWindow, "UPLOAD_WINDOW"),
+            Err(UploadErr::Transient) => fail(R::Other, "UPLOAD"),
+        };
+        let cap = policy.max_disk_mb.saturating_mul(1024 * 1024);
+        let parked = lock(&self.b.parked).park(
+            &l.task_id,
+            digest,
+            &l.lease_id,
+            &l.attempt_id,
+            output,
+            cap,
+            self.now_ms(),
+        );
+        match parked {
+            Ok(()) => {
+                tracing::info!(
+                    code = why.code,
+                    output_bytes = output.len(),
+                    "result parked until the next upload window"
+                );
+                Ok(Done::Parked)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, code = why.code, "cannot park the result");
+                Err(why)
             }
         }
     }
@@ -680,6 +894,12 @@ impl Session<'_> {
         match self.b.coord.complete(&req) {
             Ok(resp) => {
                 tracing::info!(state = %resp.state, duplicate = resp.duplicate, "result accepted");
+                let t = lock(&self.b.parked)
+                    .by_attempt(&entry.attempt_id)
+                    .map(|p| p.task_id.clone());
+                if let Some(t) = t {
+                    lock(&self.b.parked).remove(&t);
+                }
                 match lock(&self.b.journal).completed(local, self.now_ms()) {
                     Ok(CommitOutcome::Committed) => {
                         lock(&self.live.counters).job_committed(self.b.clock.now());
@@ -693,6 +913,15 @@ impl Session<'_> {
             }
             Err(e) => {
                 tracing::warn!(error = %e, "coordinator refused the result");
+                // A parked copy is kept only if the lease merely ended (a new lease may take it).
+                if !e.lease_gone() {
+                    let t = lock(&self.b.parked)
+                        .by_attempt(&entry.attempt_id)
+                        .map(|p| p.task_id.clone());
+                    if let Some(t) = t {
+                        lock(&self.b.parked).remove(&t);
+                    }
+                }
                 let _ = lock(&self.b.journal).failed(local, self.now_ms());
             }
         }
@@ -719,18 +948,41 @@ impl Session<'_> {
             let b = self.b;
             let w = &watch;
             s.spawn(move || keep_lease(b, l, w));
-            let r = self.process(l, local, &watch);
+            let r = match self.process(l, local, &watch) {
+                Ok(Done::Parked) => self.hold_parked(&entry, local, &watch),
+                r => r,
+            };
             watch.done.store(true, Ordering::SeqCst);
             r
         });
-        if watch.lost() {
+        let parked = lock(&self.b.parked).by_attempt(&entry.attempt_id).is_some();
+        if watch.lost() && parked {
+            // The result is kept; only this lease ends. A capped lease is still valid for a few seconds, so
+            // release it (1.L2: a tariff-window release does not count against the task).
+            let why = *lock(&watch.why);
+            tracing::info!(
+                code = why,
+                "lease ended while parked; result kept for a new lease"
+            );
+            if why == "LEASE_CAPPED" && self.control_allowed() {
+                let _ = self.send_fail(
+                    &entry,
+                    &fail(LeaseFailReason::TariffWindow, "PARKED_RELEASE"),
+                );
+            }
+            let _ = lock(&self.b.journal).failed(local, self.now_ms());
+        } else if matches!(result, Ok(Done::Parked)) {
+            // Stop while parked: the journal record and the parked result stay; the next start resumes them.
+            tracing::info!("stopped with a parked result; it resumes on the next start");
+        } else if watch.lost() {
             // The coordinator no longer holds this lease for us: no upload, no Complete, no Fail (it would be
             // refused). Only the local record is closed.
             tracing::warn!(code = *lock(&watch.why), "lease lost; job dropped");
             let _ = lock(&self.b.journal).failed(local, self.now_ms());
         } else {
             match result {
-                Ok(entry) => self.complete(&entry, local),
+                Ok(Done::Uploaded(entry)) => self.complete(&entry, local),
+                Ok(Done::Parked) => {}
                 Err(f) => {
                     let _ = self.send_fail(&entry, &f);
                     let _ = lock(&self.b.journal).failed(local, self.now_ms());
@@ -741,7 +993,7 @@ impl Session<'_> {
     }
 
     /// Verify, download, run and upload. Returns the entry with output fields set, ready for Complete.
-    fn process(&self, l: &LeaseResponse, local: Local, watch: &LeaseWatch) -> Result<Entry, Fail> {
+    fn process(&self, l: &LeaseResponse, local: Local, watch: &LeaseWatch) -> Result<Done, Fail> {
         use LeaseFailReason as R;
         // 1. Signed manifest, before anything big is downloaded.
         let signed = match (&l.manifest, l.version) {
@@ -787,6 +1039,26 @@ impl Session<'_> {
             admit(&policy, &device_state(self.b, Vec::new()), &offer)
         {
             return Err(fail(R::PolicyRefused, reason_code(&reason)));
+        }
+
+        // 2b. A result this device already computed for this exact signed job and kept across a closed window:
+        // upload it under this lease instead of downloading and running again.
+        let digest = job_digest(signed);
+        let reuse = {
+            let p = lock(&self.b.parked);
+            p.get(&l.task_id)
+                .filter(|x| x.job_digest == digest)
+                .and_then(|_| p.read(&l.task_id))
+        };
+        if let Some(output) = reuse {
+            lock(&self.b.parked)
+                .rebind(&l.task_id, &l.lease_id, &l.attempt_id)
+                .map_err(|_| fail(R::Other, "JOURNAL"))?;
+            lock(&self.b.journal)
+                .start(local, self.now_ms())
+                .map_err(|_| fail(R::Other, "JOURNAL"))?;
+            tracing::info!(output_bytes = output.len(), "reusing a parked result");
+            return self.finish_output(l, local, &digest, &output, &policy, watch);
         }
 
         // 3. Budget pre-check for everything this job will move, before the first byte.
@@ -859,54 +1131,8 @@ impl Session<'_> {
             "job finished"
         );
 
-        // 6. Upload the output, then record it before sending Complete.
-        self.live.set_activity(Activity::Uploading);
-        let output = outcome.output;
-        let sha: [u8; 32] = Sha256::digest(&output).into();
-        let sha_hex = hex::encode(sha);
-        let size = output.len() as u64;
-        let grant = self
-            .b
-            .budget
-            .authorize(
-                TrafficClass::ResultUpload,
-                size.max(1),
-                self.b.clock.now(),
-                &self.b.probe.network(),
-            )
-            .map_err(|r| match r {
-                Refusal::Budget => fail(R::Budget, "UPLOAD_BUDGET"),
-                Refusal::Window => fail(R::TariffWindow, "UPLOAD_WINDOW"),
-            })?;
-        if watch.lost() {
-            self.b.budget.settle(grant, 0);
-            return Err(lease_lost_fail());
-        }
-        let mut tries = 0;
-        let put = loop {
-            match self.b.coord.put_blob(&sha_hex, &output) {
-                Err(e) if e.is_transient() && tries < 3 && !self.ctl.stopped() => {
-                    tries += 1;
-                    if self.ctl.wait(Duration::from_millis(500 * tries)) {
-                        break Err(e);
-                    }
-                }
-                r => break r,
-            }
-        };
-        self.b.budget.settle(grant, size.saturating_mul(tries + 1));
-        put.map_err(|_| fail(R::Other, "UPLOAD"))?;
-        lock(&self.b.journal)
-            .uploaded(local, sha, size, self.now_ms())
-            .map_err(|_| fail(R::Other, "JOURNAL"))?;
-        let done = Entry {
-            lease_id: l.lease_id.clone(),
-            attempt_id: l.attempt_id.clone(),
-            task_id: l.task_id.clone(),
-            output_sha256: Some(sha_hex),
-            output_size: Some(size),
-        };
-        Ok(done)
+        // 6. Upload the output and record it before sending Complete; park it if the window is closed.
+        self.finish_output(l, local, &digest, &outcome.output, &policy, watch)
     }
 
     /// Run with a monitor that cancels on Stop or when the owner policy says Stop/Pause (consent off, hours

@@ -56,6 +56,14 @@ fn agent(kit: &Kit) -> Agent {
         runner: Arc::new(runner),
         journal: Mutex::new(kit.journal()),
         cache: Mutex::new(BlobCache::open(&kit.dir.path().join("blobs"), 64 << 20).unwrap()),
+        parked: Mutex::new(
+            nc_agent::parked::ParkedResults::open(
+                &kit.dir.path().join("parked"),
+                64 << 20,
+                [7; 32],
+            )
+            .unwrap(),
+        ),
         budget: BudgetGate::new(&NetworkBudget::Unmetered, noon()).unwrap(),
         staging,
         device_name: "sandbox-test".into(),

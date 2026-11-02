@@ -436,6 +436,8 @@ pub struct Kit {
     pub probe: Arc<FakeProbe>,
     pub publisher: TestKey,
     pub dir: tempfile::TempDir,
+    /// Byte quota of the parked-result store.
+    pub park_quota: u64,
 }
 
 impl Kit {
@@ -446,6 +448,7 @@ impl Kit {
             probe: Arc::new(FakeProbe::new(good_device(), home())),
             publisher: key(42),
             dir: tempfile::tempdir().unwrap(),
+            park_quota: 64 << 20,
         }
     }
 
@@ -468,6 +471,14 @@ impl Kit {
             runner: self.runner.clone(),
             journal: Mutex::new(self.journal()),
             cache: Mutex::new(BlobCache::open(&self.dir.path().join("blobs"), 64 << 20).unwrap()),
+            parked: Mutex::new(
+                nc_agent::parked::ParkedResults::open(
+                    &self.dir.path().join("parked"),
+                    self.park_quota,
+                    [7; 32],
+                )
+                .unwrap(),
+            ),
             budget: gate,
             staging,
             device_name: "test".into(),
