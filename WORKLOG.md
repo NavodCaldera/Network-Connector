@@ -15,6 +15,15 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 — Coordinator (Claude): merge 1.A3, cache clean-up
+
+- Commits: merge of 978037d (feat/app-enrol).
+- Asked: delete caches no longer needed; continue with the app enrolment work.
+- Done: merged app enrolment (signed register with a one-shot secret, coordinator.json config, Agent::with_backend on start, reset). Deleted 6 build caches (about 12 GB) with the owner's approval.
+- Decisions: trusted publisher keys are collected at enrolment, otherwise ready() refuses every job.
+- Verified: CI run 41403552449 green 8/8; nc-bridge 29 tests passed; flutter analyze clean; flutter test +16. Free space after clean-up: C: 22.4 GB, D: 11.8 GB, E: 5.6 GB.
+- Not done / open: not run against the real coordinator; nc-exec-worker not bundled, so Windows app jobs are refused; requests for an nc-agent builder, server re-register/deregister, and an nc key command.
+
 ## 2026-11-02 - Claude (App agent) - `feat/app-enrol` - task 1.A3
 
 - **Commits:** the single commit on `feat/app-enrol` that adds this entry.

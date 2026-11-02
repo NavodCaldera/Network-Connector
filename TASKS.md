@@ -38,6 +38,7 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.N1 | Lease renewal endpoint (holder-only, attempt-bound, capped) | net-agent (Claude) | `feat/net-lease-renew` | `proto/`, `server/`, `infra/` | done |
 | 1.A2 | App/bridge use nc-agent today/budget/policy; Windows CI sandbox_jobs step | app-agent (Claude) | `feat/app-agent-wiring` | `app/`, `core/crates/nc-bridge`, `.github/workflows/` | done |
 | 1.P8 | nc-agent lease renewal loop, persistent tariff ledger, Store::list_unfinished | core-agent (Claude) | `feat/core-agent-renew` | `core/crates/{nc-agent,nc-store}` | done |
+| 1.A3 | App coordinator enrolment, backend agent, reset | app-agent (Claude) | `feat/app-enrol` | `app/`, `core/crates/nc-bridge` | done |
 
 ## Rules for Codex work
 
