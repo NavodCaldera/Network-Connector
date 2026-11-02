@@ -36,6 +36,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ActivityKind dco_decode_activity_kind(dynamic raw);
 
   @protected
+  AgentStart dco_decode_agent_start(dynamic raw);
+
+  @protected
   AppSettings dco_decode_app_settings(dynamic raw);
 
   @protected
@@ -45,10 +48,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AppSettings dco_decode_box_autoadd_app_settings(dynamic raw);
 
   @protected
+  EnrolRequest dco_decode_box_autoadd_enrol_request(dynamic raw);
+
+  @protected
+  Enrolment dco_decode_box_autoadd_enrolment(dynamic raw);
+
+  @protected
   NightDataSettings dco_decode_box_autoadd_night_data_settings(dynamic raw);
 
   @protected
   PolicySummary dco_decode_box_autoadd_policy_summary(dynamic raw);
+
+  @protected
+  EnrolRequest dco_decode_enrol_request(dynamic raw);
+
+  @protected
+  Enrolment dco_decode_enrolment(dynamic raw);
 
   @protected
   HelperActivity dco_decode_helper_activity(dynamic raw);
@@ -63,6 +78,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   int dco_decode_i_32(dynamic raw);
 
   @protected
+  List<String> dco_decode_list_String(dynamic raw);
+
+  @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
@@ -75,6 +93,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   LoadedSettings dco_decode_loaded_settings(dynamic raw);
 
   @protected
+  NetworkKind dco_decode_network_kind(dynamic raw);
+
+  @protected
   NightDataSettings dco_decode_night_data_settings(dynamic raw);
 
   @protected
@@ -82,6 +103,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   String? dco_decode_opt_String(dynamic raw);
+
+  @protected
+  Enrolment? dco_decode_opt_box_autoadd_enrolment(dynamic raw);
 
   @protected
   PolicySummary dco_decode_policy_summary(dynamic raw);
@@ -125,6 +149,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ActivityKind sse_decode_activity_kind(SseDeserializer deserializer);
 
   @protected
+  AgentStart sse_decode_agent_start(SseDeserializer deserializer);
+
+  @protected
   AppSettings sse_decode_app_settings(SseDeserializer deserializer);
 
   @protected
@@ -132,6 +159,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   AppSettings sse_decode_box_autoadd_app_settings(SseDeserializer deserializer);
+
+  @protected
+  EnrolRequest sse_decode_box_autoadd_enrol_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  Enrolment sse_decode_box_autoadd_enrolment(SseDeserializer deserializer);
 
   @protected
   NightDataSettings sse_decode_box_autoadd_night_data_settings(
@@ -144,6 +179,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  EnrolRequest sse_decode_enrol_request(SseDeserializer deserializer);
+
+  @protected
+  Enrolment sse_decode_enrolment(SseDeserializer deserializer);
+
+  @protected
   HelperActivity sse_decode_helper_activity(SseDeserializer deserializer);
 
   @protected
@@ -154,6 +195,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int sse_decode_i_32(SseDeserializer deserializer);
+
+  @protected
+  List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
@@ -170,6 +214,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   LoadedSettings sse_decode_loaded_settings(SseDeserializer deserializer);
 
   @protected
+  NetworkKind sse_decode_network_kind(SseDeserializer deserializer);
+
+  @protected
   NightDataSettings sse_decode_night_data_settings(
     SseDeserializer deserializer,
   );
@@ -179,6 +226,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
+
+  @protected
+  Enrolment? sse_decode_opt_box_autoadd_enrolment(SseDeserializer deserializer);
 
   @protected
   PolicySummary sse_decode_policy_summary(SseDeserializer deserializer);
@@ -226,6 +276,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_activity_kind(ActivityKind self, SseSerializer serializer);
 
   @protected
+  void sse_encode_agent_start(AgentStart self, SseSerializer serializer);
+
+  @protected
   void sse_encode_app_settings(AppSettings self, SseSerializer serializer);
 
   @protected
@@ -234,6 +287,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_app_settings(
     AppSettings self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_enrol_request(
+    EnrolRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_enrolment(
+    Enrolment self,
     SseSerializer serializer,
   );
 
@@ -250,6 +315,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_enrol_request(EnrolRequest self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_enrolment(Enrolment self, SseSerializer serializer);
+
+  @protected
   void sse_encode_helper_activity(
     HelperActivity self,
     SseSerializer serializer,
@@ -263,6 +334,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_String(List<String> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_prim_u_8_strict(
@@ -289,6 +363,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_network_kind(NetworkKind self, SseSerializer serializer);
+
+  @protected
   void sse_encode_night_data_settings(
     NightDataSettings self,
     SseSerializer serializer,
@@ -302,6 +379,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_enrolment(
+    Enrolment? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_policy_summary(PolicySummary self, SseSerializer serializer);

@@ -4,6 +4,7 @@
 //! (run from `app/`, config in `app/flutter_rust_bridge.yaml`). Do not edit the generated file.
 
 pub mod api;
+mod enrol;
 #[allow(
     unsafe_code,
     clippy::all,

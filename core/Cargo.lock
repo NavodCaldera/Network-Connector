@@ -2889,11 +2889,15 @@ dependencies = [
 name = "nc-bridge"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "chrono-tz",
  "flutter_rust_bridge",
  "nc-agent",
+ "nc-identity",
  "nc-policy",
+ "nc-protocol",
+ "nc-store",
  "nc-tariff",
  "serde",
  "serde_json",

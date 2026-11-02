@@ -27,6 +27,41 @@ class FakeAgent implements AgentApi {
     endMinute: end,
   );
 
+  Enrolment? enrolled;
+  final enrolRequests = <EnrolRequest>[];
+  var unenrols = 0;
+  var openedBeforeWatch = false;
+  var _watched = false;
+
+  @override
+  AgentStart openAgent(String dir) {
+    openedBeforeWatch = !_watched;
+    return AgentStart(enrolment: enrolled);
+  }
+
+  @override
+  Future<Enrolment> enrol(String dir, EnrolRequest r) async {
+    enrolRequests.add(r);
+    if (r.enrolSecret != 'good') {
+      throw 'The coordinator did not accept the enrolment secret.';
+    }
+    return enrolled = Enrolment(
+      coordinatorUrl: r.coordinatorUrl,
+      deviceName: r.deviceName,
+      unlimitedData: r.unlimitedData,
+      trustedPublishers: r.trustedPublishers.length,
+      deviceKey: 'PUBKEY',
+      active: false,
+    );
+  }
+
+  @override
+  Future<void> unenrol(String dir) async {
+    unenrols++;
+    await stopHelperSession();
+    enrolled = null;
+  }
+
   @override
   AppSettings defaultSettings() => AppSettings(
     policy: PolicySummary(
@@ -160,5 +195,8 @@ class FakeAgent implements AgentApi {
   }
 
   @override
-  Stream<HelperStatus> watchStatus() => _ctl.stream;
+  Stream<HelperStatus> watchStatus() {
+    _watched = true;
+    return _ctl.stream;
+  }
 }

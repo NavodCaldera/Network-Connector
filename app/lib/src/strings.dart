@@ -95,6 +95,44 @@ class S {
   static String mb(BigInt bytes) =>
       '${(bytes ~/ BigInt.from(1000000)).toString()} MB';
 
+  // Coordinator
+  static const navCoord = 'Connect';
+  static const coordTitle = 'Coordinator';
+  static const coordHelp =
+      'Connect this device to a coordinator to run real jobs. '
+      'Ask the coordinator owner for the address and enrolment secret.';
+  static const coordUrl = 'Coordinator address (https://...)';
+  static const enrolSecret = 'Enrolment secret';
+  static const deviceName = 'Name for this device';
+  static const trustedKeys = 'Trusted publisher keys';
+  static const trustedHelp =
+      'One key per line. Only jobs signed by these people run here.';
+  static String trustedCount(int n) => n == 1
+      ? 'Runs jobs from 1 trusted publisher'
+      : 'Runs jobs from $n trusted publishers';
+  static const deviceKey = 'This device\'s public key (safe to share)';
+  static const connectionTitle = 'This connection';
+  static const wired = 'Wired';
+  static const wifi = 'Wi-Fi';
+  static const connectionName = 'Connection name (like home)';
+  static const speed = 'Speed, at least (Mbit/s)';
+  static const unlimited = 'Unlimited data';
+  static const unlimitedHelp =
+      'Off: large transfers use only your night-data window.';
+  static const coolDevice = 'This device stays cool';
+  static const coolDeviceHelp =
+      'The app cannot read the temperature. Off: no jobs run.';
+  static const enrol = 'Connect';
+  static const enrolling = 'Connecting...';
+  static String connectedTo(String url) => 'Connected to $url';
+  static String deviceNamed(String n) => 'Device name: $n';
+  static const restartToApply = 'Restart the app to apply this change.';
+  static const reset = 'Disconnect and reset';
+  static const resetConfirm =
+      'Stop all work and remove this connection and the device identity?';
+  static const cancel = 'Cancel';
+  static const noAppFolder = 'This device has no folder to save settings yet.';
+
   // About
   static const aboutTitle = 'About';
   static String appVersion(String v) => 'App version $v';

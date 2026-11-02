@@ -67,8 +67,22 @@ fn plain(e: &TariffError) -> String {
     }
 }
 
-/// Builds and validates the nc-tariff profile. Errors are plain English.
+/// Builds and validates the nc-tariff profile with the placeholder binding (authorises no transfer).
 pub(crate) fn to_profile(n: &NightDataSettings) -> Result<TariffProfile, String> {
+    to_profile_bound(
+        n,
+        ConnectionBinding {
+            interface: InterfaceClass::Wifi,
+            connection_id: BINDING_PENDING.into(),
+        },
+    )
+}
+
+/// Builds and validates the nc-tariff profile for the connection the owner confirmed at enrolment.
+pub(crate) fn to_profile_bound(
+    n: &NightDataSettings,
+    binding: ConnectionBinding,
+) -> Result<TariffProfile, String> {
     let timezone: Tz = parse_tz(&n.timezone)?;
     if n.preset_id != CUSTOM && !presets().iter().any(|p| p.id == n.preset_id) {
         return Err("Unknown night-data choice.".into());
@@ -84,10 +98,7 @@ pub(crate) fn to_profile(n: &NightDataSettings) -> Result<TariffProfile, String>
         profile_id: "owner-night-data".into(),
         version: 1,
         timezone,
-        binding: ConnectionBinding {
-            interface: InterfaceClass::Wifi,
-            connection_id: BINDING_PENDING.into(),
-        },
+        binding,
         windows: vec![Window {
             days: n
                 .window
