@@ -20,7 +20,10 @@ use crate::parked::ParkedResults;
 use crate::probe::{Clock, PlatformProbe};
 use crate::runner::JobRunner;
 use crate::today::Counters;
-use crate::transfer::{self, BlobCache, TransferError};
+use crate::transfer::{
+    self, BlobCache, TransferError, UploadError, UploadGate, Uploader, UPLOAD_CHUNK,
+    UPLOAD_OVERHEAD,
+};
 use nc_exec::{CancelToken, ExecError, Termination};
 use nc_policy::{
     admit, check_running, Admission, DeviceState, OwnerPolicy, PeerKey, RunningDecision,
@@ -780,38 +783,56 @@ impl Session<'_> {
         let sha: [u8; 32] = Sha256::digest(output).into();
         let sha_hex = hex::encode(sha);
         let size = output.len() as u64;
-        let grant = self
-            .b
+        // Nothing is sent unless the tariff allows at least the first request now.
+        self.b
             .budget
-            .authorize(
+            .check(
                 TrafficClass::ResultUpload,
-                size.max(1),
+                UPLOAD_OVERHEAD,
                 self.b.clock.now(),
                 &self.b.probe.network(),
             )
             .map_err(UploadErr::NotNow)?;
         if lost() {
-            self.b.budget.settle(grant, 0);
             return Err(UploadErr::Fail(lease_lost_fail()));
         }
         self.live.set_activity(Activity::Uploading);
-        let mut tries = 0;
-        let put = loop {
-            match self.b.coord.put_blob(&sha_hex, output) {
-                Err(e) if e.is_transient() && tries < 3 && !self.ctl.stopped() => {
-                    tries += 1;
-                    if self.ctl.wait(Duration::from_millis(500 * tries)) {
-                        break Err(e);
-                    }
-                }
-                r => break r,
-            }
+        let stopped = || self.ctl.stopped() || lost();
+        let wait = |d: Duration| self.ctl.wait(d) || lost();
+        let up = Uploader {
+            coord: self.b.coord.as_ref(),
+            gate: Some(UploadGate {
+                budget: &self.b.budget,
+                probe: self.b.probe.as_ref(),
+                clock: self.b.clock.as_ref(),
+                class: TrafficClass::ResultUpload,
+            }),
+            stopped: &stopped,
+            wait: &wait,
+            chunk: UPLOAD_CHUNK,
+            retry_base: Duration::from_millis(200),
         };
-        self.b.budget.settle(grant, size.saturating_mul(tries + 1));
-        match put {
+        match up.upload(&sha_hex, output) {
             Ok(()) => {}
-            Err(e) if e.is_transient() => return Err(UploadErr::Transient),
-            Err(_) => return Err(UploadErr::Fail(fail(LeaseFailReason::Other, "UPLOAD"))),
+            Err(_) if lost() => return Err(UploadErr::Fail(lease_lost_fail())),
+            Err(UploadError::NotNow(r)) => return Err(UploadErr::NotNow(r)),
+            // Verified bytes stay on the server; a later attempt resumes from its offset.
+            Err(UploadError::Stopped) => return Err(UploadErr::Transient),
+            Err(UploadError::Coord(e))
+                if e.is_transient()
+                    || matches!(&e, CoordError::Status { status: 409, code } if code == "upload_limit") =>
+            {
+                return Err(UploadErr::Transient)
+            }
+            Err(UploadError::Verify) => {
+                return Err(UploadErr::Fail(fail(
+                    LeaseFailReason::Other,
+                    "UPLOAD_VERIFY",
+                )))
+            }
+            Err(UploadError::Coord(_)) => {
+                return Err(UploadErr::Fail(fail(LeaseFailReason::Other, "UPLOAD")))
+            }
         }
         lock(&self.b.journal)
             .uploaded(local, sha, size, self.now_ms())

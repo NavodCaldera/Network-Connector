@@ -49,6 +49,7 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.L4 | Dispute resolution: third helper, 2-of-3 majority, distinct owners | net-agent (Claude) | `feat/1.L2-attempts-disputes` | `server/`, `infra/` | done |
 | 1.L8-1.L10 | Linux sandbox: namespaces, seccomp, cgroup v2 (prompt: `docs/codex/1.L8-linux-sandbox.md`) | **Codex** | `feat/codex-linux-sandbox` | `core/crates/nc-exec`, Linux CI step | in progress |
 | 1.L5 | Resumable chunked upload, server side | net-agent (Claude) | `feat/1.L5-resumable-upload` | `server/`, upload API doc | done |
+| 1.L6 | Resumable chunked upload, agent side (budget-gated per chunk) | core-agent (Claude) | `feat/1.L6-resumable-upload-agent` | `core/crates/nc-agent` | done |
 | 1.L7 | CLI detached submit, `nc job status/wait/fetch` | core-agent (Claude) | `feat/1.L7-cli-jobs` | `core/crates/{nc-cli,nc-agent requester}` | done |
 | 1.L12 | nc-agent Windows service (virtual account, ProgramData ACL, restart policy) | core-agent (Claude) | `feat/1.L12-win-service` | `core/crates/nc-agent` | review (elevated install test pending) |
 

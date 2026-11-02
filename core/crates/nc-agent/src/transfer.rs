@@ -7,7 +7,7 @@
 //! so a later lease of the same input needs no transfer.
 
 use crate::budget::{BudgetGate, Grant, Refusal};
-use crate::coord::{CoordError, Coordinator};
+use crate::coord::{ChunkReply, CoordError, Coordinator};
 use crate::probe::{Clock, PlatformProbe};
 use nc_blob::{BlobKey, BlobManifest, BlobStore, ChunkId, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE};
 use nc_protocol::pb::v1::TransferRef;
@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Read size per step; checks (Stop, window, network) run between steps.
 const STEP: usize = 64 * 1024;
@@ -278,4 +279,159 @@ pub fn read_capped(mut r: impl Read, cap: u64) -> Result<Vec<u8>, TransferError>
         return Err(TransferError::Budget);
     }
     Ok(out)
+}
+
+/// Default chunk for resumable uploads (proto/README.md recommends 1 MiB on slow links).
+pub const UPLOAD_CHUNK: usize = 1024 * 1024;
+/// Largest chunk the coordinator accepts.
+pub const MAX_UPLOAD_CHUNK: usize = 4 * 1024 * 1024;
+/// Wire bytes charged per upload request on top of the chunk (headers, response).
+pub const UPLOAD_OVERHEAD: u64 = 1024;
+/// Network errors / `upload_busy` answers tolerated in a row before giving up on this attempt.
+const UPLOAD_RETRIES: u32 = 3;
+/// `upload_offset` answers in a row without progress before the server is considered broken.
+const MAX_OFFSET_JUMPS: u32 = 4;
+
+/// Budget and tariff gate for uploads: every request is authorised before it is sent and settled after.
+pub struct UploadGate<'a> {
+    /// Budget gate.
+    pub budget: &'a BudgetGate,
+    /// Platform probe (current network).
+    pub probe: &'a dyn PlatformProbe,
+    /// Clock.
+    pub clock: &'a dyn Clock,
+    /// Traffic class charged.
+    pub class: TrafficClass,
+}
+
+/// One resumable upload's environment.
+pub struct Uploader<'a> {
+    /// Coordinator.
+    pub coord: &'a dyn Coordinator,
+    /// Tariff gate; `None` means ungated (requester CLI).
+    pub gate: Option<UploadGate<'a>>,
+    /// Stop requested (or lease lost)?
+    pub stopped: &'a dyn Fn() -> bool,
+    /// Wait this long; `true` means Stop was requested while waiting.
+    pub wait: &'a dyn Fn(Duration) -> bool,
+    /// Chunk size (clamped to 1..=4 MiB).
+    pub chunk: usize,
+    /// First pause after a network error or `upload_busy`; doubles per retry.
+    pub retry_base: Duration,
+}
+
+/// Why an upload stopped. Verified bytes already on the server stay there; the next attempt resumes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UploadError {
+    /// The tariff does not allow the next request now (window, network or budget).
+    NotNow(Refusal),
+    /// Stop requested.
+    Stopped,
+    /// The local bytes do not match the hash, or the server keeps rejecting the finished blob.
+    Verify,
+    /// Coordinator refused or stayed unreachable (see [`CoordError::is_transient`]).
+    Coord(CoordError),
+}
+
+impl Uploader<'_> {
+    /// Run `f` under a grant for `bytes`; the bytes are charged whatever the outcome (they may have been sent).
+    fn gated<T>(&self, bytes: u64, f: impl FnOnce() -> T) -> Result<T, UploadError> {
+        let Some(g) = &self.gate else {
+            return Ok(f());
+        };
+        let grant = g
+            .budget
+            .authorize(g.class, bytes, g.clock.now(), &g.probe.network())
+            .map_err(UploadError::NotNow)?;
+        let out = f();
+        g.budget.settle(grant, bytes);
+        Ok(out)
+    }
+
+    fn backoff(&self, n: u32) -> Result<(), UploadError> {
+        let d = self.retry_base.saturating_mul(1 << n.min(5));
+        if (self.wait)(d) {
+            return Err(UploadError::Stopped);
+        }
+        Ok(())
+    }
+
+    /// Upload `data` (lowercase hex sha256 `sha_hex`) with the resumable protocol: ask the server for the
+    /// verified offset, then send chunks from there, following the server's offset. Empty blobs use the
+    /// single PUT. Never sends a request the gate refuses.
+    pub fn upload(&self, sha_hex: &str, data: &[u8]) -> Result<(), UploadError> {
+        if sha_hex.len() != 64
+            || !sha_hex
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            || hex::encode(Sha256::digest(data)) != sha_hex
+        {
+            return Err(UploadError::Verify);
+        }
+        let n = data.len() as u64;
+        if n == 0 {
+            return self
+                .gated(UPLOAD_OVERHEAD, || self.coord.put_blob(sha_hex, data))?
+                .map_err(UploadError::Coord);
+        }
+        let chunk = self.chunk.clamp(1, MAX_UPLOAD_CHUNK) as u64;
+        let (mut retries, mut restarts, mut jumps) = (0u32, 0u32, 0u32);
+        let mut held: Option<u64> = None;
+        loop {
+            if (self.stopped)() {
+                return Err(UploadError::Stopped);
+            }
+            let k = match held {
+                Some(k) => k,
+                None => {
+                    match self.gated(UPLOAD_OVERHEAD, || self.coord.upload_offset(sha_hex, n))? {
+                        Ok(k) if k < n => k,
+                        Ok(_) => return Err(UploadError::Coord(CoordError::Decode)),
+                        Err(e) if e.is_transient() && retries < UPLOAD_RETRIES => {
+                            retries += 1;
+                            self.backoff(retries)?;
+                            continue;
+                        }
+                        Err(e) => return Err(UploadError::Coord(e)),
+                    }
+                }
+            };
+            if k > 0 && held.is_none() {
+                tracing::info!(resumed_from = k, total = n, "resuming upload");
+            }
+            let end = (k + chunk).min(n);
+            let bytes = &data[usize::try_from(k).unwrap_or(usize::MAX).min(data.len())
+                ..usize::try_from(end).unwrap_or(usize::MAX).min(data.len())];
+            let cost = bytes.len() as u64 + UPLOAD_OVERHEAD;
+            match self.gated(cost, || self.coord.put_chunk(sha_hex, n, k, bytes))? {
+                Ok(ChunkReply::Complete) => return Ok(()),
+                Ok(ChunkReply::Appended(next)) if next > k && next < n => {
+                    held = Some(next);
+                    retries = 0;
+                    jumps = 0;
+                }
+                Ok(ChunkReply::Appended(_)) => return Err(UploadError::Coord(CoordError::Decode)),
+                Ok(ChunkReply::Offset(next)) => {
+                    jumps += 1;
+                    if next >= n || jumps > MAX_OFFSET_JUMPS {
+                        return Err(UploadError::Coord(CoordError::Decode));
+                    }
+                    held = Some(next);
+                }
+                Err(e) if e.is_transient() && retries < UPLOAD_RETRIES => {
+                    // Lost ack, dropped link or a busy session: ask the server where it is, after a pause.
+                    retries += 1;
+                    held = None;
+                    self.backoff(retries)?;
+                }
+                Err(CoordError::Status { status: 400, .. }) if restarts == 0 => {
+                    // Chunk or final hash mismatch (the session is then gone): re-read the offset once.
+                    restarts += 1;
+                    held = None;
+                }
+                Err(CoordError::Status { status: 400, .. }) => return Err(UploadError::Verify),
+                Err(e) => return Err(UploadError::Coord(e)),
+            }
+        }
+    }
 }

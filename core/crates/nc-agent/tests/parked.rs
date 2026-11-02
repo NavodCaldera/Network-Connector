@@ -283,3 +283,65 @@ fn parked_upload_never_exceeds_the_budget() {
     assert!(kit.coord.s.lock().unwrap().completes.is_empty());
     assert_eq!(parked_count(&kit), 1);
 }
+
+/// Task 1.L6: a result whose upload is cut mid-way is parked; after a restart its upload resumes from the
+/// server offset without re-sending verified bytes, under the same lease.
+#[test]
+fn parked_partial_upload_resumes_after_restart_without_resending() {
+    let kit = Kit::new(Mode::Reverse);
+    let clock = Arc::new(SetClock(Mutex::new(at(12, 0, 0))));
+    kit.coord.s.lock().unwrap().clock = Some(clock.clone());
+    let input: Vec<u8> = (0..(5 << 19) + 7).map(|i| (i % 253) as u8).collect();
+    let mut spec = nc_agent::requester::JobSpec::new(b"\0asm-module".to_vec(), input.clone());
+    spec.limits.output_bytes = 4 << 20;
+    let lease = kit.queue_spec(spec, at(13, 0, 0).timestamp() as u64);
+    // The link drops after the first 1 MiB chunk.
+    kit.coord.s.lock().unwrap().chunks_left = Some(1);
+    let gate = BudgetGate::new(&profile(1 << 30), clock.now()).unwrap();
+    let agent = kit.agent_with_gate(gate, clock.clone());
+    agent.start_helper_session(kit.policy()).unwrap();
+    let t = std::time::Instant::now();
+    while parked_count(&kit) != 1 {
+        assert!(
+            t.elapsed() < Duration::from_secs(15),
+            "not parked: {:?} {:?}",
+            kit.coord
+                .calls()
+                .iter()
+                .map(|c| c.chars().take(30).collect::<String>())
+                .collect::<Vec<_>>(),
+            kit.coord.fails()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    agent.stop_helper_session();
+    drop(agent);
+    // A debug build may still be decrypting / hashing the 2.5 MiB parked copy for its next try when Stop
+    // lands (Stop returns after 800 ms and detaches it); let it release the blob-cache lock before restarting.
+    std::thread::sleep(Duration::from_secs(3));
+    {
+        let s = kit.coord.s.lock().unwrap();
+        assert_eq!(s.chunk_bytes, 1 << 20);
+        assert!(s.puts.is_empty() && s.completes.is_empty() && s.fails.is_empty());
+    }
+
+    // New process, link back.
+    kit.coord.s.lock().unwrap().chunks_left = None;
+    let gate = BudgetGate::new(&profile(1 << 30), clock.now()).unwrap();
+    let agent = kit.agent_with_gate(gate, clock.clone());
+    agent.start_helper_session(kit.policy()).unwrap();
+    until(|| kit.coord.count("complete") == 1);
+    agent.stop_helper_session();
+    let s = kit.coord.s.lock().unwrap();
+    assert_eq!(s.completes[0].attempt_id, lease.attempt_id, "same lease");
+    assert_eq!(s.puts.values().next().unwrap(), &reversed(&input));
+    assert_eq!(
+        s.chunk_bytes,
+        input.len() as u64,
+        "verified bytes were sent again"
+    );
+    assert!(s.fails.is_empty());
+    drop(s);
+    assert_eq!(kit.runner.runs.load(Ordering::SeqCst), 1, "not re-run");
+    assert_eq!(parked_count(&kit), 0);
+}

@@ -127,7 +127,7 @@ coordinator staging, so it comes after the fleet is reliable. G6 (app requester)
   `MAX_TRANSFER`) restart from zero after a drop. Downloads already resume with `Range`.
 - Tasks: 1.L5 (server: chunked/offset upload with per-chunk hash, size cap, owner check), 1.L6 (agent + requester).
 - 1.L5 done (server): `GET /v1/blobs/{sha}/upload/{size}` + `PUT /v1/blobs/{sha}/upload/{size}/{offset}`,
-  contract in `proto/README.md`. The agent still uses the single PUT until 1.L6.
+  contract in `proto/README.md`. The agent uses it since 1.L6 (helper results and requester uploads; empty blobs use the single PUT).
 
 ### G6 Requester flow from the app
 

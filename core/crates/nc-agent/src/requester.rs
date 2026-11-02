@@ -2,7 +2,7 @@
 //! download the output. Used by `nc submit` and [`crate::Agent::submit_job`].
 
 use crate::coord::{CoordError, Coordinator};
-use crate::transfer::read_capped;
+use crate::transfer::{read_capped, UploadError, Uploader, UPLOAD_CHUNK};
 use nc_protocol::jobs::DOMAIN_JOB;
 use nc_protocol::pb::v1::{
     verifier, InputRef, JobManifest, Limits, ProtocolVersion, SignedJobManifest, SubmitJobRequest,
@@ -153,10 +153,37 @@ pub fn build(
     })
 }
 
+/// Upload one blob with the resumable protocol (verified bytes already on the server are not sent again).
+/// The requester side is not tariff-gated. A blob that keeps failing its hash check is reported as
+/// `400 hash_mismatch`.
+pub fn upload_blob(coord: &dyn Coordinator, hash: &str, bytes: &[u8]) -> Result<(), CoordError> {
+    let up = Uploader {
+        coord,
+        gate: None,
+        stopped: &|| false,
+        wait: &|d| {
+            std::thread::sleep(d);
+            false
+        },
+        chunk: UPLOAD_CHUNK,
+        retry_base: Duration::from_millis(50),
+    };
+    match up.upload(hash, bytes) {
+        Ok(()) => Ok(()),
+        Err(UploadError::Coord(e)) => Err(e),
+        Err(UploadError::Verify | UploadError::NotNow(_) | UploadError::Stopped) => {
+            Err(CoordError::Status {
+                status: 400,
+                code: "hash_mismatch".into(),
+            })
+        }
+    }
+}
+
 /// Upload blobs and submit. Returns the coordinator's job id.
 pub fn submit(coord: &dyn Coordinator, job: &BuiltJob) -> Result<String, RequesterError> {
     for (hash, bytes) in &job.blobs {
-        coord.put_blob(hash, bytes)?;
+        upload_blob(coord, hash, bytes)?;
     }
     let resp = coord.submit(&SubmitJobRequest {
         manifest: Some(job.signed.clone()),

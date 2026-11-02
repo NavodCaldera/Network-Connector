@@ -58,9 +58,30 @@ impl CoordError {
     pub fn is_transient(&self) -> bool {
         match self {
             Self::Network(_) => true,
-            Self::Status { status, .. } => *status >= 500 || *status == 429,
+            Self::Status { status, .. } if *status >= 500 || *status == 429 => true,
+            // Another request for the same upload session is in flight: retry later.
+            Self::Status { status: 409, code } => code == "upload_busy",
             _ => false,
         }
+    }
+}
+
+/// Answer to one resumable-upload chunk (proto/README.md "Resumable chunked upload (1.L5)").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkReply {
+    /// Appended; the server now holds this many verified bytes.
+    Appended(u64),
+    /// Last chunk: the whole blob matched and was published.
+    Complete,
+    /// 409 `upload_offset`: the offset was not the held one; continue from this offset.
+    Offset(u64),
+}
+
+/// Answer for coordinators that do not implement resumable uploads (test fakes that never upload).
+fn unsupported() -> CoordError {
+    CoordError::Status {
+        status: 404,
+        code: "upload_unsupported".into(),
     }
 }
 
@@ -83,6 +104,22 @@ pub trait Coordinator: Send + Sync {
     fn get_blob(&self, path: &str, offset: u64) -> Result<Box<dyn Read + Send>, CoordError>;
     /// `PUT /v1/blobs/{sha256_hex}`.
     fn put_blob(&self, sha256_hex: &str, bytes: &[u8]) -> Result<(), CoordError>;
+    /// `GET /v1/blobs/{H}/upload/{N}`: verified bytes this device already holds in the session (0 if none).
+    fn upload_offset(&self, sha256_hex: &str, size: u64) -> Result<u64, CoordError> {
+        let _ = (sha256_hex, size);
+        Err(unsupported())
+    }
+    /// `PUT /v1/blobs/{H}/upload/{N}/{K}` with one chunk.
+    fn put_chunk(
+        &self,
+        sha256_hex: &str,
+        size: u64,
+        offset: u64,
+        chunk: &[u8],
+    ) -> Result<ChunkReply, CoordError> {
+        let _ = (sha256_hex, size, offset, chunk);
+        Err(unsupported())
+    }
     /// `POST /v1/jobs`.
     fn submit(&self, req: &SubmitJobRequest) -> Result<SubmitJobResponse, CoordError>;
     /// `GET /v1/jobs/{id}`.
@@ -118,6 +155,18 @@ impl Coordinator for SkipRegister {
     }
     fn put_blob(&self, sha256_hex: &str, bytes: &[u8]) -> Result<(), CoordError> {
         self.0.put_blob(sha256_hex, bytes)
+    }
+    fn upload_offset(&self, sha256_hex: &str, size: u64) -> Result<u64, CoordError> {
+        self.0.upload_offset(sha256_hex, size)
+    }
+    fn put_chunk(
+        &self,
+        sha256_hex: &str,
+        size: u64,
+        offset: u64,
+        chunk: &[u8],
+    ) -> Result<ChunkReply, CoordError> {
+        self.0.put_chunk(sha256_hex, size, offset, chunk)
     }
     fn submit(&self, req: &SubmitJobRequest) -> Result<SubmitJobResponse, CoordError> {
         self.0.submit(req)
@@ -319,6 +368,14 @@ impl HttpCoordinator {
 }
 
 /// Parse `Content-Range: bytes a-b/n` and return `a`.
+fn offset_header(resp: &ureq::http::Response<ureq::Body>) -> Option<u64> {
+    let v = resp.headers().get("x-nc-upload-offset")?.to_str().ok()?;
+    if v.is_empty() || v.len() > 20 || !v.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    v.parse().ok()
+}
+
 pub(crate) fn content_range_start(v: &str) -> Option<u64> {
     let rest = v.strip_prefix("bytes ")?;
     let (range, _) = rest.split_once('/')?;
@@ -394,6 +451,73 @@ impl Coordinator for HttpCoordinator {
             Err(e) => return Err(e),
         };
         Ok(())
+    }
+    fn upload_offset(&self, sha256_hex: &str, size: u64) -> Result<u64, CoordError> {
+        let resp = self.send(
+            "GET",
+            &format!("/v1/blobs/{sha256_hex}/upload/{size}"),
+            &[],
+            &[],
+        )?;
+        if resp.status().as_u16() != 200 {
+            return Err(Self::json::<serde_json::Value>(resp)
+                .err()
+                .unwrap_or(CoordError::Decode));
+        }
+        let k = offset_header(&resp).ok_or(CoordError::Decode)?;
+        let _ = resp
+            .into_body()
+            .with_config()
+            .limit(MAX_JSON_RESPONSE)
+            .read_to_vec();
+        Ok(k)
+    }
+    fn put_chunk(
+        &self,
+        sha256_hex: &str,
+        size: u64,
+        offset: u64,
+        chunk: &[u8],
+    ) -> Result<ChunkReply, CoordError> {
+        let chunk_hex = hex::encode(Sha256::digest(chunk));
+        let resp = self.send(
+            "PUT",
+            &format!("/v1/blobs/{sha256_hex}/upload/{size}/{offset}"),
+            chunk,
+            &[("x-nc-chunk-sha256", chunk_hex)],
+        )?;
+        let status = resp.status().as_u16();
+        let held = offset_header(&resp);
+        let complete = resp
+            .headers()
+            .get("x-nc-upload-complete")
+            .and_then(|v| v.to_str().ok())
+            == Some("true");
+        if status == 200 {
+            let k = held.ok_or(CoordError::Decode)?;
+            let _ = resp
+                .into_body()
+                .with_config()
+                .limit(MAX_JSON_RESPONSE)
+                .read_to_vec();
+            if complete {
+                return if k == size {
+                    Ok(ChunkReply::Complete)
+                } else {
+                    Err(CoordError::Decode)
+                };
+            }
+            return Ok(ChunkReply::Appended(k));
+        }
+        let err = Self::json::<serde_json::Value>(resp)
+            .err()
+            .unwrap_or(CoordError::Decode);
+        match (&err, held) {
+            (CoordError::Status { status: 409, code }, Some(k)) if code == "upload_offset" => {
+                Ok(ChunkReply::Offset(k))
+            }
+            _ => Err(err),
+        }
     }
     fn submit(&self, req: &SubmitJobRequest) -> Result<SubmitJobResponse, CoordError> {
         self.post_json("/v1/jobs", req, &[])

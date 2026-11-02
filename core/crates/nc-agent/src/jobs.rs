@@ -210,7 +210,7 @@ impl JobStore {
             if hex::encode(Sha256::digest(&bytes)) != *hash {
                 return Err(JobError::Corrupt);
             }
-            retry.run(|| coord.put_blob(hash, &bytes))?;
+            retry.run(|| crate::requester::upload_blob(coord, hash, &bytes))?;
         }
         let req = SubmitJobRequest {
             manifest: Some(signed),
@@ -332,6 +332,7 @@ pub fn write_output(path: &Path, bytes: &[u8]) -> Result<(), JobError> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::coord::ChunkReply;
     use crate::requester::JobSpec;
     use nc_protocol::pb::v1::{
         CompleteRequest, CompleteResponse, HeartbeatRequest, JobStatusResponse, LeaseFailRequest,
@@ -351,6 +352,12 @@ mod tests {
         fail_next: Mutex<u32>,
         state: Mutex<String>,
         output: Mutex<Option<TransferRef>>,
+        /// Resumable sessions (hash -> verified bytes).
+        sessions: Mutex<HashMap<String, Vec<u8>>>,
+        /// Chunk bytes received in total.
+        chunk_bytes: Mutex<u64>,
+        /// After this many more accepted chunks every chunk fails with a network error (link down).
+        chunks_left: Mutex<Option<u32>>,
     }
 
     impl Fake {
@@ -426,6 +433,46 @@ mod tests {
                 .unwrap()
                 .insert(hash.into(), bytes.to_vec());
             Ok(())
+        }
+        fn upload_offset(&self, hash: &str, _size: u64) -> Result<u64, CoordError> {
+            self.flaky()?;
+            Ok(self
+                .sessions
+                .lock()
+                .unwrap()
+                .get(hash)
+                .map_or(0, |v| v.len() as u64))
+        }
+        fn put_chunk(
+            &self,
+            hash: &str,
+            size: u64,
+            offset: u64,
+            chunk: &[u8],
+        ) -> Result<ChunkReply, CoordError> {
+            self.flaky()?;
+            {
+                let mut left = self.chunks_left.lock().unwrap();
+                match *left {
+                    Some(0) => return Err(CoordError::Network("io".into())),
+                    Some(n) => *left = Some(n - 1),
+                    None => {}
+                }
+            }
+            let mut sessions = self.sessions.lock().unwrap();
+            let held = sessions.entry(hash.into()).or_default();
+            if held.len() as u64 != offset {
+                return Ok(ChunkReply::Offset(held.len() as u64));
+            }
+            *self.chunk_bytes.lock().unwrap() += chunk.len() as u64;
+            held.extend_from_slice(chunk);
+            if (held.len() as u64) < size {
+                return Ok(ChunkReply::Appended(held.len() as u64));
+            }
+            let all = sessions.remove(hash).unwrap();
+            assert_eq!(hex::encode(Sha256::digest(&all)), hash);
+            self.blobs.lock().unwrap().insert(hash.into(), all);
+            Ok(ChunkReply::Complete)
         }
         fn submit(&self, req: &SubmitJobRequest) -> Result<SubmitJobResponse, CoordError> {
             self.flaky()?;
@@ -673,6 +720,44 @@ mod tests {
             s.wait(&c, &job.job_id, fast(1000), POLL),
             Err(JobError::Requester(RequesterError::Ended(st))) if st == "disputed"
         ));
+    }
+
+    #[test]
+    fn interrupted_upload_resumes_in_a_new_process_without_resending() {
+        let dir = tempfile::tempdir().unwrap();
+        let k = Key(ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]));
+        let input: Vec<u8> = (0..3 * 1024 * 1024 + 17).map(|i| (i % 251) as u8).collect();
+        let spec = JobSpec::new(b"\0asm\x01\0\0\0".to_vec(), input.clone());
+        let job = requester::build(&spec, &k, chrono::Utc::now().timestamp_millis()).unwrap();
+        let total: u64 = job.blobs.iter().map(|(_, b)| b.len() as u64).sum();
+        // A finished blob has no session, so the 8-byte module is sent again (the server needs all N bytes
+        // from a device before it counts as an uploader); the large input is not.
+        let module_len = job.blobs[0].1.len() as u64;
+        let c = Fake::default();
+        // Process 1: the module and two input chunks get through, then the link stays down.
+        *c.chunks_left.lock().unwrap() = Some(3);
+        JobStore::new(dir.path()).stage(&job, 1).unwrap();
+        assert!(JobStore::new(dir.path())
+            .ensure_submitted(&c, &job.job_id, fast(50))
+            .is_err());
+        assert!(c.jobs.lock().unwrap().is_empty());
+        let sent_before = *c.chunk_bytes.lock().unwrap();
+        assert!(sent_before > 0 && sent_before < total);
+        // Process 2: the link is back; the upload continues from the server offset.
+        *c.chunks_left.lock().unwrap() = None;
+        let rec = JobStore::new(dir.path())
+            .ensure_submitted(&c, &job.job_id, fast(1000))
+            .unwrap();
+        assert_eq!(rec.phase, Phase::Submitted);
+        assert_eq!(
+            *c.chunk_bytes.lock().unwrap(),
+            total + module_len,
+            "verified input bytes resent"
+        );
+        assert_eq!(
+            c.blobs.lock().unwrap().get(&job.blobs[1].0).unwrap(),
+            &input
+        );
     }
 
     #[test]

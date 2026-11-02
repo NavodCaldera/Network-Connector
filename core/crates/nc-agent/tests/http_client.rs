@@ -227,3 +227,63 @@ fn whoami_and_deregister_are_signed_and_map_errors() {
     let c3 = HttpCoordinator::new(&dead, Arc::new(key(2)), None);
     assert!(matches!(c3.whoami(), Err(CoordError::Network(_))));
 }
+
+#[test]
+fn resumable_upload_requests_follow_the_contract() {
+    let h = "ab".repeat(32);
+    let (base, seen) = server(5, |r| match (r.method.as_str(), r.path.as_str()) {
+        ("GET", p) if p.ends_with("/upload/6") => (
+            "200 OK".into(),
+            vec![("x-nc-upload-offset".into(), "2".into())],
+            vec![],
+        ),
+        ("PUT", p) if p.ends_with("/upload/6/2") => (
+            "200 OK".into(),
+            vec![("x-nc-upload-offset".into(), "4".into())],
+            vec![],
+        ),
+        ("PUT", p) if p.ends_with("/upload/6/0") => (
+            "409 Conflict".into(),
+            vec![("x-nc-upload-offset".into(), "4".into())],
+            br#"{"error":{"code":"upload_offset","message":"x"}}"#.to_vec(),
+        ),
+        ("PUT", p) if p.ends_with("/upload/6/4") && r.body == b"le" => (
+            "200 OK".into(),
+            vec![
+                ("x-nc-upload-offset".into(), "6".into()),
+                ("x-nc-upload-complete".into(), "true".into()),
+            ],
+            vec![],
+        ),
+        _ => (
+            "409 Conflict".into(),
+            vec![],
+            br#"{"error":{"code":"upload_busy","message":"x"}}"#.to_vec(),
+        ),
+    });
+    let c = HttpCoordinator::new(&base, Arc::new(key(3)), Some("enroll".into()));
+    use nc_agent::coord::ChunkReply;
+    use sha2::Digest;
+    assert_eq!(c.upload_offset(&h, 6).unwrap(), 2);
+    assert_eq!(
+        c.put_chunk(&h, 6, 2, b"du").unwrap(),
+        ChunkReply::Appended(4)
+    );
+    assert_eq!(c.put_chunk(&h, 6, 0, b"mo").unwrap(), ChunkReply::Offset(4));
+    assert_eq!(c.put_chunk(&h, 6, 4, b"le").unwrap(), ChunkReply::Complete);
+    let busy = c.put_chunk(&h, 6, 5, b"x").unwrap_err();
+    assert!(busy.is_transient(), "upload_busy is retried later");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 5);
+    for s in seen.iter() {
+        verify(s);
+        assert!(!s.headers.contains_key("x-nc-enroll"));
+    }
+    assert_eq!(seen[0].path, format!("/v1/blobs/{h}/upload/6"));
+    assert_eq!(seen[1].path, format!("/v1/blobs/{h}/upload/6/2"));
+    assert_eq!(seen[1].headers["content-type"], "application/octet-stream");
+    assert_eq!(
+        seen[1].headers["x-nc-chunk-sha256"],
+        hex::encode(sha2::Sha256::digest(b"du"))
+    );
+}
