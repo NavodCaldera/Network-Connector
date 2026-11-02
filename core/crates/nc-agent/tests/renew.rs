@@ -85,7 +85,9 @@ fn long_job_is_renewed_and_completes_and_renews_are_charged() {
     let used = store
         .budget_usage("tariff:test", "2026-11-01", "2026-11-30")
         .unwrap();
-    let transfers = blob_bytes + 5; // module + input downloads, 5-byte output upload.
+    // Module + input downloads, then the 5-byte output upload: one offset query and one chunk, each charged
+    // with the per-request upload overhead.
+    let transfers = blob_bytes + 5 + 2 * nc_agent::transfer::UPLOAD_OVERHEAD;
     assert!(blob_bytes >= module_len);
     assert_eq!(used, controls * 4096 + transfers);
 }

@@ -4,7 +4,7 @@
 use chrono::{DateTime, TimeZone, Utc};
 use ed25519_dalek::{Signer as _, SigningKey};
 use nc_agent::budget::{BudgetGate, NetworkBudget};
-use nc_agent::coord::{CoordError, Coordinator};
+use nc_agent::coord::{ChunkReply, CoordError, Coordinator};
 use nc_agent::journal::Journal;
 use nc_agent::probe::{Clock, DeviceObservation, FakeProbe};
 use nc_agent::requester::{self, JobSpec};
@@ -213,6 +213,18 @@ pub struct FakeState {
     pub clock: Option<Arc<dyn Clock>>,
     /// Current expiry per lease id (Unix seconds).
     pub expiry: HashMap<String, u64>,
+    /// Resumable upload sessions (hash -> verified bytes).
+    pub sessions: HashMap<String, Vec<u8>>,
+    /// Chunk bytes accepted in total.
+    pub chunk_bytes: u64,
+    /// After this many more accepted chunks, every chunk fails with a network error (link down).
+    pub chunks_left: Option<u32>,
+    /// The next offset query answers this instead of the held offset (a stale view).
+    pub offset_lie: Option<u64>,
+    /// The finished blob fails its hash check (session deleted, 400).
+    pub corrupt_final: bool,
+    /// Number of upcoming chunks answered with 409 `upload_busy`.
+    pub busy: u32,
 }
 
 #[derive(Default)]
@@ -337,6 +349,55 @@ impl Coordinator for FakeCoord {
         s.calls.push(format!("put:{h}"));
         s.puts.insert(h.into(), bytes.to_vec());
         Ok(())
+    }
+    fn upload_offset(&self, h: &str, _size: u64) -> Result<u64, CoordError> {
+        let mut s = self.s.lock().unwrap();
+        s.calls.push(format!("upload_offset:{h}"));
+        if let Some(k) = s.offset_lie.take() {
+            return Ok(k);
+        }
+        Ok(s.sessions.get(h).map_or(0, |v| v.len() as u64))
+    }
+    fn put_chunk(
+        &self,
+        h: &str,
+        size: u64,
+        offset: u64,
+        chunk: &[u8],
+    ) -> Result<ChunkReply, CoordError> {
+        let mut s = self.s.lock().unwrap();
+        s.calls.push(format!("chunk:{h}@{offset}"));
+        match s.chunks_left {
+            Some(0) => return Err(CoordError::Network("io".into())),
+            Some(n) => s.chunks_left = Some(n - 1),
+            None => {}
+        }
+        if s.busy > 0 {
+            s.busy -= 1;
+            return Err(CoordError::Status {
+                status: 409,
+                code: "upload_busy".into(),
+            });
+        }
+        let held = s.sessions.get(h).map_or(0, |v| v.len() as u64);
+        if held != offset {
+            return Ok(ChunkReply::Offset(held));
+        }
+        s.chunk_bytes += chunk.len() as u64;
+        let v = s.sessions.entry(h.into()).or_default();
+        v.extend_from_slice(chunk);
+        if (v.len() as u64) < size {
+            return Ok(ChunkReply::Appended(v.len() as u64));
+        }
+        let all = s.sessions.remove(h).unwrap();
+        if s.corrupt_final {
+            return Err(CoordError::Status {
+                status: 400,
+                code: "bad_request".into(),
+            });
+        }
+        s.puts.insert(h.into(), all);
+        Ok(ChunkReply::Complete)
     }
     fn submit(&self, _r: &SubmitJobRequest) -> Result<SubmitJobResponse, CoordError> {
         Err(CoordError::Decode)
@@ -509,12 +570,12 @@ impl Kit {
         input: &[u8],
         expires_at: u64,
     ) -> LeaseResponse {
-        let built = requester::build(
-            &JobSpec::new(module.to_vec(), input.to_vec()),
-            &self.publisher,
-            noon().timestamp_millis(),
-        )
-        .unwrap();
+        self.queue_spec(JobSpec::new(module.to_vec(), input.to_vec()), expires_at)
+    }
+
+    /// Queue a lease for a job built from `spec`.
+    pub fn queue_spec(&self, spec: JobSpec, expires_at: u64) -> LeaseResponse {
+        let built = requester::build(&spec, &self.publisher, noon().timestamp_millis()).unwrap();
         let mut transfers = Vec::new();
         let mut s = self.coord.s.lock().unwrap();
         for (hash, bytes) in &built.blobs {
