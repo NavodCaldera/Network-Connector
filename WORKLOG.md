@@ -15,6 +15,13 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 · Claude (coordinator) · main · merge 1.A4
+
+- **Asked:** review and merge 1.A4.
+- **Done:** merged `feat/app-lifecycle` (abd5d8a). Accepted the deviation that `open_agent` stays sync/local and the app calls async `check_enrolment` after start (avoids blocking the UI). TASKS.md 1.A4 set to done.
+- **Verified:** agent report: nc-bridge fmt/clippy/test (32 passed), cargo deny ok, flutter analyze clean, flutter test 19 passed 1 skipped; branch CI run 41457499427 8/8 passed. Not run against the real coordinator.
+- **Open:** Core: add whoami/deregister to `HttpCoordinator` so `enrol/device.rs` TLS copy can go; Core: AgentConfig option for budget ledger path. Old `.claude/worktrees` entries still registered.
+
 ## 2026-11-02 - Claude (App agent) - `feat/app-lifecycle` - task 1.A4
 
 - **Asked:** 1.A4: nc-bridge uses nc-agent's shared builder with `SkipRegister`; check the enrolment with signed
