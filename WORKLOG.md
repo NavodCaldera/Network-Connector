@@ -17,7 +17,7 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ## 2026-11-02 - Claude (Net agent) - `feat/net-device-lifecycle` - task 1.N2
 
-- **Commits:** the single commit on `feat/net-device-lifecycle` that adds this entry.
+- **Commits:** 36b87e4 (rebased onto main 5636878) plus the review/verify commit that updates this entry.
 - **Asked:** 1.N2: device-signed "who am I", secret-free idempotent re-register for known keys, device-signed
   deregister that releases leases; tests incl. replay protection.
 - **Done:**
@@ -36,16 +36,24 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
   blobs reference the device. A deregistered key is unknown afterwards: `/me` says `registered:false`, other calls
   401, and re-enrolling it needs the secret and gives a new device id. Jobs it submitted are left in place.
   Released attempts still count toward the six-attempt cap.
-- **Verified (this PC, CARGO_TARGET_DIR=D:
-c-target-net, -j 2, nice):** server `cargo fmt --all --check` ok;
-  `cargo clippy --all-targets --locked -- -D warnings` ok; `cargo test`: coordinator 7 unit + 9 validation, relay
-  7 + 1, Docker test ignored as designed. core nc-protocol fmt/clippy ok, tests 12+11+22 passed. `cargo deny check`
-  server and core: `advisories ok, bans ok, licenses ok, sources ok`. `infra/verify.ps1` (Docker already running,
-  fresh images): `Coordinator /healthz: ok`, uids 999, `test real_job_cycle_over_http ... ok`,
-  `1 passed; 0 failed; finished in 125.30s`, stack and volumes removed. `verify.sh` not used (no jq on this PC).
-- **Not done / open:** the app (`nc-bridge` enrol/unenrol) and agent do not call `/me` or `/deregister` yet (App
-  agent). No rate limit on `/me` for unknown keys beyond the body cap and nonce table (same as other endpoints).
-  Branch CI result is in the hand-back.
+- **Review and finish (resumed session):** reviewed the branch; found a race: `lease` did not look at the device
+  row, so a lease request that resolved the device before a concurrent deregister committed could still insert an
+  active lease for a deregistered device. Fix in `jobs.rs`: each lease transaction now takes `FOR SHARE` on the
+  device row first and refuses (401) if the key is detached; deregister holds `FOR UPDATE`, so the two serialise
+  in the same lock order (device, then leases/tasks). `infra/verify.ps1` and `verify.sh`: unsigned POST to
+  `/v1/devices/me`, `/deregister`, `/register` must be 401 against the running stack.
+- **Verified (this PC, worktree C:\nc-wt-net, CARGO_TARGET_DIR=C:\nc-target-net, -j 2, nice):** server
+  `cargo fmt --all --check` ok; `cargo clippy --all-targets --locked -- -D warnings` ok; `cargo test --locked`:
+  coordinator 7 unit + 9 validation, relay 7 + 1, Docker test ignored as designed. `infra/verify.ps1` (Docker
+  29.3.1): run 1 FAILED: `/healthz ok`, `Unsigned device lifecycle calls: 401`, uids 999, then
+  `real_job_cycle_over_http` panicked at lease_cycle.rs:212 (`no queued task`) on the lease right after the 61 s
+  lease-expiry sleep (pre-lifecycle section). Run 2, same code: `1 passed; 0 failed; finished in 122.47s`. Cause of
+  run 1 not found. `verify.sh` not run (no jq here). Core nc-protocol not rebuilt this session (build.rs unchanged
+  since the earlier run).
+- **Not done / open:** the one-off expiry-section failure above (possible timing flake at the 60 s TTL boundary;
+  needs a few more runs or CI to tell). `core/crates/nc-protocol/build.rs` (Core-owned) has 6 added lines for
+  serde derives of the new messages: needs Core sign-off. App/agent do not call `/me` or `/deregister` yet (App
+  agent). No extra rate limit on `/me` for unknown keys beyond the body cap and nonce table.
 
 ## 2026-11-02 — Coordinator (Claude): pause 1.P9 and 1.N2
 

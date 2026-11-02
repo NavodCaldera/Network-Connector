@@ -51,6 +51,14 @@ try {
     }
     if (-not $healthy) { throw 'Coordinator health check timed out.' }
     Write-Output 'Coordinator /healthz: ok'
+    foreach ($path in @('/v1/devices/me', '/v1/devices/deregister', '/v1/devices/register')) {
+        $code = 0
+        try {
+            Invoke-WebRequest -UseBasicParsing -Method Post -ContentType 'application/json' -Body '{}' -TimeoutSec 5 "http://127.0.0.1:8080$path" | Out-Null
+        } catch { $code = [int]$_.Exception.Response.StatusCode }
+        if ($code -ne 401) { throw "Unsigned POST $path must be 401, got $code." }
+    }
+    Write-Output 'Unsigned device lifecycle calls: 401'
     foreach ($service in @('coordinator', 'relay')) {
         $uid = & docker @composeArgs exec -T $service id -u
         if ($LASTEXITCODE -ne 0 -or [int]$uid -eq 0) { throw "$service must run as non-root." }
