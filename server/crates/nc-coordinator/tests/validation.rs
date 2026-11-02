@@ -104,6 +104,15 @@ async fn unsigned_requests_are_rejected() {
         assert_eq!(s, StatusCode::UNAUTHORIZED, "{path}");
         assert_error(&v, "unauthorized");
     }
+    // 1.L15b: the job-lease listing is signed too, before any path or database work.
+    for path in [
+        "/v1/jobs/00000000-0000-0000-0000-000000000001/leases",
+        "/v1/jobs/not-a-uuid/leases",
+    ] {
+        let (s, v) = call(Request::get(path).body(Body::empty()).unwrap()).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{path}");
+        assert_error(&v, "unauthorized");
+    }
 }
 
 #[tokio::test]

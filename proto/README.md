@@ -278,3 +278,41 @@ Relay check: `lease` and `counterpart` come as a pair (one alone is malformed). 
 scoped token may open circuits only to `counterpart`; libp2p's circuit limiter cannot see the destination,
 so the relay drops the grant and disconnects the source on an out-of-scope `CircuitReqAccepted`. The
 requester reserves its relay slot with an ordinary `/v1/relay/token` token for its own PeerId.
+
+## Requester view of its job's leases (1.L15b)
+
+Backward compatible: `JobLease` and `JobLeasesResponse` are new messages; nothing was renumbered.
+
+GET /v1/jobs/{job_id}/leases (NC-REQ-V1 signed by the requester's device key, body must be empty, nonce
+recorded as for every signed request) returns `JobLeasesResponse`:
+- `job_id` and `leases`: at most 16 `JobLease` entries, ordered by issue time, of leases that are `active`
+  and whose `expires_at` (Unix seconds) is in the future. Completed, failed and expired leases are omitted.
+- `lease_id`, `attempt_id` (UUID strings) identify the attempt.
+- `helper_peer_id`: the helper device's libp2p PeerId, present only while that device is registered and its
+  `POST /v1/devices/peer` registration is fresh (seen within 600 s). The key is omitted otherwise.
+- Only the device that submitted the job may read it. Any other device (including the helper), an unknown
+  job id and a malformed id all get the same 404 `not_found`, so existence does not leak. Unsigned,
+  badly signed, replayed or unregistered-key requests are 401. A non-empty body is 400.
+- No separate rate limiter exists on the coordinator yet (none of the signed endpoints has one); the
+  per-request signature, nonce and skew window apply. The response is bounded by the 16-lease cap.
+
+Use: the requester calls `PeerNet::grant(helper_peer_id, blobs)` for the job's blobs. The PeerId is a
+connection detail, not authorisation by itself: the nc-net gate authenticates the remote Noise/TLS key
+and the grant is checked again per request. Poll with backoff while the job is queued or leased.
+
+## Direct blob chunks over nc-net: `/nc/blob/1.0.0` (1.L15)
+
+Libp2p stream protocol (nc-agent `peer.rs`), one request per stream, on an authenticated nc-net
+connection. The server side (requester) answers only the PeerId it granted, and only for granted blobs.
+- Request, exactly 44 bytes: `sha256[32] || offset u64 BE || len u32 BE`. The server waits at most 10 s
+  for it, otherwise it drops the stream without a reply.
+- Reply: `status u8`:
+  - `0` ok: then `n u32 BE` and `n` bytes of the blob starting at `offset`. `1 <= n <= len`; the server
+    sends `min(len, 262144, size - offset)` bytes (256 KiB per request). A client rejects `n == 0` or
+    `n > len` as a protocol error.
+  - `1` denied: the remote PeerId has no grant, or the blob is not in its grant.
+  - `2` range: `offset >= size` or `len == 0`.
+  - `3` busy: the serving side's budget gate refused the chunk (the server charges `n + 256` bytes).
+- Then the server closes the stream. The client checks the stream's authenticated PeerId equals the hinted
+  one before writing the request, times out a chunk after 30 s and a connect after 10 s, verifies the
+  whole blob's size and sha256 as on the HTTP path, and falls back to HTTP on any network or peer error.

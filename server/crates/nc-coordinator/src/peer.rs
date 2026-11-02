@@ -5,11 +5,14 @@
 //! derives the PeerId from the libp2p public key itself, so a device cannot claim another device's
 //! PeerId. Hints are connection details only, never authorisation (AGENT.md §1 rule 2).
 
+use axum::extract::Path;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ed25519_dalek::{Signature, VerifyingKey};
 use libp2p::multiaddr::Protocol;
 use libp2p::{identity, Multiaddr, PeerId};
-use nc_protocol::pb::v1::{PeerHints, PeerRegisterRequest, PeerRegisterResponse};
+use nc_protocol::pb::v1::{
+    JobLease, JobLeasesResponse, PeerHints, PeerRegisterRequest, PeerRegisterResponse,
+};
 use sqlx::Row;
 use uuid::Uuid;
 
@@ -21,6 +24,9 @@ pub const PEER_TTL_SECS: i64 = 600;
 pub const MAX_PEER_ADDRS: usize = 16;
 /// Longest accepted multiaddr text.
 pub const MAX_ADDR_LEN: usize = 256;
+/// Most leases one `GET /v1/jobs/{id}/leases` response lists (a job has one task and at most one
+/// active lease per task today; the cap keeps the response small if that ever changes).
+pub const MAX_JOB_LEASES: i64 = 16;
 /// Domain prefix of the binding statement signed by the libp2p key.
 pub const PEER_BINDING_DOMAIN: &[u8] = b"nc.v1.PeerBinding\0";
 
@@ -159,6 +165,71 @@ pub async fn register(
     }))
 }
 
+/// Oldest `peer_seen_at` that still counts as a fresh registration at time `t`.
+pub fn fresh_since(t: i64) -> i64 {
+    t - PEER_TTL_SECS
+}
+
+/// 1.L15b `GET /v1/jobs/{id}/leases`: the requester device lists the live leases of its own job with the
+/// helper's PeerId (only while the helper's registration is fresh), so it can grant that PeerId on nc-net.
+/// Any other device, an unknown job and a malformed id all get the same 404 (no existence leak).
+/// The PeerId is a connection detail: the requester's nc-net gate still authenticates the remote key.
+pub async fn job_leases(
+    State(s): State<AppState>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Json<JobLeasesResponse>, ApiError> {
+    let (c, b) = read_signed(&s, &method, &uri, &headers, body).await?;
+    if !b.is_empty() {
+        return Err(bad("GET body must be empty"));
+    }
+    let d = device(&s, &c).await?;
+    let none = || ApiError::not_found("no such job");
+    let id = path
+        .ok()
+        .and_then(|Path(id)| Uuid::parse_str(&id).ok())
+        .ok_or_else(none)?;
+    let owned: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM jobs WHERE id=$1 AND requester=$2")
+            .bind(id)
+            .bind(d.id)
+            .fetch_optional(&s.pool)
+            .await?;
+    owned.ok_or_else(none)?;
+    let t = now();
+    let rows = sqlx::query(
+        "SELECT l.id, l.attempt_id, l.expires_at,
+                CASE WHEN h.public_key IS NOT NULL AND h.peer_seen_at > $3 THEN h.peer_id END AS peer_id
+         FROM leases l JOIN tasks k ON k.id=l.task_id JOIN devices h ON h.id=l.device_id
+         WHERE k.job_id=$1 AND l.state='active' AND l.expires_at > $2
+         ORDER BY l.issued_at, l.id LIMIT $4",
+    )
+    .bind(id)
+    .bind(t)
+    .bind(fresh_since(t))
+    .bind(MAX_JOB_LEASES)
+    .fetch_all(&s.pool)
+    .await?;
+    let mut leases = Vec::with_capacity(rows.len());
+    for r in rows {
+        leases.push(JobLease {
+            lease_id: r.try_get::<Uuid, _>("id")?.to_string(),
+            attempt_id: r.try_get::<Uuid, _>("attempt_id")?.to_string(),
+            helper_peer_id: r
+                .try_get::<Option<String>, _>("peer_id")?
+                .unwrap_or_default(),
+            expires_at: r.try_get::<i64, _>("expires_at")?.max(0) as u64,
+        });
+    }
+    Ok(Json(JobLeasesResponse {
+        job_id: id.to_string(),
+        leases,
+    }))
+}
+
 /// Hints for a fresh lease: the requester's fresh registration and, when relay tokens are enabled and
 /// the helper has a fresh PeerId, a relay token for the helper scoped to this lease and requester.
 pub(crate) async fn hints_for_lease(
@@ -174,7 +245,7 @@ pub(crate) async fn hints_for_lease(
          WHERE t.id=$1 AND d.public_key IS NOT NULL AND d.peer_id IS NOT NULL AND d.peer_seen_at > $2",
     )
     .bind(task)
-    .bind(t - PEER_TTL_SECS)
+    .bind(fresh_since(t))
     .fetch_optional(&s.pool)
     .await?;
     let Some(row) = row else { return Ok(None) };
@@ -191,7 +262,7 @@ pub(crate) async fn hints_for_lease(
             "SELECT peer_id FROM devices WHERE id=$1 AND peer_id IS NOT NULL AND peer_seen_at > $2",
         )
         .bind(helper.id)
-        .bind(t - PEER_TTL_SECS)
+        .bind(fresh_since(t))
         .fetch_optional(&s.pool)
         .await?;
         if let Some(own) = own {

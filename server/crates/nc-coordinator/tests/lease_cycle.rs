@@ -1133,3 +1133,155 @@ async fn peer_hints_in_lease_over_http() {
         200
     );
 }
+
+/// 1.L15b `GET /v1/jobs/{id}/leases`: the requester sees its live leases with the helper's PeerId; other
+/// devices get 404; a helper without a fresh registration has no PeerId; expired leases are not listed;
+/// unsigned and badly signed requests are 401. Leaves no schedulable task behind.
+#[tokio::test]
+#[ignore = "needs a fresh infra Docker stack with PostgreSQL; run infra/verify.ps1 or verify.sh"]
+async fn job_leases_over_http() {
+    use libp2p::{identity, PeerId};
+    fn bind(dev: &Dev, lp: &SigningKey) -> Value {
+        let pk =
+            identity::ed25519::PublicKey::try_from_bytes(lp.verifying_key().as_bytes()).unwrap();
+        let msg = nc_coordinator::peer::binding_message(&dev.sk.verifying_key().to_bytes());
+        json!({
+            "peer_id": PeerId::from_public_key(&identity::PublicKey::from(pk)).to_string(),
+            "libp2p_public_key": URL_SAFE_NO_PAD.encode(lp.verifying_key().as_bytes()),
+            "binding_signature": URL_SAFE_NO_PAD.encode(lp.sign(&msg).to_bytes()),
+            "addrs": [],
+        })
+    }
+    async fn leases(dev: &Dev, id: &str) -> (u16, Value) {
+        let r = dev
+            .request("GET", &format!("/v1/jobs/{id}/leases"), vec![], None)
+            .await;
+        let s = r.status().as_u16();
+        (s, r.json().await.unwrap())
+    }
+    let base = std::env::var("NC_TEST_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".into());
+    let enroll = std::env::var("NC_TEST_ENROLL").expect("NC_TEST_ENROLL");
+    let owner = Dev::new(&base);
+    owner.register(&enroll).await;
+    let helper = Dev::new(&base);
+    helper.register(&enroll).await;
+    let other = Dev::new(&base);
+    other.register(&enroll).await;
+    let owner_lp = SigningKey::generate(&mut rand::rngs::OsRng);
+    assert_eq!(
+        owner
+            .post("/v1/devices/peer", bind(&owner, &owner_lp))
+            .await
+            .0,
+        200
+    );
+
+    // Helper without any peer registration: the lease is listed, the PeerId key is absent.
+    let id = owner.submit(owner.manifest(1)).await;
+    owner.upload(b"module").await;
+    owner.upload(b"input").await;
+    let (s, v) = leases(&owner, &id).await;
+    assert_eq!((s, v["leases"].clone()), (200, json!([])), "{v}");
+    let l = helper.lease().await;
+    let (s, v) = leases(&owner, &id).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["job_id"], id.as_str());
+    let ls = v["leases"].as_array().unwrap();
+    assert_eq!(ls.len(), 1, "{v}");
+    assert_eq!(ls[0]["lease_id"], l["lease_id"]);
+    assert_eq!(ls[0]["attempt_id"], l["attempt_id"]);
+    assert_eq!(ls[0]["expires_at"], l["expires_at"]);
+    assert!(ls[0].get("helper_peer_id").is_none(), "{v}");
+
+    // Fresh helper registration: the PeerId appears.
+    let helper_lp = SigningKey::generate(&mut rand::rngs::OsRng);
+    let hb = bind(&helper, &helper_lp);
+    let helper_peer = hb["peer_id"].as_str().unwrap().to_owned();
+    assert_eq!(helper.post("/v1/devices/peer", hb).await.0, 200);
+    let (s, v) = leases(&owner, &id).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        v["leases"][0]["helper_peer_id"],
+        helper_peer.as_str(),
+        "{v}"
+    );
+
+    // Not the requester (another device, the helper itself): 404, same as an unknown or malformed id.
+    for (dev, path_id) in [
+        (&other, id.clone()),
+        (&helper, id.clone()),
+        (&owner, uuid::Uuid::new_v4().to_string()),
+        (&owner, "not-a-uuid".to_owned()),
+    ] {
+        let (s, v) = leases(dev, &path_id).await;
+        assert_eq!(
+            (s, v["error"]["code"].as_str()),
+            (404, Some("not_found")),
+            "{v}"
+        );
+    }
+    // A body on the GET is rejected.
+    let r = owner
+        .request(
+            "GET",
+            &format!("/v1/jobs/{id}/leases"),
+            b"{}".to_vec(),
+            None,
+        )
+        .await;
+    assert_eq!(r.status(), 400);
+
+    // Unsigned, and signed by a key other than the one presented: 401.
+    let url = format!("{base}/v1/jobs/{id}/leases");
+    let r = reqwest::get(&url).await.unwrap();
+    assert_eq!(r.status(), 401);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let path = format!("/v1/jobs/{id}/leases");
+    let forged = other
+        .sk
+        .sign(signing_string("GET", &path, ts, &nonce, b"").as_bytes());
+    let r = reqwest::Client::new()
+        .get(&url)
+        .header(
+            "x-nc-key",
+            URL_SAFE_NO_PAD.encode(owner.sk.verifying_key().to_bytes()),
+        )
+        .header("x-nc-ts", ts.to_string())
+        .header("x-nc-nonce", nonce)
+        .header("x-nc-sig", URL_SAFE_NO_PAD.encode(forged.to_bytes()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+
+    // Expired lease: not listed. Re-lease (the real clock, no database shortcut) so nothing is left queued.
+    tokio::time::sleep(std::time::Duration::from_secs(61)).await;
+    let (s, v) = leases(&owner, &id).await;
+    assert_eq!((s, v["leases"].clone()), (200, json!([])), "{v}");
+    assert_eq!(
+        helper
+            .post("/v1/devices/heartbeat", json!({"status":"idle"}))
+            .await
+            .0,
+        200
+    );
+    let fresh = helper.lease().await;
+    assert_ne!(fresh["lease_id"], l["lease_id"]);
+    let (_, v) = leases(&owner, &id).await;
+    let ls = v["leases"].as_array().unwrap();
+    assert_eq!(ls.len(), 1, "{v}");
+    assert_eq!(ls[0]["lease_id"], fresh["lease_id"]);
+    // Finished leases are not listed either.
+    assert_eq!(helper.complete(&fresh, b"leases-out").await.0, 200);
+    let (_, v) = leases(&owner, &id).await;
+    assert_eq!(v["leases"], json!([]), "{v}");
+    // A deregistered helper's binding is cleared, so it can never appear again.
+    assert_eq!(
+        helper.post("/v1/devices/deregister", json!({})).await.0,
+        200
+    );
+}
