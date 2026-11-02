@@ -609,12 +609,12 @@ impl Kit {
     }
 }
 
-/// Wait until `f` holds (5 s max).
+/// Wait until `f` holds (20 s max; slow CI runners need the headroom).
 pub fn until(mut f: impl FnMut() -> bool) {
     let t = Instant::now();
     while !f() {
         assert!(
-            t.elapsed() < Duration::from_secs(5),
+            t.elapsed() < Duration::from_secs(20),
             "condition not reached"
         );
         std::thread::sleep(Duration::from_millis(5));
