@@ -15,6 +15,18 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-02 — Coordinator (Claude): pause 1.P9 and 1.N2
+
+- Commits: board update; WIP ac2440b on feat/core-builder; net branch at 36b87e4.
+- Asked: stop the running work and resume later.
+- Done: stopped both agents and leftover cargo processes. Saved the uncommitted 1.P9 edits as a WIP commit and pushed it; removed the C:
+c-wt-core worktree.
+- Decisions: none.
+- Verified: nothing. Both branches are unbuilt and unreviewed.
+- Not done / open: resume both from their branches. C:
+c-target (4.9 GB) and D:
+c-wt-net need deleting by hand (the safety check blocks it).
+
 ## 2026-11-02 — Coordinator (Claude): merge 1.A3, cache clean-up
 
 - Commits: merge of 978037d (feat/app-enrol).
