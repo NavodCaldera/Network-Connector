@@ -15,6 +15,18 @@ Never write secrets, tokens, passphrases, pairing codes or job contents into thi
 
 ---
 
+## 2026-11-03 - Claude (Core agent) - `feat/1.L7-cli-jobs` - task 1.L7 (gap G9)
+
+- Asked: detached `nc submit` printing the job id, plus `nc job status|wait <id>` and `nc job fetch <id> -o <file>`, resumable after the process exits or the PC restarts, using the 1.L1 retry rule, output hash-checked.
+- Done:
+  - `core/crates/nc-agent/src/jobs.rs` (new): `JobStore` under `<data_dir>/requests/<uuid>/`. `stage` writes `record.json` (signed manifest, blob hashes, phase) and copies of the blobs before anything is sent. `ensure_submitted` re-checks each staged blob's hash, uploads, submits (the coordinator accepts the same signed manifest again, so a crash anywhere is idempotent), marks `submitted` and deletes the staged copies. `status`/`wait`/`fetch` submit first if still staged. Transient errors (network, 5xx, 429) retried with backoff until the timeout, as in 1.L1; others end at once. The committed output hash/size is pinned in the record the first time it is seen; a later different committed output is refused (`OutputChanged`). Downloads are checked against the committed hash (`requester::fetch_output`). Output files are written via temp file + rename. Ids must parse as UUIDs (no path traversal).
+  - `core/crates/nc-cli/src/main.rs`: `nc submit` is detached by default (prints the id on stdout, still logs `submitted job <id>` on stderr); `--wait` or `--out` keeps the old blocking form, so `infra/fleet-e2e.ps1` is unchanged. New `nc job status|wait|fetch`.
+  - `core/crates/nc-agent/README.md`: usage.
+- Decisions (Core agent): blobs are copied into the data dir instead of storing source paths, so a moved or edited input cannot change a staged job. No batch submit (G9 mentions it; not in the 1.L7 task).
+- Verified (core/, CARGO_TARGET_DIR=C:
+c-target, -j 2): `cargo fmt --check` clean; `cargo clippy --all-targets -- -D warnings` clean (one `needless_update` in the new test fixed first); `cargo test` 41 test binaries ok, 307 passed, 0 failed, 6 ignored. New tests: 10 in `nc_agent::jobs` (resume of a staged job by a fresh store, crash after submit before record update, transient 503s on submit and fetch, coordinator down until timeout keeps the job staged, tampered output refused, pinned output change refused, tampered staged blob and bad ids refused, disputed ends wait, atomic output write) and CLI parse cases.
+- Not done / open: not run against a live coordinator or across a real reboot; the restart case is tested by a fresh `JobStore` on the same directory. Records are never pruned. Staged blob copies sit in the data dir unencrypted, like the module/input files the user passed in.
+
 ## 2026-11-03 - Claude (coordinator) - main - merge 1.L2 + 1.L4
 
 - Asked: review and merge 1.L2 and 1.L4 (1ed5a3f).

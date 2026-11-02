@@ -23,8 +23,14 @@ encrypted transfers are refused with `VERIFY_FAILED/ENCRYPTED_UNSUPPORTED`.
 set NC_ENROLL_SECRET=...        (never put it in the file)
 nc-agent run --config agent.json
 nc --config agent.json status | start | stop | shutdown | policy show | policy set policy.json
-nc --config agent.json submit module.wasm input.bin --out result.bin
+nc --config agent.json submit module.wasm input.bin --out result.bin   (blocking)
+nc --config agent.json submit module.wasm input.bin                   (detached; prints the job id)
+nc --config agent.json job status|wait <id>
+nc --config agent.json job fetch <id> -o result.bin
 ```
+
+Requester jobs are recorded under `<data_dir>/requests/<id>/` before upload, so `nc job ...` resumes them
+from any later process or after a restart (laptop-gap G9).
 
 `agent.json`:
 
