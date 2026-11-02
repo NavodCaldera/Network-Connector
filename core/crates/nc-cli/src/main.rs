@@ -1,6 +1,7 @@
 //! `nc`: command line for the Network Connector agent.
 //!
 //! Helper side (talks to the local `nc-agent` daemon over its loopback control socket):
+//! `nc key` prints this device's public key (base64url) to share as a trusted publisher key.
 //! `nc status`, `nc start`, `nc stop`, `nc policy show`, `nc policy set <policy.json>`, `nc shutdown`.
 //!
 //! Requester side (talks to the coordinator directly, signing as this device):
@@ -39,6 +40,8 @@ enum Cmd {
     Stop,
     /// Stop the session and exit the daemon.
     Shutdown,
+    /// Print this device's public key (base64url) to share as a trusted publisher key.
+    Key,
     /// Show or change the owner policy.
     Policy {
         #[command(subcommand)]
@@ -171,6 +174,13 @@ fn main() -> Result<()> {
                 r.helping_seconds_today.unwrap_or(0) / 60
             );
         }
+        Cmd::Key => {
+            // Public key only; the private key never leaves the key store.
+            println!(
+                "{}",
+                cfg.public_key_b64().context("opening the device key")?
+            );
+        }
         Cmd::Start => {
             daemon(&cfg, Command::Start)?;
             println!("helper session started");
@@ -235,5 +245,7 @@ mod tests {
         assert!(c.is_ok());
         let c = Cli::try_parse_from(["nc", "submit", "m.wasm", "in.bin", "--out", "o"]);
         assert!(c.is_ok());
+        let c = Cli::try_parse_from(["nc", "key"]);
+        assert!(matches!(c.map(|c| c.cmd), Ok(Cmd::Key)));
     }
 }
