@@ -38,9 +38,10 @@ fn assert_dropped(kit: &Kit) {
 
 #[test]
 fn long_job_is_renewed_and_completes_and_renews_are_charged() {
-    let kit = Kit::new(Mode::Sleep(1_500));
-    // 100x: the 1.5 s run is 150 s of lease time, far past the 60 s TTL.
-    let clock: Arc<dyn Clock> = Arc::new(FastClock::new(noon(), 100));
+    let kit = Kit::new(Mode::Sleep(6_000));
+    // 25x: the 6 s run is 150 s of lease time, far past the 60 s TTL. A faster clock left too little
+    // real slack per renew and flaked on slow CI runners.
+    let clock: Arc<dyn Clock> = Arc::new(FastClock::new(noon(), 25));
     set_clock(&kit, clock.clone());
     kit.queue_job_expiring(b"\0asm-module", b"hello", noon_s() + 60);
     let usage_path = kit.dir.path().join("budget.sqlite");
@@ -169,9 +170,9 @@ fn network_errors_are_retried_and_the_job_stops_at_expiry() {
 
 #[test]
 fn capped_lease_stops_before_expiry() {
-    let kit = Kit::new(Mode::Sleep(5_000));
+    let kit = Kit::new(Mode::Sleep(20_000));
     let t0 = Instant::now();
-    let clock: Arc<dyn Clock> = Arc::new(FastClock::new(noon(), 100));
+    let clock: Arc<dyn Clock> = Arc::new(FastClock::new(noon(), 20));
     set_clock(&kit, clock.clone());
     // The server will not extend past noon + 90 s.
     set_mode(&kit, RenewMode::CapAt(noon_s() + 90));
@@ -184,14 +185,15 @@ fn capped_lease_stops_before_expiry() {
     agent.stop_helper_session();
     let renews = kit.coord.count("renew");
     eprintln!("capped job stopped {cancelled:?} after start, after {renews} renews");
-    // Stopped at about noon + 85 s (5 s guard), strictly before the capped expiry at noon + 90 s (0.9 s real).
-    assert!(cancelled >= Duration::from_millis(800), "{cancelled:?}");
-    assert!(cancelled < Duration::from_millis(900), "{cancelled:?}");
+    // Stopped at about noon + 85 s (5 s guard), strictly before the capped expiry at noon + 90 s (4.5 s real).
+    assert!(cancelled >= Duration::from_millis(4_000), "{cancelled:?}");
+    assert!(cancelled < Duration::from_millis(4_500), "{cancelled:?}");
     // Once the cap stopped moving the expiry, renewals stopped too.
     let s = kit.coord.s.lock().unwrap();
     let capped_at = s.renews.len();
     drop(s);
-    assert!(capped_at <= 20, "{capped_at} renews");
+    // Renews run every 50 ms of real time: about 85 over the 4.25 s if they never stopped.
+    assert!(capped_at <= 60, "{capped_at} renews");
     assert_dropped(&kit);
 }
 
