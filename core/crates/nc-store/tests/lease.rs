@@ -147,12 +147,12 @@ fn file_store_persists_and_migrations_are_idempotent() {
     let path = dir.path().join("nc.db");
     let a = {
         let mut s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 1);
+        assert_eq!(s.schema_version().unwrap(), 2);
         s.enqueue(&tid(1), b"m", RetryPolicy::default(), 0).unwrap();
         s.lease_next(W, LEASE, 0).unwrap().unwrap()
     };
     let mut s = Store::open(&path).unwrap();
-    assert_eq!(s.schema_version().unwrap(), 1);
+    assert_eq!(s.schema_version().unwrap(), 2);
     assert_eq!(s.task(&tid(1)).unwrap().current_attempt, Some(a.attempt_id));
     assert_eq!(s.manifest(&tid(1)).unwrap(), b"m");
 }

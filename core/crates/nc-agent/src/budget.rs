@@ -1,7 +1,13 @@
 //! Network budget gate around nc-tariff: decides whether a transfer may start, reserves its bytes atomically
 //! and settles the actual count afterwards (PLAN.md §6).
+//!
+//! With a usage store ([`BudgetGate::with_usage_store`]) every settled transfer is also written to nc-store,
+//! keyed by tariff profile and local day, and a new gate starts with the bytes already used in the current
+//! billing period, so a restart does not hand out the budget again. Per-window caps are still counted in
+//! memory only (nc-tariff has no way to seed them yet).
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
+use nc_store::Store;
 use nc_tariff::{
     decide, BudgetLedger, Decision, DenyReason, NetworkObservation, ReservationId, TariffError,
     TariffProfile, TrafficClass, TransferRequest,
@@ -29,10 +35,11 @@ pub enum Refusal {
 }
 
 /// Permission for one transfer.
-#[derive(Debug)]
 pub struct Grant {
     ledger: Option<Arc<BudgetLedger>>,
     id: Option<ReservationId>,
+    /// Usage-ledger key and local day the bytes are charged to.
+    usage_key: Option<(String, String)>,
     /// Exclusive deadline; the transfer must stop at it. `None` for unmetered.
     pub until: Option<DateTime<Utc>>,
     /// Bytes reserved (the transfer must not exceed it).
@@ -46,17 +53,90 @@ pub struct Grant {
 pub struct BudgetGate {
     inner: Mutex<Option<Arc<BudgetLedger>>>,
     profile: Mutex<Option<TariffProfile>>,
+    usage: Mutex<Option<Store>>,
+}
+
+impl std::fmt::Debug for Grant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Grant")
+            .field("until", &self.until)
+            .field("bytes", &self.bytes)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Usage-ledger key for a profile (the profile id: a new version of the same tariff keeps its usage).
+fn ledger_key(p: &TariffProfile) -> String {
+    format!("tariff:{}", p.profile_id)
+}
+
+fn day_string(d: NaiveDate) -> String {
+    d.format("%Y-%m-%d").to_string()
+}
+
+fn local_day(p: &TariffProfile, at: DateTime<Utc>) -> NaiveDate {
+    at.with_timezone(&p.timezone).date_naive()
+}
+
+/// First local day of the billing period containing `today` (reset day clamped to short months, like
+/// nc-tariff).
+fn period_start_day(p: &TariffProfile, today: NaiveDate) -> Option<NaiveDate> {
+    let boundary = |y: i32, m: u32| -> Option<NaiveDate> {
+        let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+        let last = NaiveDate::from_ymd_opt(ny, nm, 1)?.pred_opt()?.day();
+        NaiveDate::from_ymd_opt(y, m, p.billing.reset_rule.day_of_month.min(last))
+    };
+    let this = boundary(today.year(), today.month())?;
+    if today >= this {
+        return Some(this);
+    }
+    let (py, pm) = if today.month() == 1 {
+        (today.year() - 1, 12)
+    } else {
+        (today.year(), today.month() - 1)
+    };
+    boundary(py, pm)
 }
 
 impl BudgetGate {
-    /// Gate for `budget`, with the ledger period containing `now`.
+    /// Gate for `budget`, with the ledger period containing `now`. Usage is kept in memory only.
     pub fn new(budget: &NetworkBudget, now: DateTime<Utc>) -> Result<Self, TariffError> {
         let g = Self {
             inner: Mutex::new(None),
             profile: Mutex::new(None),
+            usage: Mutex::new(None),
         };
         g.update(budget, now)?;
         Ok(g)
+    }
+
+    /// Gate whose settled usage is persisted in `store` and restored from it (survives a restart).
+    pub fn with_usage_store(
+        budget: &NetworkBudget,
+        now: DateTime<Utc>,
+        store: Store,
+    ) -> Result<Self, TariffError> {
+        let g = Self {
+            inner: Mutex::new(None),
+            profile: Mutex::new(None),
+            usage: Mutex::new(Some(store)),
+        };
+        g.update(budget, now)?;
+        Ok(g)
+    }
+
+    /// Bytes recorded in the usage store for `p`'s billing period up to the local day of `now`.
+    fn stored_usage(&self, p: &TariffProfile, now: DateTime<Utc>) -> Result<u64, TariffError> {
+        let mut usage = self.usage.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(store) = usage.as_mut() else {
+            return Ok(0);
+        };
+        let today = local_day(p, now);
+        let start = period_start_day(p, today).ok_or(TariffError::Range)?;
+        // Unreadable usage fails closed: the gate is not built rather than starting from zero.
+        store
+            .budget_usage(&ledger_key(p), &day_string(start), &day_string(today))
+            .map_err(|_| TariffError::LedgerUnavailable)
     }
 
     /// Replace the budget. Outstanding grants settle against the ledger that issued them.
@@ -64,7 +144,14 @@ impl BudgetGate {
         let (ledger, profile) = match budget {
             NetworkBudget::Unmetered => (None, None),
             NetworkBudget::Metered(p) => {
-                (Some(Arc::new(BudgetLedger::new(p, now)?)), Some(p.clone()))
+                let ledger = BudgetLedger::new(p, now)?;
+                let used = self.stored_usage(p, now)?;
+                if used > 0 {
+                    // Seed the period total with what earlier runs already used.
+                    let id = ledger.reserve(0)?;
+                    ledger.commit(id, used)?;
+                }
+                (Some(Arc::new(ledger)), Some(p.clone()))
             }
         };
         *self.inner.lock().unwrap_or_else(PoisonError::into_inner) = ledger;
@@ -128,7 +215,8 @@ impl BudgetGate {
         net: &NetworkObservation,
     ) -> Result<Grant, Refusal> {
         let until = self.check(class, bytes, now, net)?;
-        let (ledger, _) = self.current();
+        let (ledger, profile) = self.current();
+        let usage_key = profile.map(|p| (ledger_key(&p), day_string(local_day(&p, now))));
         let id = match &ledger {
             None => None,
             Some(l) => Some(
@@ -142,6 +230,7 @@ impl BudgetGate {
         Ok(Grant {
             ledger,
             id,
+            usage_key,
             until,
             bytes,
             network: net.clone(),
@@ -153,6 +242,19 @@ impl BudgetGate {
         if let (Some(l), Some(id)) = (grant.ledger, grant.id) {
             // A failed commit means the reservation was already settled; nothing else to do.
             let _ = l.commit(id, actual);
+        }
+        if let Some((key, day)) = grant.usage_key {
+            if let Some(store) = self
+                .usage
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_mut()
+            {
+                if store.add_budget_usage(&key, &day, actual).is_err() {
+                    // The in-memory ledger still counts it; only a restart could forget these bytes.
+                    tracing::warn!("network usage not persisted");
+                }
+            }
         }
     }
 }

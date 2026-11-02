@@ -64,6 +64,7 @@ fn agent(kit: &Kit) -> Agent {
             poll: Duration::from_millis(20),
             max_backoff: Duration::from_millis(100),
             monitor_tick: Duration::from_millis(10),
+            ..Tuning::default()
         },
     })
 }

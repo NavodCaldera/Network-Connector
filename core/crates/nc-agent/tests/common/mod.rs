@@ -59,6 +59,40 @@ impl Clock for FixedClock {
     }
 }
 
+/// `base` plus real elapsed time multiplied by `speed` (a fast-forward wall clock).
+pub struct FastClock {
+    pub base: DateTime<Utc>,
+    pub start: Instant,
+    pub speed: u32,
+}
+impl FastClock {
+    pub fn new(base: DateTime<Utc>, speed: u32) -> Self {
+        Self {
+            base,
+            start: Instant::now(),
+            speed,
+        }
+    }
+}
+impl Clock for FastClock {
+    fn now(&self) -> DateTime<Utc> {
+        let ms = self.start.elapsed().as_millis() as i64 * i64::from(self.speed);
+        self.base + chrono::Duration::milliseconds(ms)
+    }
+}
+
+/// How the fake answers lease renewals.
+#[derive(Clone, Debug, Default)]
+pub enum RenewMode {
+    /// Extend to `clock now + 60 s` (or keep the lease's own expiry when the fake has no clock).
+    #[default]
+    Extend,
+    /// Answer every renew with this error.
+    Error(CoordError),
+    /// Extend to `now + 60 s` but never past this Unix second, with `capped: true` once the cap bites.
+    CapAt(u64),
+}
+
 /// Advances by `step` on every read.
 pub struct StepClock {
     pub t: Mutex<DateTime<Utc>>,
@@ -173,6 +207,12 @@ pub struct FakeState {
     /// Number of upcoming Complete calls that are recorded and then answered with a network error.
     pub complete_lost: usize,
     pub committed: HashMap<String, CompleteRequest>,
+    pub renews: Vec<LeaseRenewRequest>,
+    pub renew_mode: RenewMode,
+    /// Clock the fake uses for renewed expiries.
+    pub clock: Option<Arc<dyn Clock>>,
+    /// Current expiry per lease id (Unix seconds).
+    pub expiry: HashMap<String, u64>,
 }
 
 #[derive(Default)]
@@ -237,6 +277,27 @@ impl Coordinator for FakeCoord {
             duplicate: false,
         })
     }
+    fn renew(&self, r: &LeaseRenewRequest) -> Result<LeaseRenewResponse, CoordError> {
+        let mut s = self.s.lock().unwrap();
+        s.calls.push("renew".into());
+        s.renews.push(r.clone());
+        let now = s.clock.as_ref().map(|c| c.now().timestamp() as u64);
+        let old = s.expiry.get(&r.lease_id).copied().unwrap_or(0);
+        let (expires_at, capped) = match s.renew_mode.clone() {
+            RenewMode::Error(e) => return Err(e),
+            RenewMode::Extend => (now.map_or(old, |n| (n + 60).max(old)), false),
+            RenewMode::CapAt(cap) => {
+                let want = now.map_or(old, |n| n + 60);
+                (want.min(cap).max(old), want > cap)
+            }
+        };
+        s.expiry.insert(r.lease_id.clone(), expires_at);
+        Ok(LeaseRenewResponse {
+            lease_id: r.lease_id.clone(),
+            expires_at,
+            capped,
+        })
+    }
     fn complete(&self, r: &CompleteRequest) -> Result<CompleteResponse, CoordError> {
         let mut s = self.s.lock().unwrap();
         s.calls.push("complete".into());
@@ -292,6 +353,8 @@ pub enum Mode {
     Reverse,
     /// Spin until cancelled (an infinite-loop job).
     UntilCancel,
+    /// Run for this many real milliseconds (unless cancelled), then output = input reversed.
+    Sleep(u64),
 }
 
 pub struct FakeRunner {
@@ -340,6 +403,19 @@ impl JobRunner for FakeRunner {
                 *self.cancelled_at.lock().unwrap() = Some(Instant::now());
                 Termination::Cancelled
             }
+            Mode::Sleep(ms) => {
+                let end = Instant::now() + Duration::from_millis(ms);
+                loop {
+                    if cancel.is_cancelled() {
+                        *self.cancelled_at.lock().unwrap() = Some(Instant::now());
+                        break Termination::Cancelled;
+                    }
+                    if Instant::now() >= end {
+                        break Termination::Exited(0);
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
         };
         let mut output = input;
         output.reverse();
@@ -378,6 +454,11 @@ impl Kit {
     }
 
     pub fn agent_with(&self, budget: NetworkBudget, clock: Arc<dyn Clock>) -> Agent {
+        let gate = BudgetGate::new(&budget, clock.now()).unwrap();
+        self.agent_with_gate(gate, clock)
+    }
+
+    pub fn agent_with_gate(&self, gate: BudgetGate, clock: Arc<dyn Clock>) -> Agent {
         let staging = self.dir.path().join("staging");
         std::fs::create_dir_all(&staging).unwrap();
         Agent::with_backend(Backend {
@@ -387,7 +468,7 @@ impl Kit {
             runner: self.runner.clone(),
             journal: Mutex::new(self.journal()),
             cache: Mutex::new(BlobCache::open(&self.dir.path().join("blobs"), 64 << 20).unwrap()),
-            budget: BudgetGate::new(&budget, clock.now()).unwrap(),
+            budget: gate,
             staging,
             device_name: "test".into(),
             platform: "windows".into(),
@@ -395,6 +476,8 @@ impl Kit {
                 poll: Duration::from_millis(20),
                 max_backoff: Duration::from_millis(100),
                 monitor_tick: Duration::from_millis(10),
+                renew_every: Duration::from_millis(50),
+                renew_margin: Duration::from_secs(30),
             },
         })
     }
@@ -405,6 +488,16 @@ impl Kit {
 
     /// Build a signed job and queue its lease; blobs are served by the fake. Returns the lease.
     pub fn queue_job(&self, module: &[u8], input: &[u8]) -> LeaseResponse {
+        self.queue_job_expiring(module, input, noon().timestamp() as u64 + 60)
+    }
+
+    /// As [`Kit::queue_job`], with the lease ending at `expires_at` (Unix seconds).
+    pub fn queue_job_expiring(
+        &self,
+        module: &[u8],
+        input: &[u8],
+        expires_at: u64,
+    ) -> LeaseResponse {
         let built = requester::build(
             &JobSpec::new(module.to_vec(), input.to_vec()),
             &self.publisher,
@@ -427,12 +520,13 @@ impl Kit {
             lease_id: random_uuid(),
             task_id: built.job_id.clone(),
             attempt_id: random_uuid(),
-            expires_at: 0,
+            expires_at,
             input: String::new(),
             manifest: Some(built.signed),
             transfers,
             version: 2,
         };
+        s.expiry.insert(lease.lease_id.clone(), expires_at);
         s.leases.push_back(lease.clone());
         lease
     }

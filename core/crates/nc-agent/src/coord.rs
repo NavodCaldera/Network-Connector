@@ -7,8 +7,8 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use nc_identity::DeviceKeyStore;
 use nc_protocol::pb::v1::{
     CompleteRequest, CompleteResponse, ErrorResponse, HeartbeatRequest, JobStatusResponse,
-    LeaseFailRequest, LeaseFailResponse, LeaseResponse, RegisterRequest, SubmitJobRequest,
-    SubmitJobResponse,
+    LeaseFailRequest, LeaseFailResponse, LeaseRenewRequest, LeaseRenewResponse, LeaseResponse,
+    RegisterRequest, SubmitJobRequest, SubmitJobResponse,
 };
 use sha2::{Digest, Sha256};
 use std::io::Read;
@@ -41,6 +41,18 @@ pub enum CoordError {
 }
 
 impl CoordError {
+    /// Whether the coordinator says the lease no longer belongs to this attempt (404, or 409 `lease_expired` /
+    /// `attempt_mismatch`). The job must stop at once and its result must never be uploaded or completed.
+    pub fn lease_gone(&self) -> bool {
+        match self {
+            Self::Status { status: 404, .. } => true,
+            Self::Status { status: 409, code } => {
+                code == "lease_expired" || code == "attempt_mismatch"
+            }
+            _ => false,
+        }
+    }
+
     /// Whether retrying later may succeed.
     pub fn is_transient(&self) -> bool {
         match self {
@@ -61,6 +73,8 @@ pub trait Coordinator: Send + Sync {
     fn lease(&self) -> Result<Option<LeaseResponse>, CoordError>;
     /// `POST /v1/leases/fail`.
     fn fail(&self, req: &LeaseFailRequest) -> Result<LeaseFailResponse, CoordError>;
+    /// `POST /v1/leases/renew`: extend a live lease. 404 / 409 mean the lease is gone.
+    fn renew(&self, req: &LeaseRenewRequest) -> Result<LeaseRenewResponse, CoordError>;
     /// `POST /v1/leases/complete`.
     fn complete(&self, req: &CompleteRequest) -> Result<CompleteResponse, CoordError>;
     /// `GET {path}` from byte `offset` (a `Range: bytes={offset}-` request when nonzero). The reader yields
@@ -284,6 +298,9 @@ impl Coordinator for HttpCoordinator {
     }
     fn fail(&self, req: &LeaseFailRequest) -> Result<LeaseFailResponse, CoordError> {
         self.post_json("/v1/leases/fail", req, &[])
+    }
+    fn renew(&self, req: &LeaseRenewRequest) -> Result<LeaseRenewResponse, CoordError> {
+        self.post_json("/v1/leases/renew", req, &[])
     }
     fn complete(&self, req: &CompleteRequest) -> Result<CompleteResponse, CoordError> {
         self.post_json("/v1/leases/complete", req, &[])

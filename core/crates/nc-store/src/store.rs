@@ -136,6 +136,34 @@ pub struct TaskView {
     pub committed_attempt: Option<AttemptId>,
 }
 
+/// A task left between lease and commit (see [`Store::list_unfinished`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unfinished {
+    /// Task.
+    pub task_id: TaskId,
+    /// State (`queued` only if it was never leased, else `leased`, `running`, `uploaded` or `verified`).
+    pub state: TaskState,
+    /// Current attempt, if any.
+    pub current_attempt: Option<AttemptId>,
+    /// Lease expiry while leased/running.
+    pub lease_expires_ms: Option<i64>,
+    /// Last change (Unix ms).
+    pub updated_ms: i64,
+}
+
+/// Raw `list_unfinished` row: task id, state, current attempt, lease expiry, updated.
+type UnfinishedRaw = (Vec<u8>, String, Option<Vec<u8>>, Option<i64>, i64);
+
+fn valid_day(day: &str) -> bool {
+    let b = day.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+}
+
 /// Store errors. Rejections of stale or late work are errors by design: the caller must drop that work.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -642,5 +670,89 @@ impl Store {
             [task.as_slice()],
             |r| r.get(0),
         )?)
+    }
+    /// Every task that is not terminal (`committed` or `failed`), oldest change first. After a crash these are
+    /// the attempts the caller must finish: report as failed, resend a result, or clean up locally.
+    pub fn list_unfinished(&mut self) -> Result<Vec<Unfinished>, StoreError> {
+        let tx = self.tx()?;
+        let raw: Vec<UnfinishedRaw> = {
+            let mut st = tx.prepare(
+                "SELECT task_id, state, current_attempt, lease_expires_ms, updated_ms FROM tasks
+                 WHERE state NOT IN ('committed','failed') ORDER BY updated_ms, task_id",
+            )?;
+            let rows = st.query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?;
+            rows.collect::<Result<_, _>>()?
+        };
+        tx.commit()?;
+        raw.into_iter()
+            .map(|(id, state, attempt, exp, upd)| {
+                Ok(Unfinished {
+                    task_id: id.as_slice().try_into().map_err(|_| StoreError::Corrupt)?,
+                    state: TaskState::parse(&state)?,
+                    current_attempt: fixed(attempt)?,
+                    lease_expires_ms: exp,
+                    updated_ms: upd,
+                })
+            })
+            .collect()
+    }
+
+    /// Add `bytes` to the network-budget usage of `ledger_key` on local day `day` (`YYYY-MM-DD`). Saturates.
+    pub fn add_budget_usage(
+        &mut self,
+        ledger_key: &str,
+        day: &str,
+        bytes: u64,
+    ) -> Result<(), StoreError> {
+        if ledger_key.is_empty() || ledger_key.len() > 256 {
+            return Err(StoreError::Invalid("ledger_key"));
+        }
+        if !valid_day(day) {
+            return Err(StoreError::Invalid("day"));
+        }
+        let add = i64::try_from(bytes).unwrap_or(i64::MAX);
+        let tx = self.tx()?;
+        let old: i64 = tx
+            .query_row(
+                "SELECT bytes FROM budget_usage WHERE ledger_key = ?1 AND day = ?2",
+                params![ledger_key, day],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        tx.execute(
+            "INSERT INTO budget_usage (ledger_key, day, bytes) VALUES (?1, ?2, ?3)
+             ON CONFLICT (ledger_key, day) DO UPDATE SET bytes = excluded.bytes",
+            params![ledger_key, day, old.saturating_add(add)],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Bytes used by `ledger_key` on days `from_day..=to_day` (inclusive, `YYYY-MM-DD`). Saturates.
+    pub fn budget_usage(
+        &mut self,
+        ledger_key: &str,
+        from_day: &str,
+        to_day: &str,
+    ) -> Result<u64, StoreError> {
+        if !valid_day(from_day) || !valid_day(to_day) {
+            return Err(StoreError::Invalid("day"));
+        }
+        let tx = self.tx()?;
+        let rows: Vec<i64> = {
+            let mut st = tx.prepare(
+                "SELECT bytes FROM budget_usage WHERE ledger_key = ?1 AND day >= ?2 AND day <= ?3",
+            )?;
+            let r = st.query_map(params![ledger_key, from_day, to_day], |r| r.get(0))?;
+            r.collect::<Result<_, _>>()?
+        };
+        tx.commit()?;
+        rows.into_iter().try_fold(0u64, |n, b| {
+            let b = u64::try_from(b).map_err(|_| StoreError::Corrupt)?;
+            Ok(n.saturating_add(b))
+        })
     }
 }

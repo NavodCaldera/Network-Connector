@@ -178,7 +178,9 @@ impl AgentConfig {
             self.cache_quota_mb.saturating_mul(1024 * 1024),
         )
         .map_err(|_| ConfigError::Open("blob cache"))?;
-        let budget = BudgetGate::new(&self.network_budget, chrono::Utc::now())
+        let usage = nc_store::Store::open(&self.data_dir.join("budget.sqlite"))
+            .map_err(|_| ConfigError::Open("budget usage"))?;
+        let budget = BudgetGate::with_usage_store(&self.network_budget, chrono::Utc::now(), usage)
             .map_err(|_| ConfigError::Invalid("network_budget"))?;
         let backend = Backend {
             coord: Arc::new(self.coordinator(key)),
