@@ -34,6 +34,7 @@ class AppModel extends ChangeNotifier {
     final loaded = await api.loadSettings(dir);
     settings = loaded.settings;
     resetNotice = loaded.resetNotice;
+    await _applyNightData(settings.nightData);
     notifyListeners();
   }
 
@@ -79,14 +80,12 @@ class AppModel extends ChangeNotifier {
     final next = AppSettings(policy: p, nightData: settings.nightData);
     final failed = await _persist(next);
     if (failed != null) return failed;
-    // Changed limits (including withdrawn consent) take effect now, not at the next start.
-    if (running) {
-      await api.stopHelperSession();
-      try {
-        await api.startHelperSession(p);
-      } catch (e) {
-        error = e.toString();
-      }
+    // Changed limits (including withdrawn consent) take effect now through nc-agent update_policy;
+    // a job the new limits forbid is cancelled by the agent.
+    try {
+      await api.updatePolicy(p);
+    } catch (e) {
+      error = e.toString();
     }
     notifyListeners();
     return null;
@@ -98,8 +97,18 @@ class AppModel extends ChangeNotifier {
     final failed = await _persist(
       AppSettings(policy: settings.policy, nightData: n),
     );
+    if (failed == null) await _applyNightData(n);
     notifyListeners();
     return failed;
+  }
+
+  /// The data budget takes effect in the agent at once (nc-agent update_network_budget).
+  Future<void> _applyNightData(NightDataSettings n) async {
+    try {
+      await api.updateNightData(n);
+    } catch (e) {
+      error = e.toString();
+    }
   }
 
   Future<void> setAccept(bool on) async {

@@ -63,18 +63,31 @@ void main() {
       _stopIsEnabled(tester);
     });
 
-    testWidgets('turning Accept jobs on restarts a running session and saves', (
-      tester,
-    ) async {
-      final agent = await _app(tester);
-      await tester.tap(find.byKey(const Key('give')));
-      await tester.pump();
-      await tester.tap(find.byKey(const Key('accept')));
-      await tester.pump();
-      expect(agent.stops, 1);
-      expect(agent.started.last.acceptJobs, isTrue);
-      expect(agent.saves.last.policy.acceptJobs, isTrue);
-      expect(find.text(S.stateWaiting), findsOneWidget);
+    testWidgets(
+      'turning Accept jobs on updates the running session and saves',
+      (tester) async {
+        final agent = await _app(tester);
+        await tester.tap(find.byKey(const Key('give')));
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('accept')));
+        await tester.pump();
+        expect(agent.stops, 0);
+        expect(agent.started, hasLength(1));
+        expect(agent.policyUpdates.last.acceptJobs, isTrue);
+        expect(agent.saves.last.policy.acceptJobs, isTrue);
+        expect(find.text(S.stateWaiting), findsOneWidget);
+      },
+    );
+
+    testWidgets('Home shows today counters from the agent', (tester) async {
+      final agent = FakeAgent()
+        ..helpingSeconds = BigInt.from(600)
+        ..jobsDone = BigInt.from(3);
+      await _app(tester, agent);
+      expect(
+        find.text('${S.helpedFor(10)} · ${S.jobsDone(3)}'),
+        findsOneWidget,
+      );
     });
 
     testWidgets('loads saved settings and shows a reset notice', (
@@ -160,8 +173,8 @@ void main() {
       await tester.pump();
       await tester.tap(find.byKey(const Key('saveLimits')));
       await tester.pumpAndSettle();
-      expect(agent.stops, 1);
-      expect(agent.started.last.acceptJobs, isTrue);
+      expect(agent.stops, 0);
+      expect(agent.policyUpdates.last.acceptJobs, isTrue);
     });
   });
 
@@ -195,6 +208,9 @@ void main() {
       expect(n.window.startMinute, 1320);
       expect(n.nightlyBudgetMb, BigInt.from(300));
       expect(n.neverPaidData, isFalse);
+      // Applied to the agent live (update_network_budget), after the start-up apply.
+      expect(agent.budgetUpdates.last.nightlyBudgetMb, BigInt.from(300));
+      expect(agent.budgetUpdates, hasLength(2));
       expect(
         find.textContaining(S.budgetLeft('300 MB', '300 MB')),
         findsOneWidget,

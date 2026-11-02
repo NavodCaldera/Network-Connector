@@ -35,6 +35,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String dco_decode_String(dynamic raw);
 
   @protected
+  ActivityKind dco_decode_activity_kind(dynamic raw);
+
+  @protected
   AppSettings dco_decode_app_settings(dynamic raw);
 
   @protected
@@ -48,6 +51,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PolicySummary dco_decode_box_autoadd_policy_summary(dynamic raw);
+
+  @protected
+  HelperActivity dco_decode_helper_activity(dynamic raw);
 
   @protected
   HelperState dco_decode_helper_state(dynamic raw);
@@ -118,6 +124,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String sse_decode_String(SseDeserializer deserializer);
 
   @protected
+  ActivityKind sse_decode_activity_kind(SseDeserializer deserializer);
+
+  @protected
   AppSettings sse_decode_app_settings(SseDeserializer deserializer);
 
   @protected
@@ -135,6 +144,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PolicySummary sse_decode_box_autoadd_policy_summary(
     SseDeserializer deserializer,
   );
+
+  @protected
+  HelperActivity sse_decode_helper_activity(SseDeserializer deserializer);
 
   @protected
   HelperState sse_decode_helper_state(SseDeserializer deserializer);
@@ -213,6 +225,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_String(String self, SseSerializer serializer);
 
   @protected
+  void sse_encode_activity_kind(ActivityKind self, SseSerializer serializer);
+
+  @protected
   void sse_encode_app_settings(AppSettings self, SseSerializer serializer);
 
   @protected
@@ -233,6 +248,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_policy_summary(
     PolicySummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_helper_activity(
+    HelperActivity self,
     SseSerializer serializer,
   );
 

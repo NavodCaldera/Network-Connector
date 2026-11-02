@@ -8,7 +8,7 @@ import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `agent`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
 
 /// The nc-policy safe defaults (no consent, charging only, 25 % CPU, no hours, ...).
 PolicySummary defaultPolicy() => RustLib.instance.api.crateApiDefaultPolicy();
@@ -51,6 +51,15 @@ Future<void> saveSettings({
 Future<void> startHelperSession({required PolicySummary policy}) =>
     RustLib.instance.api.crateApiStartHelperSession(policy: policy);
 
+/// `Agent::update_policy(policy)`: applies new limits to the running session (and later ones) at once.
+/// A running job the new limits no longer allow is cancelled by nc-agent.
+Future<void> updatePolicy({required PolicySummary policy}) =>
+    RustLib.instance.api.crateApiUpdatePolicy(policy: policy);
+
+/// `Agent::update_network_budget(Metered(profile))` from the night-data settings, applied live.
+Future<void> updateNightData({required NightDataSettings nightData}) =>
+    RustLib.instance.api.crateApiUpdateNightData(nightData: nightData);
+
 /// `Agent::stop_helper_session()`. Returns when the session is `Stopped`.
 Future<void> stopHelperSession() =>
     RustLib.instance.api.crateApiStopHelperSession();
@@ -58,12 +67,40 @@ Future<void> stopHelperSession() =>
 /// Version of the Rust core (nc-bridge), for the About page.
 String coreVersion() => RustLib.instance.api.crateApiCoreVersion();
 
-/// Today's helping summary.
+/// `Agent::today()`: today's counters.
 TodaySummary todaySummary() => RustLib.instance.api.crateApiTodaySummary();
+
+/// `Agent::activity()`: what the helper is doing now (low frequency; the UI polls it with the status).
+HelperActivity helperActivity() =>
+    RustLib.instance.api.crateApiHelperActivity();
 
 /// `Agent::watch_status()` as a Dart `Stream`. Ends when Dart cancels the stream.
 Stream<HelperStatus> watchStatus() =>
     RustLib.instance.api.crateApiWatchStatus();
+
+/// What the helper is doing now, mirrored from `nc_agent::Activity`.
+enum ActivityKind {
+  /// No session.
+  off,
+
+  /// Waiting for work.
+  idle,
+
+  /// Not asking for work (see `paused_reason`).
+  paused,
+
+  /// Cannot reach the coordinator; retrying.
+  offline,
+
+  /// Downloading a job.
+  downloading,
+
+  /// Running a job in the sandbox.
+  running,
+
+  /// Uploading a result.
+  uploading,
+}
 
 /// Everything the app saves. One versioned JSON file; no secrets.
 class AppSettings {
@@ -85,6 +122,28 @@ class AppSettings {
           runtimeType == other.runtimeType &&
           policy == other.policy &&
           nightData == other.nightData;
+}
+
+/// `nc_agent::Activity` as a plain struct. Never carries job data.
+class HelperActivity {
+  /// What the helper is doing.
+  final ActivityKind kind;
+
+  /// Owner-readable reason when `kind` is `Paused`.
+  final String? pausedReason;
+
+  const HelperActivity({required this.kind, this.pausedReason});
+
+  @override
+  int get hashCode => kind.hashCode ^ pausedReason.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is HelperActivity &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          pausedReason == other.pausedReason;
 }
 
 /// Session state, mirrored from `nc_agent::SessionState`.
@@ -373,18 +432,26 @@ class TimeWindow {
           endMinute == other.endMinute;
 }
 
-/// Today's helping summary (local date of the device clock in the policy time zone).
+/// Today's counters from `nc_agent::Agent::today()` (reset at local midnight in the policy time zone).
 class TodaySummary {
   /// Seconds a helper session ran today.
   final BigInt helpingSeconds;
 
-  /// Jobs finished today. Always 0 until nc-agent reports jobs.
+  /// Jobs committed today (each attempt counted once).
   final BigInt jobsDone;
 
-  const TodaySummary({required this.helpingSeconds, required this.jobsDone});
+  /// Seconds spent running jobs today.
+  final BigInt jobSeconds;
+
+  const TodaySummary({
+    required this.helpingSeconds,
+    required this.jobsDone,
+    required this.jobSeconds,
+  });
 
   @override
-  int get hashCode => helpingSeconds.hashCode ^ jobsDone.hashCode;
+  int get hashCode =>
+      helpingSeconds.hashCode ^ jobsDone.hashCode ^ jobSeconds.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -392,5 +459,6 @@ class TodaySummary {
       other is TodaySummary &&
           runtimeType == other.runtimeType &&
           helpingSeconds == other.helpingSeconds &&
-          jobsDone == other.jobsDone;
+          jobsDone == other.jobsDone &&
+          jobSeconds == other.jobSeconds;
 }

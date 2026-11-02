@@ -2,7 +2,9 @@ import 'rust/api.dart' as rust;
 
 export 'rust/api.dart'
     show
+        ActivityKind,
         AppSettings,
+        HelperActivity,
         HelperState,
         HelperStatus,
         LoadedSettings,
@@ -30,10 +32,17 @@ abstract class AgentApi {
   /// Throws a message string when the settings are invalid.
   rust.NightDataStatus nightDataStatus(rust.NightDataSettings nightData);
   rust.TodaySummary todaySummary();
+  rust.HelperActivity helperActivity();
   String coreVersion();
 
   Future<void> startHelperSession(rust.PolicySummary policy);
   Future<void> stopHelperSession();
+
+  /// Applies new limits to the running session at once. Throws a message string when invalid.
+  Future<void> updatePolicy(rust.PolicySummary policy);
+
+  /// Applies the night-data budget to the agent at once. Throws a message string when invalid.
+  Future<void> updateNightData(rust.NightDataSettings nightData);
   Stream<rust.HelperStatus> watchStatus();
 }
 
@@ -69,7 +78,18 @@ class RustAgentApi implements AgentApi {
   rust.TodaySummary todaySummary() => rust.todaySummary();
 
   @override
+  rust.HelperActivity helperActivity() => rust.helperActivity();
+
+  @override
   String coreVersion() => rust.coreVersion();
+
+  @override
+  Future<void> updatePolicy(rust.PolicySummary policy) =>
+      rust.updatePolicy(policy: policy);
+
+  @override
+  Future<void> updateNightData(rust.NightDataSettings nightData) =>
+      rust.updateNightData(nightData: nightData);
 
   @override
   Future<void> startHelperSession(rust.PolicySummary policy) =>

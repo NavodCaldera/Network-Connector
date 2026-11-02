@@ -16,4 +16,3 @@ pub mod api;
 mod frb_generated;
 mod night;
 mod settings;
-mod today;

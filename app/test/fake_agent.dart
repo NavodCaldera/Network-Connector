@@ -13,6 +13,7 @@ class FakeAgent implements AgentApi {
   final started = <PolicySummary>[];
   final saves = <AppSettings>[];
   var stops = 0;
+  var _running = false;
   AppSettings? stored;
   String? notice;
   BigInt helpingSeconds = BigInt.zero;
@@ -102,8 +103,40 @@ class FakeAgent implements AgentApi {
   }
 
   @override
-  TodaySummary todaySummary() =>
-      TodaySummary(helpingSeconds: helpingSeconds, jobsDone: BigInt.zero);
+  TodaySummary todaySummary() => TodaySummary(
+    helpingSeconds: helpingSeconds,
+    jobsDone: jobsDone,
+    jobSeconds: BigInt.zero,
+  );
+
+  BigInt jobsDone = BigInt.zero;
+  final policyUpdates = <PolicySummary>[];
+  final budgetUpdates = <NightDataSettings>[];
+
+  @override
+  HelperActivity helperActivity() =>
+      const HelperActivity(kind: ActivityKind.off);
+
+  @override
+  Future<void> updatePolicy(PolicySummary policy) async {
+    final err = validatePolicy(policy);
+    if (err != null) throw err;
+    policyUpdates.add(policy);
+    if (_running) {
+      _emit(
+        policy.acceptJobs
+            ? HelperState.waitingForJobs
+            : HelperState.notAccepting,
+      );
+    }
+  }
+
+  @override
+  Future<void> updateNightData(NightDataSettings n) async {
+    final err = validateNightData(n);
+    if (err != null) throw err;
+    budgetUpdates.add(n);
+  }
 
   @override
   String coreVersion() => '0.1.0';
@@ -111,6 +144,7 @@ class FakeAgent implements AgentApi {
   @override
   Future<void> startHelperSession(PolicySummary policy) async {
     started.add(policy);
+    _running = true;
     _emit(HelperState.starting);
     _emit(
       policy.acceptJobs ? HelperState.waitingForJobs : HelperState.notAccepting,
@@ -120,6 +154,7 @@ class FakeAgent implements AgentApi {
   @override
   Future<void> stopHelperSession() async {
     stops++;
+    _running = false;
     _emit(HelperState.stopping);
     _emit(HelperState.stopped);
   }
