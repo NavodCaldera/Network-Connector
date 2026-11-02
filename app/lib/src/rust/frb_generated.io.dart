@@ -66,6 +66,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Enrolment dco_decode_enrolment(dynamic raw);
 
   @protected
+  EnrolmentCheck dco_decode_enrolment_check(dynamic raw);
+
+  @protected
+  EnrolmentState dco_decode_enrolment_state(dynamic raw);
+
+  @protected
   HelperActivity dco_decode_helper_activity(dynamic raw);
 
   @protected
@@ -183,6 +189,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Enrolment sse_decode_enrolment(SseDeserializer deserializer);
+
+  @protected
+  EnrolmentCheck sse_decode_enrolment_check(SseDeserializer deserializer);
+
+  @protected
+  EnrolmentState sse_decode_enrolment_state(SseDeserializer deserializer);
 
   @protected
   HelperActivity sse_decode_helper_activity(SseDeserializer deserializer);
@@ -319,6 +331,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_enrolment(Enrolment self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_enrolment_check(
+    EnrolmentCheck self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_enrolment_state(
+    EnrolmentState self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_helper_activity(

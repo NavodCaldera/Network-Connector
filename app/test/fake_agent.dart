@@ -55,6 +55,21 @@ class FakeAgent implements AgentApi {
     );
   }
 
+  EnrolmentCheck check = const EnrolmentCheck(state: EnrolmentState.registered);
+  String? deregisterError;
+  var deregisters = 0;
+
+  @override
+  Future<EnrolmentCheck> checkEnrolment(String dir) async => check;
+
+  @override
+  Future<void> deregisterDevice(String dir) async {
+    deregisters++;
+    await stopHelperSession();
+    final e = deregisterError;
+    if (e != null) throw e;
+  }
+
   @override
   Future<void> unenrol(String dir) async {
     unenrols++;

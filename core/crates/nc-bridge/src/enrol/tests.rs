@@ -6,6 +6,8 @@ use crate::api::{EnrolRequest, NetworkKind};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::Ordering;
+use std::sync::Mutex;
 use std::time::Instant;
 
 const SECRET: &str = "test-enrol-secret-123";
@@ -21,6 +23,8 @@ struct Seen {
 #[derive(Clone, Default)]
 struct Fake {
     seen: Arc<Mutex<Vec<Seen>>>,
+    /// Whether the fake coordinator knows the device key (set by register, cleared by deregister).
+    registered: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Fake {
@@ -78,6 +82,7 @@ impl Fake {
             let (status, reply) = match path.as_str() {
                 "/v1/devices/register" => {
                     if headers.get("x-nc-enroll").map(String::as_str) == Some(SECRET) {
+                        self.registered.store(true, Ordering::SeqCst);
                         (200, r#"{"device_id":"d1","created":true}"#)
                     } else {
                         (
@@ -87,6 +92,21 @@ impl Fake {
                     }
                 }
                 "/v1/devices/heartbeat" => (200, "{}"),
+                "/v1/devices/me" if self.registered.load(Ordering::SeqCst) => (
+                    200,
+                    r#"{"registered":true,"device_id":"d1","name":"test pc","platform":"windows"}"#,
+                ),
+                "/v1/devices/me" => (
+                    200,
+                    r#"{"registered":false,"device_id":"","name":"","platform":""}"#,
+                ),
+                "/v1/devices/deregister" if self.registered.swap(false, Ordering::SeqCst) => {
+                    (200, r#"{"device_id":"d1","released_leases":0}"#)
+                }
+                "/v1/devices/deregister" => (
+                    401,
+                    r#"{"error":{"code":"unauthorized","message":"unknown device"}}"#,
+                ),
                 _ => (
                     404,
                     r#"{"error":{"code":"not_found","message":"no queued task"}}"#,
@@ -314,4 +334,79 @@ fn walk(d: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+#[test]
+fn whoami_and_deregister_follow_the_coordinator() {
+    let (fake, url) = Fake::start();
+    let dir = tempfile::tempdir().unwrap();
+    enrol(dir.path(), request(&url, SECRET), true).unwrap();
+    let f = load(dir.path(), true).unwrap().unwrap();
+    assert_eq!(
+        check_registration(dir.path(), &f, true),
+        Registration::Registered
+    );
+
+    deregister(dir.path(), true).unwrap();
+    assert!(!fake.registered.load(Ordering::SeqCst));
+    // Signed, without the enrolment secret.
+    for s in fake
+        .seen()
+        .iter()
+        .filter(|s| s.path != "/v1/devices/register")
+    {
+        assert_eq!(s.method, "POST");
+        assert!(!s.headers.contains_key("x-nc-enroll"));
+        for h in ["x-nc-key", "x-nc-ts", "x-nc-nonce", "x-nc-sig"] {
+            assert!(s.headers.contains_key(h), "{h} on {}", s.path);
+        }
+    }
+    assert_eq!(
+        check_registration(dir.path(), &f, true),
+        Registration::NotRegistered
+    );
+    // Already forgotten (401) still counts as deregistered.
+    deregister(dir.path(), true).unwrap();
+    unenrol(dir.path()).unwrap();
+    // Nothing saved: nothing to tell the coordinator.
+    deregister(dir.path(), true).unwrap();
+}
+
+#[test]
+fn offline_coordinator_still_allows_a_local_reset() {
+    let (_fake, url) = Fake::start();
+    let dir = tempfile::tempdir().unwrap();
+    enrol(dir.path(), request(&url, SECRET), true).unwrap();
+    // Point the saved enrolment at a closed port.
+    let closed = {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", l.local_addr().unwrap())
+    };
+    let mut f = load(dir.path(), true).unwrap().unwrap();
+    f.coordinator_url = closed;
+    save(dir.path(), &f).unwrap();
+    assert!(matches!(
+        check_registration(dir.path(), &f, true),
+        Registration::Unknown(m) if m.starts_with("Cannot reach")
+    ));
+    let e = deregister(dir.path(), true).unwrap_err();
+    assert!(e.contains("reset this device anyway"), "{e}");
+    unenrol(dir.path()).unwrap();
+    assert!(load(dir.path(), true).unwrap().is_none());
+    assert!(!dir.path().join("agent").exists());
+}
+
+#[test]
+fn missing_key_is_not_registered() {
+    let (_fake, url) = Fake::start();
+    let dir = tempfile::tempdir().unwrap();
+    enrol(dir.path(), request(&url, SECRET), true).unwrap();
+    let f = load(dir.path(), true).unwrap().unwrap();
+    fs::remove_dir_all(dir.path().join("agent")).unwrap();
+    assert_eq!(
+        check_registration(dir.path(), &f, true),
+        Registration::NotRegistered
+    );
+    // No key was created by the check.
+    assert!(!dir.path().join("agent").join("device.key").exists());
 }

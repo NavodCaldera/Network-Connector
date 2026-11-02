@@ -280,6 +280,37 @@ pub struct AgentStart {
     pub notice: Option<String>,
 }
 
+/// What the coordinator says about the saved enrolment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnrolmentState {
+    /// Nothing is saved on this device.
+    NotEnrolled,
+    /// The coordinator knows this device.
+    Registered,
+    /// The coordinator no longer knows this device (removed or reset there). Enrol again.
+    NotRegistered,
+    /// No answer; the enrolment may still be fine. See `message`.
+    Unknown,
+}
+
+/// Result of [`check_enrolment`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnrolmentCheck {
+    /// What the coordinator said.
+    pub state: EnrolmentState,
+    /// Plain-English reason when `state` is `Unknown`.
+    pub message: Option<String>,
+}
+
+impl EnrolmentCheck {
+    fn of(state: EnrolmentState) -> Self {
+        Self {
+            state,
+            message: None,
+        }
+    }
+}
+
 static AGENT: OnceLock<Agent> = OnceLock::new();
 /// The enrolment the running agent was built from.
 static ACTIVE: Mutex<Option<enrol::EnrolFile>> = Mutex::new(None);
@@ -369,6 +400,45 @@ pub fn unenrol(dir: String) -> Result<(), String> {
         RESET_PENDING.store(true, Ordering::SeqCst);
     }
     enrol::unenrol(Path::new(&dir))
+}
+
+/// Asks the coordinator (signed `POST /v1/devices/me`) whether it still knows this device. Call after
+/// [`open_agent`]; it makes a network call. When the device is not registered any more, helping stops.
+pub fn check_enrolment(dir: String) -> EnrolmentCheck {
+    let dir = Path::new(&dir);
+    let dev = enrol::dev_http_allowed();
+    let file = match enrol::load(dir, dev) {
+        Ok(Some(f)) => f,
+        Ok(None) => return EnrolmentCheck::of(EnrolmentState::NotEnrolled),
+        Err(message) => {
+            return EnrolmentCheck {
+                state: EnrolmentState::Unknown,
+                message: Some(message),
+            }
+        }
+    };
+    match enrol::check_registration(dir, &file, dev) {
+        enrol::Registration::Registered => EnrolmentCheck::of(EnrolmentState::Registered),
+        enrol::Registration::NotRegistered => {
+            // Fail closed: the coordinator would refuse every signed call from this key anyway.
+            if active().is_some() {
+                agent().stop_helper_session();
+            }
+            EnrolmentCheck::of(EnrolmentState::NotRegistered)
+        }
+        enrol::Registration::Unknown(message) => EnrolmentCheck {
+            state: EnrolmentState::Unknown,
+            message: Some(message),
+        },
+    }
+}
+
+/// Stops helping, then tells the coordinator to forget this device (signed `POST /v1/devices/deregister`).
+/// Call before [`unenrol`]. `Ok` when the coordinator removed it, already did not know it, or nothing is
+/// saved. On `Err` (plain English, e.g. offline) the owner may still reset with [`unenrol`].
+pub fn deregister_device(dir: String) -> Result<(), String> {
+    agent().stop_helper_session();
+    enrol::deregister(Path::new(&dir), enrol::dev_http_allowed())
 }
 
 /// Called once by the generated Dart `RustLib.init()`.

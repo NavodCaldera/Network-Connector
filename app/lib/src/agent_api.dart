@@ -7,6 +7,8 @@ export 'rust/api.dart'
         AppSettings,
         EnrolRequest,
         Enrolment,
+        EnrolmentCheck,
+        EnrolmentState,
         HelperActivity,
         HelperState,
         HelperStatus,
@@ -27,6 +29,13 @@ abstract class AgentApi {
 
   /// Registers this device with the coordinator. Throws a message string on failure.
   Future<rust.Enrolment> enrol(String dir, rust.EnrolRequest request);
+
+  /// Asks the coordinator (signed, network) whether it still knows this device.
+  Future<rust.EnrolmentCheck> checkEnrolment(String dir);
+
+  /// Stops helping and tells the coordinator to forget this device. Throws a message string when the
+  /// coordinator could not be told; a local reset is still allowed.
+  Future<void> deregisterDevice(String dir);
 
   /// Stops helping and removes the enrolment and device identity.
   Future<void> unenrol(String dir);
@@ -67,6 +76,13 @@ class RustAgentApi implements AgentApi {
   @override
   Future<rust.Enrolment> enrol(String dir, rust.EnrolRequest request) =>
       rust.enrol(dir: dir, request: request);
+
+  @override
+  Future<rust.EnrolmentCheck> checkEnrolment(String dir) =>
+      rust.checkEnrolment(dir: dir);
+
+  @override
+  Future<void> deregisterDevice(String dir) => rust.deregisterDevice(dir: dir);
 
   @override
   Future<void> unenrol(String dir) => rust.unenrol(dir: dir);

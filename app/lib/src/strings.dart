@@ -131,6 +131,10 @@ class S {
   static const resetConfirm =
       'Stop all work and remove this connection and the device identity?';
   static const cancel = 'Cancel';
+  static const notRegistered =
+      'Not enrolled. The coordinator no longer knows this device. '
+      'Reset, then connect again.';
+  static const resetAnyway = 'Reset anyway';
   static const noAppFolder = 'This device has no folder to save settings yet.';
 
   // About

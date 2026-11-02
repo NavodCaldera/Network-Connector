@@ -26,6 +26,12 @@ class AppModel extends ChangeNotifier {
   /// Problem with the saved enrolment, shown on the Coordinator page.
   String? enrolNotice;
 
+  /// What the coordinator said about the saved enrolment (null: not checked yet).
+  EnrolmentCheck? enrolCheck;
+
+  /// The coordinator no longer knows this device: show it as not enrolled.
+  bool get notRegistered => enrolCheck?.state == EnrolmentState.notRegistered;
+
   /// Enrolled or reset during this run: the change applies after a restart.
   bool restartNeeded = false;
   int? lastStopMs;
@@ -51,6 +57,22 @@ class AppModel extends ChangeNotifier {
     settings = loaded.settings;
     resetNotice = loaded.resetNotice;
     await _applyNightData(settings.nightData);
+    notifyListeners();
+    if (enrolment != null) unawaited(checkEnrolment());
+  }
+
+  /// Asks the coordinator whether it still knows this device (network; never blocks Stop).
+  Future<void> checkEnrolment() async {
+    final dir = settingsDir;
+    if (dir == null || enrolment == null) return;
+    try {
+      enrolCheck = await api.checkEnrolment(dir);
+    } catch (e) {
+      enrolCheck = EnrolmentCheck(
+        state: EnrolmentState.unknown,
+        message: e.toString(),
+      );
+    }
     notifyListeners();
   }
 
@@ -150,6 +172,19 @@ class AppModel extends ChangeNotifier {
     }
   }
 
+  /// Stops all work and tells the coordinator to forget this device. Returns the error or null; on an
+  /// error the owner may still reset locally with [unenrol].
+  Future<String?> deregister() async {
+    final dir = settingsDir;
+    if (dir == null) return S.noAppFolder;
+    try {
+      await api.deregisterDevice(dir);
+      return null;
+    } catch (e) {
+      return e.toString();
+    }
+  }
+
   /// Stops all work, then removes the enrolment and this device's identity.
   Future<String?> unenrol() async {
     final dir = settingsDir;
@@ -162,6 +197,7 @@ class AppModel extends ChangeNotifier {
     restartNeeded = enrolment?.active ?? false;
     enrolment = null;
     enrolNotice = null;
+    enrolCheck = null;
     notifyListeners();
     return null;
   }

@@ -7,8 +7,8 @@ import 'frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `active`, `agent`, `with_trust`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
+// These functions are ignored because they are not marked as `pub`: `active`, `agent`, `of`, `with_trust`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`
 
 /// Creates the agent. With a saved enrolment in `dir` it is `Agent::with_backend` (real coordinator, leases,
 /// budget and today counters); otherwise `Agent::new()`. Call once at start-up, before anything else.
@@ -24,6 +24,17 @@ Future<Enrolment> enrol({required String dir, required EnrolRequest request}) =>
 /// Until the app restarts, no new helper session can start.
 Future<void> unenrol({required String dir}) =>
     RustLib.instance.api.crateApiUnenrol(dir: dir);
+
+/// Asks the coordinator (signed `POST /v1/devices/me`) whether it still knows this device. Call after
+/// [`open_agent`]; it makes a network call. When the device is not registered any more, helping stops.
+Future<EnrolmentCheck> checkEnrolment({required String dir}) =>
+    RustLib.instance.api.crateApiCheckEnrolment(dir: dir);
+
+/// Stops helping, then tells the coordinator to forget this device (signed `POST /v1/devices/deregister`).
+/// Call before [`unenrol`]. `Ok` when the coordinator removed it, already did not know it, or nothing is
+/// saved. On `Err` (plain English, e.g. offline) the owner may still reset with [`unenrol`].
+Future<void> deregisterDevice({required String dir}) =>
+    RustLib.instance.api.crateApiDeregisterDevice(dir: dir);
 
 /// The nc-policy safe defaults (no consent, charging only, 25 % CPU, no hours, ...).
 PolicySummary defaultPolicy() => RustLib.instance.api.crateApiDefaultPolicy();
@@ -279,6 +290,43 @@ class Enrolment {
           trustedPublishers == other.trustedPublishers &&
           deviceKey == other.deviceKey &&
           active == other.active;
+}
+
+/// Result of [`check_enrolment`].
+class EnrolmentCheck {
+  /// What the coordinator said.
+  final EnrolmentState state;
+
+  /// Plain-English reason when `state` is `Unknown`.
+  final String? message;
+
+  const EnrolmentCheck({required this.state, this.message});
+
+  @override
+  int get hashCode => state.hashCode ^ message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is EnrolmentCheck &&
+          runtimeType == other.runtimeType &&
+          state == other.state &&
+          message == other.message;
+}
+
+/// What the coordinator says about the saved enrolment.
+enum EnrolmentState {
+  /// Nothing is saved on this device.
+  notEnrolled,
+
+  /// The coordinator knows this device.
+  registered,
+
+  /// The coordinator no longer knows this device (removed or reset there). Enrol again.
+  notRegistered,
+
+  /// No answer; the enrolment may still be fine. See `message`.
+  unknown,
 }
 
 /// `nc_agent::Activity` as a plain struct. Never carries job data.
