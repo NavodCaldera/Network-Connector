@@ -1,6 +1,6 @@
 //! Platforms without an implemented OS sandbox. Every job is refused (AGENT.md §1 rule 3: no weaker fallback).
 //!
-//! TODO(core, Phase 1): Linux namespaces + seccomp + cgroups.
+//! TODO(core, later): macOS sandbox. Linux has a separate, fail-closed backend.
 
 use std::time::Duration;
 

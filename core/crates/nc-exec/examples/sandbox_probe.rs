@@ -7,6 +7,12 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    // SAFETY: this trusted fixture captures the executor's host PID before namespace setup so the
+    // later escape probe can attempt ptrace against the actual parent, not its own namespace PID.
+    let parent = unsafe { libc::getppid() };
+    #[cfg(target_os = "linux")]
+    nc_exec::sandbox::bootstrap();
     let mut stdin = std::io::stdin().lock();
     let mut out = std::io::stdout();
     // Given a real worker request, act as a hung worker that never replies (watchdog test).
@@ -23,6 +29,14 @@ fn main() {
         let Ok(line) = line else { break };
         let (cmd, arg) = line.split_once(' ').unwrap_or((line.as_str(), ""));
         let res = match cmd {
+            #[cfg(target_os = "linux")]
+            "isolation" => {
+                if linux_isolation() {
+                    "ISOLATION_OK".into()
+                } else {
+                    "ISOLATION_FAILED".into()
+                }
+            }
             "hang" => loop {
                 std::thread::sleep(Duration::from_secs(1));
             },
@@ -34,8 +48,90 @@ fn main() {
                 }
                 format!("ALLOC_OK {}", v.len())
             }
+            #[cfg(target_os = "linux")]
+            "ptrace" | "unshare" | "mount" | "forkbomb" | "exec" => {
+                // SAFETY: test-only escape probes use valid null/constant syscall arguments;
+                // the sandbox must kill this process before any operation takes effect.
+                unsafe {
+                    match cmd {
+                        "exec" => {
+                            libc::execve(
+                                c"/bin/sh".as_ptr(),
+                                [c"sh".as_ptr(), std::ptr::null()].as_ptr(),
+                                [std::ptr::null::<libc::c_char>()].as_ptr(),
+                            );
+                        }
+                        "ptrace" => {
+                            libc::ptrace(
+                                libc::PTRACE_ATTACH,
+                                parent,
+                                std::ptr::null_mut::<libc::c_void>(),
+                                std::ptr::null_mut::<libc::c_void>(),
+                            );
+                        }
+                        "unshare" => {
+                            libc::unshare(libc::CLONE_NEWUSER);
+                        }
+                        "mount" => {
+                            libc::mount(
+                                std::ptr::null(),
+                                c"/".as_ptr(),
+                                std::ptr::null(),
+                                libc::MS_REMOUNT,
+                                std::ptr::null(),
+                            );
+                        }
+                        _ => {
+                            libc::syscall(libc::SYS_clone, libc::SIGCHLD, 0, 0, 0, 0);
+                        }
+                    }
+                }
+                "ESCAPE_UNEXPECTED".into()
+            }
+            #[cfg(target_os = "linux")]
+            "clone3" => {
+                let args = [0u64; 11];
+                // SAFETY: clone_args is an initialized, correctly sized buffer. The filter must return
+                // ENOSYS without creating a child; immediately exit any unexpected child.
+                let result = unsafe {
+                    libc::syscall(
+                        libc::SYS_clone3,
+                        args.as_ptr(),
+                        std::mem::size_of_val(&args),
+                    )
+                };
+                if result == 0 {
+                    std::process::exit(99);
+                }
+                format!(
+                    "CLONE3_DENIED {}",
+                    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+                )
+            }
+            #[cfg(target_os = "linux")]
+            "threads" => {
+                let mut handles = Vec::new();
+                for _ in 0..128 {
+                    match std::thread::Builder::new()
+                        .stack_size(64 << 10)
+                        .spawn(|| std::thread::sleep(Duration::from_millis(500)))
+                    {
+                        Ok(h) => handles.push(h),
+                        Err(_) => break,
+                    }
+                }
+                let count = handles.len();
+                for h in handles {
+                    let _ = h.join();
+                }
+                format!("THREADS_DENIED {count}")
+            }
             "spawn" => {
-                match std::process::Command::new(r"C:\Windows\System32\cmd.exe")
+                #[cfg(windows)]
+                let shell = r"C:\Windows\System32\cmd.exe";
+                #[cfg(not(windows))]
+                let shell = "/bin/sh";
+                match std::process::Command::new(shell)
                     .args(["/c", "exit 0"])
                     .status()
                 {
@@ -43,6 +139,11 @@ fn main() {
                     Err(e) => format!("SPAWN_DENIED {}", e.raw_os_error().unwrap_or(0)),
                 }
             }
+            #[cfg(target_os = "linux")]
+            "dir" => match std::fs::read_dir(arg) {
+                Ok(_) => "DIR_OK".into(),
+                Err(e) => format!("DIR_DENIED {}", e.raw_os_error().unwrap_or(0)),
+            },
             "read" => match std::fs::read(arg) {
                 Ok(b) => format!("READ_OK {}", b.len()),
                 Err(e) => format!("READ_DENIED {}", e.raw_os_error().unwrap_or(0)),
@@ -77,4 +178,85 @@ fn main() {
         let _ = writeln!(out, "{res}");
         let _ = out.flush();
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_isolation() -> bool {
+    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
+        return false;
+    };
+    let capabilities = ["CapInh:", "CapPrm:", "CapEff:", "CapBnd:", "CapAmb:"]
+        .iter()
+        .all(|key| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix(key))
+                .is_some_and(|value| value.trim() == "0000000000000000")
+        });
+    let hardened =
+        ["NoNewPrivs:", "Seccomp:"]
+            .into_iter()
+            .zip(["1", "2"])
+            .all(|(key, expected)| {
+                status
+                    .lines()
+                    .find_map(|line| line.strip_prefix(key))
+                    .is_some_and(|value| value.trim() == expected)
+            });
+    let limits = [
+        (libc::RLIMIT_NOFILE, 64),
+        (libc::RLIMIT_CORE, 0),
+        (libc::RLIMIT_FSIZE, 16 << 20),
+    ]
+    .into_iter()
+    .all(|(resource, value)| {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: limit is a valid out-pointer to a properly sized rlimit structure.
+        unsafe {
+            libc::getrlimit(resource, &mut limit) == 0
+                && limit.rlim_cur == value
+                && limit.rlim_max == value
+        }
+    });
+    let Ok(network) = std::fs::read_to_string("/proc/net/dev") else {
+        return false;
+    };
+    let interfaces: Vec<_> = network
+        .lines()
+        .filter_map(|line| line.split_once(':').map(|(name, _)| name.trim()))
+        .collect();
+    let Ok(descriptors) = std::fs::read_dir("/proc/self/fd") else {
+        return false;
+    };
+    let names: Vec<_> = descriptors
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect();
+    // read_dir itself temporarily holds fd 3; the bootstrap control descriptor is already closed.
+    let fds = names.len() == 4
+        && (0..4).all(|fd| {
+            names
+                .iter()
+                .any(|n| n == std::ffi::OsStr::new(&fd.to_string()))
+        });
+    let cgroup = std::fs::read_to_string("/proc/self/cgroup").is_ok_and(|s| s.trim() == "0::/");
+    let minimal_root = std::fs::read_dir("/").is_ok_and(|entries| {
+        entries.filter_map(Result::ok).all(|entry| {
+            ["worker", "lib", "proc"]
+                .iter()
+                .any(|name| entry.file_name() == std::ffi::OsStr::new(name))
+        })
+    });
+    minimal_root
+        && capabilities
+        && hardened
+        && limits
+        && interfaces == ["lo"]
+        && fds
+        && cgroup
+        && std::process::id() == 1
+        && std::env::vars_os().count() == 0
 }

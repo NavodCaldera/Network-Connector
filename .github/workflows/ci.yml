@@ -51,6 +51,23 @@ jobs:
           else
             cargo test --all-targets --locked
           fi
+      - name: nc-exec Linux sandbox (real namespaces, seccomp and cgroup v2)
+        if: matrix.os == 'ubuntu-latest' && matrix.workspace == 'core'
+        working-directory: core
+        shell: bash
+        run: |
+          # Ubuntu's AppArmor userns restriction blocks unprivileged namespace creation on runners.
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          # Delegate a transient service to the runner UID; hosted runners need no login/user bus.
+          sudo systemd-run --wait --pipe --collect \
+            --unit="nc-exec-sandbox-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --property="User=$(id -u)" --property=Delegate=yes --property="WorkingDirectory=$PWD" \
+            --setenv="PATH=$PATH" --setenv="CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
+            --setenv="RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
+            --setenv="CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$PWD/target}" --setenv="RUSTFLAGS=${RUSTFLAGS:-}" \
+            bash crates/nc-exec/tests/linux-sandbox.sh --inside
       # Real sandbox (AppContainer + Job Object) under the whole helper session: Stop < 1 s, memory and
       # output caps. Ignored by default because it needs the built worker binary.
       - name: nc-agent sandbox_jobs (real sandbox)
