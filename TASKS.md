@@ -48,7 +48,7 @@ Status: `todo` · `in progress` · `review` (waiting for coordinator check) · `
 | 1.L2 | Tariff-window failures do not use up attempts (capped at 24) | net-agent (Claude) | `feat/1.L2-attempts-disputes` | `server/` | done |
 | 1.L4 | Dispute resolution: third helper, 2-of-3 majority, distinct owners | net-agent (Claude) | `feat/1.L2-attempts-disputes` | `server/`, `infra/` | done |
 | 1.L8-1.L10 | Linux sandbox: namespaces, seccomp, cgroup v2 (prompt: `docs/codex/1.L8-linux-sandbox.md`) | **Codex** | `feat/codex-linux-sandbox` | `core/crates/nc-exec`, Linux CI step | done (passes on WSL2; hosted-runner CI red, see 1.L8b) |
-| 1.L8b | Linux sandbox `mount` EPERM on GitHub ubuntu runners (prompt: `docs/codex/1.L8b-linux-ci-mount.md`) | **Codex** | `feat/codex-linux-ci-mount` | `core/crates/nc-exec`, Linux CI step | in progress: per-call runner diagnostics |
+| 1.L8b | Linux sandbox `mount` EPERM on GitHub ubuntu runners (prompt: `docs/codex/1.L8b-linux-ci-mount.md`) | **Codex** | `feat/codex-linux-ci-mount` | `core/crates/nc-exec`, Linux CI step | done: procfs ordering fixed; CI 41541545484 green, WSL2 10/10 |
 | 1.L5 | Resumable chunked upload, server side | net-agent (Claude) | `feat/1.L5-resumable-upload` | `server/`, upload API doc | done |
 | 1.L6 | Resumable chunked upload, agent side (budget-gated per chunk) | core-agent (Claude) | `feat/1.L6-resumable-upload-agent` | `core/crates/nc-agent` | done |
 | 1.L7 | CLI detached submit, `nc job status/wait/fetch` | core-agent (Claude) | `feat/1.L7-cli-jobs` | `core/crates/{nc-cli,nc-agent requester}` | done |

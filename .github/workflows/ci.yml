@@ -61,7 +61,7 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
           uname -a
-          sudo sysctl -a 2>/dev/null | grep -i userns
+          sudo sysctl -a 2>/dev/null | grep -Ei 'userns|apparmor_restrict_unprivileged_unconfined'
           sudo aa-status
           cat /proc/self/mountinfo
           # Delegate a transient service to the runner UID; hosted runners need no login/user bus.
