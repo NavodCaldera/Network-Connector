@@ -182,7 +182,22 @@ impl AgentConfig {
 
     /// Coordinator client signing with `key`.
     pub fn coordinator(&self, key: Arc<dyn DeviceKeyStore>) -> HttpCoordinator {
-        HttpCoordinator::new(&self.coordinator_url, key, std::env::var(ENROLL_ENV).ok())
+        HttpCoordinator::new(&self.coordinator_url, key, self.enroll_secret())
+    }
+
+    /// File in `data_dir` holding the enrolment secret for the Windows service (no environment there).
+    pub fn enroll_secret_path(&self) -> PathBuf {
+        self.data_dir.join("enroll.secret")
+    }
+
+    /// Enrolment secret: `NC_ENROLL_SECRET`, else the ACL-protected `enroll.secret` file in `data_dir`.
+    pub fn enroll_secret(&self) -> Option<String> {
+        if let Ok(s) = std::env::var(ENROLL_ENV) {
+            return Some(s);
+        }
+        let s = std::fs::read_to_string(self.enroll_secret_path()).ok()?;
+        let s = s.trim();
+        (!s.is_empty()).then(|| s.to_string())
     }
 
     /// Build the real agent (HTTPS coordinator signing with the device key; registers on start).
