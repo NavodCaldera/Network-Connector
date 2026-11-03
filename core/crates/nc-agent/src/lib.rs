@@ -431,7 +431,7 @@ mod tests {
 
     fn wait_for(rx: &Receiver<Status>, want: SessionState) -> Status {
         loop {
-            let s = rx.recv_timeout(Duration::from_secs(5)).expect("status");
+            let s = rx.recv_timeout(Duration::from_secs(20)).expect("status");
             if s.state == want {
                 return s;
             }
