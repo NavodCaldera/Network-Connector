@@ -70,16 +70,42 @@ pub struct AgentConfig {
     /// set, no ledger is created in `data_dir`.
     #[serde(default)]
     pub budget_ledger: Option<PathBuf>,
+    /// Requester side of direct transfers (1.L15b): listen on a random TCP and QUIC port on all IPv4
+    /// interfaces so that helpers leased this device's jobs can fetch the blobs from it directly. Off by
+    /// default: then nothing listens (AGENT.md §1 rule 7) and helpers use the coordinator.
+    #[serde(default)]
+    pub peer_listen: bool,
 }
 
 /// Message the device key signs to derive the parked-result key (never sent anywhere).
 const PARKED_KEY_LABEL: &[u8] = b"nc-agent/parked-results/v1";
 
-/// nc-net node for direct transfers (1.L15). Outbound only: the helper dials the requester the lease names,
-/// so nothing listens and no firewall rule is needed. Not fatal: without it every byte uses HTTP.
-fn start_peer(device_public: [u8; 32]) -> Option<crate::peer::AgentPeer> {
-    match crate::peer::PeerNet::start(Vec::new()) {
-        Ok(net) => Some(crate::peer::AgentPeer { net, device_public }),
+/// Listen addresses used when `peer_listen` is on: random ports, all IPv4 interfaces.
+pub fn peer_listen_addrs() -> Vec<nc_net::Multiaddr> {
+    ["/ip4/0.0.0.0/tcp/0", "/ip4/0.0.0.0/udp/0/quic-v1"]
+        .iter()
+        .filter_map(|a| a.parse().ok())
+        .collect()
+}
+
+/// nc-net node for direct transfers (1.L15). Outbound only unless `listen` (the owner's `peer_listen`): the
+/// helper dials the requester the lease names, so a pure helper needs no listening socket or firewall rule.
+/// Not fatal: without it every byte uses HTTP.
+fn start_peer(device_public: [u8; 32], listen: bool) -> Option<crate::peer::AgentPeer> {
+    let addrs = if listen {
+        peer_listen_addrs()
+    } else {
+        Vec::new()
+    };
+    match crate::peer::PeerNet::start(addrs) {
+        Ok(net) => {
+            if listen {
+                // Wait briefly for the first bound address so the first registration carries it.
+                let n = net.listen_addrs(Duration::from_secs(2)).len();
+                tracing::info!(addresses = n, "listening for direct transfers");
+            }
+            Some(crate::peer::AgentPeer { net, device_public })
+        }
         Err(e) => {
             tracing::warn!(error = %e, "direct transfers off");
             None
@@ -225,6 +251,53 @@ impl AgentConfig {
         Ok(Agent::with_backend(self.backend_with(coord)?))
     }
 
+    /// Requester side for a process that is not the agent (`nc submit --wait`): when `peer_listen` is on, a
+    /// listening node whose served bytes and control calls are charged to this device's budget ledger.
+    /// `None` when `peer_listen` is off or the node cannot start.
+    pub fn direct_serving(
+        &self,
+        coord: Arc<dyn Coordinator>,
+    ) -> Result<Option<crate::serve::ServeCtx>, ConfigError> {
+        use crate::probe::PlatformProbe;
+        if !self.peer_listen {
+            return Ok(None);
+        }
+        let key = self.device_key()?;
+        let ledger = self.budget_ledger_path();
+        if let Some(parent) = ledger.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).map_err(|_| ConfigError::Open("budget usage"))?;
+        }
+        let usage =
+            nc_store::Store::open(&ledger).map_err(|_| ConfigError::Open("budget usage"))?;
+        let budget = Arc::new(
+            BudgetGate::with_usage_store(&self.network_budget, chrono::Utc::now(), usage)
+                .map_err(|_| ConfigError::Invalid("network_budget"))?,
+        );
+        let probe = Arc::new(SystemProbe::new(self.probe.clone()));
+        let Some(peer) = start_peer(key.public_key(), true) else {
+            return Ok(None);
+        };
+        let (gb, gp) = (budget.clone(), probe.clone());
+        peer.net.set_serve_gate(Some(Arc::new(move |bytes| {
+            crate::serve::charge_served(&gb, gp.as_ref(), &SystemClock, bytes)
+        })));
+        Ok(Some(crate::serve::ServeCtx {
+            coord,
+            net: peer.net,
+            device_public: peer.device_public,
+            control: Arc::new(move || {
+                budget.charge(
+                    nc_tariff::TrafficClass::Control,
+                    4096,
+                    chrono::Utc::now(),
+                    &probe.network(),
+                )
+            }),
+            now_unix: Arc::new(|| u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0)),
+            poll: crate::serve::POLL,
+        }))
+    }
+
     /// The [`Backend`] [`Self::build_agent_with`] uses, for callers that need to adjust it first.
     pub fn backend_with(&self, coord: Arc<dyn Coordinator>) -> Result<Backend, ConfigError> {
         std::fs::create_dir_all(&self.data_dir).map_err(|_| ConfigError::Open("data_dir"))?;
@@ -278,7 +351,7 @@ impl AgentConfig {
                 poll: Duration::from_secs(self.poll_seconds),
                 ..Tuning::default()
             },
-            peer: start_peer(device_key.public_key()),
+            peer: start_peer(device_key.public_key(), self.peer_listen),
         };
         Ok(backend)
     }
@@ -304,6 +377,10 @@ mod tests {
         std::fs::write(&path, v.to_string()).unwrap();
         let c = AgentConfig::load(&path).unwrap();
         assert_eq!(c.control_port, 47_611);
+        assert!(
+            !c.peer_listen,
+            "no listening socket unless the owner opts in"
+        );
         assert_eq!(c.load_policy().unwrap(), OwnerPolicy::default());
         v["coordinator_url"] = "http://coordinator.example".into();
         std::fs::write(&path, v.to_string()).unwrap();

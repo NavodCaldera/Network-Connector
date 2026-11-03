@@ -448,18 +448,13 @@ fn unix_ms(secs: u64) -> i64 {
 }
 
 /// Charge a control call to the budget; `false` means the tariff forbids even control traffic now.
-fn control_allowed(b: &Backend) -> bool {
-    let net = b.probe.network();
-    match b
-        .budget
-        .authorize(TrafficClass::Control, CONTROL_BYTES, b.clock.now(), &net)
-    {
-        Ok(g) => {
-            b.budget.settle(g, CONTROL_BYTES);
-            true
-        }
-        Err(_) => false,
-    }
+pub(crate) fn control_allowed(b: &Backend) -> bool {
+    b.budget.charge(
+        TrafficClass::Control,
+        CONTROL_BYTES,
+        b.clock.now(),
+        &b.probe.network(),
+    )
 }
 
 /// Refresh the peer registration when due, charged to the tariff as control traffic.
