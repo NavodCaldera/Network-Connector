@@ -289,6 +289,23 @@ impl BudgetGate {
         })
     }
 
+    /// Authorize and settle `bytes` at once (bytes about to be sent in one piece). `false`: refused.
+    pub fn charge(
+        &self,
+        class: TrafficClass,
+        bytes: u64,
+        now: DateTime<Utc>,
+        net: &NetworkObservation,
+    ) -> bool {
+        match self.authorize(class, bytes, now, net) {
+            Ok(g) => {
+                self.settle(g, bytes);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Settle a grant with the bytes actually moved (overage is recorded by nc-tariff, not dropped).
     pub fn settle(&self, grant: Grant, actual: u64) {
         if let (Some(l), Some(id)) = (grant.ledger, grant.id) {

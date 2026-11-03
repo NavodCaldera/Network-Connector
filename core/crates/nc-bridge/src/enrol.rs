@@ -438,6 +438,7 @@ pub(crate) fn build_agent(
         poll_seconds: POLL.as_secs(),
         cache_quota_mb: CACHE_QUOTA_MB,
         budget_ledger: Some(dir.join(BUDGET_LEDGER)),
+        peer_listen: false,
     };
     let key = open_key(dir)?;
     let coord = Arc::new(SkipRegister(Arc::new(HttpCoordinator::new(

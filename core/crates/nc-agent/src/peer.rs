@@ -58,6 +58,11 @@ const CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Largest number of hinted addresses dialled (the server caps at 16 too).
 const MAX_HINT_ADDRS: usize = 16;
+/// Helper side: how often the hinted addresses are dialled again while connecting (the requester grants the
+/// helper only after it has seen the lease, so the first dial may be refused by its trust gate).
+const REDIAL_EVERY: Duration = Duration::from_secs(1);
+/// A connection counts as up only if it survives this long (an ungranted peer's gate closes it at once).
+const CONNECT_SETTLE: Duration = Duration::from_millis(150);
 /// Domain of the binding signature (proto/README.md "Peer hints").
 const BINDING_DOMAIN: &[u8] = b"nc.v1.PeerBinding\0";
 
@@ -130,6 +135,7 @@ pub struct PeerNet {
     grants: Grants,
     gate: Arc<Mutex<Option<ServeGate>>>,
     refresh: Mutex<Refresh>,
+    listening: bool,
     /// Byte counters.
     pub stats: Arc<PathStats>,
 }
@@ -170,6 +176,7 @@ impl PeerNet {
             .build()
             .map_err(|_| PeerError::Start)?;
         let keypair = Keypair::generate_ed25519();
+        let listening = !listen.is_empty();
         let mut cfg = NodeConfig::new(keypair.clone());
         cfg.listen = listen;
         let node = rt
@@ -189,6 +196,7 @@ impl PeerNet {
                 next: None,
                 disabled: false,
             }),
+            listening,
             stats: Arc::default(),
         });
         let (grants, gate, stats) = (net.grants.clone(), net.gate.clone(), net.stats.clone());
@@ -199,6 +207,11 @@ impl PeerNet {
     /// This node's PeerId.
     pub fn peer_id(&self) -> PeerId {
         self.node.peer_id()
+    }
+
+    /// Whether the node was started with listen addresses (only then can helpers dial it).
+    pub fn is_listening(&self) -> bool {
+        self.listening
     }
 
     /// Current listen/external addresses (waits up to `wait` for the first one).
@@ -235,7 +248,7 @@ impl PeerNet {
         self.grant_raw(helper, set);
     }
 
-    fn grant_raw(&self, helper: PeerId, set: HashMap<[u8; 32], Arc<Vec<u8>>>) {
+    pub(crate) fn grant_raw(&self, helper: PeerId, set: HashMap<[u8; 32], Arc<Vec<u8>>>) {
         let _ = self.node.trust().add(helper);
         lock(&self.grants).entry(helper).or_default().extend(set);
     }
@@ -244,6 +257,37 @@ impl PeerNet {
     pub fn revoke(&self, helper: &PeerId) {
         lock(&self.grants).remove(helper);
         let _ = self.node.trust().remove(helper);
+    }
+
+    /// Withdraw only these blobs from `helper`; the helper loses trust once nothing is left granted to it.
+    pub fn revoke_blobs(&self, helper: &PeerId, shas: &[[u8; 32]]) {
+        let mut g = lock(&self.grants);
+        let empty = match g.get_mut(helper) {
+            Some(m) => {
+                for sha in shas {
+                    m.remove(sha);
+                }
+                m.is_empty()
+            }
+            None => true,
+        };
+        if empty {
+            g.remove(helper);
+            let _ = self.node.trust().remove(helper);
+        }
+    }
+
+    /// PeerIds that currently hold a grant (tests and status).
+    pub fn granted_peers(&self) -> Vec<PeerId> {
+        lock(&self.grants).keys().copied().collect()
+    }
+
+    /// Blob hashes granted to `helper`.
+    pub fn granted_blobs(&self, helper: &PeerId) -> Vec<[u8; 32]> {
+        lock(&self.grants)
+            .get(helper)
+            .map(|m| m.keys().copied().collect())
+            .unwrap_or_default()
     }
 
     // ---- helper side ----
@@ -269,14 +313,23 @@ impl PeerNet {
             if self.node.is_connected(peer).await.unwrap_or(false) {
                 return true;
             }
-            for a in addrs {
-                // The /p2p suffix makes the transport handshake reject any other key.
-                let _ = self.node.dial(a).await;
-            }
             let deadline = tokio::time::Instant::now() + CONNECT_TIMEOUT;
+            let mut next_dial = tokio::time::Instant::now();
             while tokio::time::Instant::now() < deadline {
+                if tokio::time::Instant::now() >= next_dial {
+                    for a in &addrs {
+                        // The /p2p suffix makes the transport handshake reject any other key.
+                        let _ = self.node.dial(a.clone()).await;
+                    }
+                    next_dial = tokio::time::Instant::now() + REDIAL_EVERY;
+                }
                 if self.node.is_connected(peer).await.unwrap_or(false) {
-                    return true;
+                    // A peer that has not granted us closes the connection at once (its trust gate):
+                    // count it only if it is still up after a short settle.
+                    tokio::time::sleep(CONNECT_SETTLE).await;
+                    if self.node.is_connected(peer).await.unwrap_or(false) {
+                        return true;
+                    }
                 }
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }

@@ -7,9 +7,10 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use nc_identity::DeviceKeyStore;
 use nc_protocol::pb::v1::{
     CompleteRequest, CompleteResponse, DeregisterRequest, DeregisterResponse, ErrorResponse,
-    HeartbeatRequest, JobStatusResponse, LeaseFailRequest, LeaseFailResponse, LeaseRenewRequest,
-    LeaseRenewResponse, LeaseResponse, PeerRegisterRequest, PeerRegisterResponse, RegisterRequest,
-    SubmitJobRequest, SubmitJobResponse, WhoAmIRequest, WhoAmIResponse,
+    HeartbeatRequest, JobLeasesResponse, JobStatusResponse, LeaseFailRequest, LeaseFailResponse,
+    LeaseRenewRequest, LeaseRenewResponse, LeaseResponse, PeerRegisterRequest,
+    PeerRegisterResponse, RegisterRequest, SubmitJobRequest, SubmitJobResponse, WhoAmIRequest,
+    WhoAmIResponse,
 };
 use sha2::{Digest, Sha256};
 use std::io::Read;
@@ -130,6 +131,12 @@ pub trait Coordinator: Send + Sync {
     fn submit(&self, req: &SubmitJobRequest) -> Result<SubmitJobResponse, CoordError>;
     /// `GET /v1/jobs/{id}`.
     fn job_status(&self, job_id: &str) -> Result<JobStatusResponse, CoordError>;
+    /// `GET /v1/jobs/{id}/leases` (1.L15b): the submitting device's view of the job's live leases with the
+    /// helpers' PeerIds. Coordinators without the endpoint answer 404; the requester then serves nothing directly.
+    fn job_leases(&self, job_id: &str) -> Result<JobLeasesResponse, CoordError> {
+        let _ = job_id;
+        Err(unsupported())
+    }
 }
 
 /// Wrapper for a device that is already enrolled: `register` is a no-op (the server needs the one-shot
@@ -182,6 +189,9 @@ impl Coordinator for SkipRegister {
     }
     fn job_status(&self, job_id: &str) -> Result<JobStatusResponse, CoordError> {
         self.0.job_status(job_id)
+    }
+    fn job_leases(&self, job_id: &str) -> Result<JobLeasesResponse, CoordError> {
+        self.0.job_leases(job_id)
     }
 }
 
@@ -539,6 +549,12 @@ impl Coordinator for HttpCoordinator {
             return Err(CoordError::Decode);
         }
         Self::json(self.send("GET", &format!("/v1/jobs/{job_id}"), &[], &[])?)
+    }
+    fn job_leases(&self, job_id: &str) -> Result<JobLeasesResponse, CoordError> {
+        if job_id.is_empty() || !job_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+            return Err(CoordError::Decode);
+        }
+        Self::json(self.send("GET", &format!("/v1/jobs/{job_id}/leases"), &[], &[])?)
     }
 }
 

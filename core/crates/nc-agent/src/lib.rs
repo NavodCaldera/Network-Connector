@@ -26,6 +26,7 @@ pub mod peer;
 pub mod probe;
 pub mod requester;
 pub mod runner;
+pub mod serve;
 pub mod session;
 pub mod today;
 pub mod transfer;
@@ -124,6 +125,7 @@ pub struct Agent {
     running: Mutex<Option<Running>>,
     live: Arc<Live>,
     backend: Option<Arc<Backend>>,
+    serving: Mutex<Vec<serve::Serving>>,
 }
 
 impl Default for Agent {
@@ -152,6 +154,17 @@ impl Agent {
     }
 
     fn build(backend: Option<Arc<Backend>>) -> Self {
+        if let Some(b) = &backend {
+            if let Some(p) = &b.peer {
+                // Served bytes count against this device's own budget and tariff window (status 3 if not).
+                let w = Arc::downgrade(b);
+                p.net.set_serve_gate(Some(Arc::new(move |bytes| {
+                    w.upgrade().is_some_and(|b| {
+                        serve::charge_served(&b.budget, b.probe.as_ref(), b.clock.as_ref(), bytes)
+                    })
+                })));
+            }
+        }
         Self {
             shared: Arc::new(Mutex::new(Shared {
                 status: Status {
@@ -163,6 +176,7 @@ impl Agent {
             running: Mutex::new(None),
             live: Arc::new(Live::new()),
             backend,
+            serving: Mutex::new(Vec::new()),
         }
     }
 
@@ -297,17 +311,72 @@ impl Agent {
         blobs: Vec<(String, Vec<u8>)>,
     ) -> Result<String, AgentError> {
         let b = self.backend.as_ref().ok_or(AgentError::NoCoordinator)?;
+        let wait = job_wait(&manifest, b.clock.now().timestamp_millis());
         let job = requester::BuiltJob {
             signed: manifest,
             job_id: String::new(),
             blobs,
         };
-        requester::submit(b.coord.as_ref(), &job).map_err(|e| AgentError::Submit(e.to_string()))
+        let id = requester::submit(b.coord.as_ref(), &job)
+            .map_err(|e| AgentError::Submit(e.to_string()))?;
+        self.serve_job(
+            &id,
+            job.blobs.into_iter().map(|(_, bytes)| bytes).collect(),
+            wait,
+        );
+        Ok(id)
+    }
+
+    /// Requester side (1.L15b): serve `blobs` of the submitted job `job_id` directly to the helpers the
+    /// coordinator lists for it, for at most `wait`. Does nothing unless this agent's node listens
+    /// (`peer_listen`). Every grant is revoked when the job ends, the wait ends or the agent is dropped.
+    pub fn serve_job(&self, job_id: &str, blobs: Vec<Vec<u8>>, wait: Duration) -> bool {
+        let Some(ctx) = self.serve_ctx() else {
+            return false;
+        };
+        let mut s = lock(&self.serving);
+        s.retain(|x| !x.is_finished());
+        s.push(serve::Serving::spawn(ctx, job_id.to_string(), blobs, wait));
+        true
+    }
+
+    fn serve_ctx(&self) -> Option<serve::ServeCtx> {
+        let b = self.backend.as_ref()?;
+        let p = b.peer.as_ref().filter(|p| p.net.is_listening())?;
+        let (wc, wn) = (Arc::downgrade(b), Arc::downgrade(b));
+        Some(serve::ServeCtx {
+            coord: b.coord.clone(),
+            net: p.net.clone(),
+            device_public: p.device_public,
+            control: Arc::new(move || wc.upgrade().is_some_and(|b| session::control_allowed(&b))),
+            now_unix: Arc::new(move || {
+                wn.upgrade()
+                    .map_or(0, |b| u64::try_from(b.clock.now().timestamp()).unwrap_or(0))
+            }),
+            poll: serve::POLL,
+        })
+    }
+}
+
+/// How long a requester serves a job: until its deadline (at most seven days; one hour if unreadable).
+fn job_wait(m: &nc_protocol::pb::v1::SignedJobManifest, now_ms: i64) -> Duration {
+    use prost::Message;
+    let exp = nc_protocol::pb::v1::JobManifest::decode(m.manifest.as_slice())
+        .ok()
+        .and_then(|j| j.task)
+        .map(|t| t.expires_at_unix_ms);
+    match exp {
+        Some(e) => Duration::from_millis(u64::try_from(e.saturating_sub(now_ms)).unwrap_or(0))
+            .min(Duration::from_secs(7 * 24 * 3600)),
+        None => Duration::from_secs(3600),
     }
 }
 
 impl Drop for Agent {
     fn drop(&mut self) {
+        for s in lock(&self.serving).drain(..) {
+            s.detach();
+        }
         self.stop_helper_session();
     }
 }

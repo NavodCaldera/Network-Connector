@@ -11,7 +11,9 @@
 //! `nc job status|wait <id>` and `nc job fetch <id> -o <file>` pick the job up from any later process, also
 //! after a crash or restart: a job the coordinator never got is uploaded and submitted first. Transient
 //! coordinator failures are retried until `--timeout`; the output is checked against the committed hash.
-//! `--replicas 2` asks for two-helper validation.
+//! `--replicas 2` asks for two-helper validation. With `"peer_listen": true` in the config, `nc submit` with
+//! `--wait`/`--out` listens on random ports while it waits and serves the job's blobs directly to the helpers
+//! the coordinator lists (charged to this device's data budget); off by default.
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -20,10 +22,12 @@ use nc_agent::control::{self, Command};
 use nc_agent::coord::Coordinator;
 use nc_agent::jobs::{self, JobStore, Retry};
 use nc_agent::requester::{self, JobSpec};
+use nc_agent::serve::Serving;
 use nc_policy::OwnerPolicy;
 use nc_protocol::pb::v1::RegisterRequest;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Parser, Debug)]
@@ -172,14 +176,14 @@ fn submit(cfg: &AgentConfig, args: SubmitArgs) -> Result<()> {
     let signer = nc_identity::RootSigner(key.as_ref());
     let job = requester::build(&spec, &signer, chrono::Utc::now().timestamp_millis())
         .context("building the job")?;
-    let coord = requester_coord(cfg)?;
+    let coord = Arc::new(requester_coord(cfg)?);
     let store = JobStore::new(&cfg.data_dir);
     store
         .stage(&job, chrono::Utc::now().timestamp_millis())
         .context("recording the job")?;
     let retry = Retry::cli(Duration::from_secs(args.timeout));
     store
-        .ensure_submitted(&coord, &job.job_id, retry)
+        .ensure_submitted(coord.as_ref(), &job.job_id, retry)
         .with_context(|| {
             format!(
                 "submitting job {}; resume with `nc job status {}`",
@@ -193,9 +197,18 @@ fn submit(cfg: &AgentConfig, args: SubmitArgs) -> Result<()> {
         return Ok(());
     }
     eprintln!("waiting for job {id}");
-    let bytes = store
-        .fetch(&coord, &id, retry, POLL)
-        .context("waiting for the result")?;
+    // `peer_listen` in the config: serve the job's blobs to its helpers directly while waiting.
+    let serving = cfg
+        .direct_serving(coord.clone())
+        .context("starting direct serving")?
+        .map(|ctx| {
+            eprintln!("serving the job's inputs directly to its helpers");
+            let blobs = job.blobs.into_iter().map(|(_, b)| b).collect();
+            Serving::spawn(ctx, id.clone(), blobs, Duration::from_secs(args.timeout))
+        });
+    let fetched = store.fetch(coord.as_ref(), &id, retry, POLL);
+    drop(serving);
+    let bytes = fetched.context("waiting for the result")?;
     match args.out {
         Some(p) => jobs::write_output(&p, &bytes).context("writing output")?,
         None => std::io::stdout().write_all(&bytes)?,
